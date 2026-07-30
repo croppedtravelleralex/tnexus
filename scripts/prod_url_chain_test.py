@@ -33,7 +33,7 @@ def main() -> int:
         print(resp.read().decode())
 
     print("==> login")
-    post("/api/auth/login", {"email": "demo", "password": "demo1234"})
+    post("/api/auth/login", {"email": "user", "password": "123456"})
     job_id = post(
         "/api/jobs",
         {
