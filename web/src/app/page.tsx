@@ -43,7 +43,8 @@ export default function HomePage() {
               用导演思维组织创意，用竞演模式探索风格
             </h2>
             <p className="text-lg leading-relaxed text-[#6b6580]">
-              TNexus 是独立的 AI 生图工作台：双层创意因子、A/B 工作流路径、ChatGPT 与 Grok 双引擎，资产通过 R2 CDN 分发。
+              TNexus 整合 ImageManager 生图引擎：导演工作台 + URL 直链出图，单域访问
+              <span className="font-medium text-[#5c4f8f]"> tnexus.relai.asia</span>。
             </p>
           </div>
 

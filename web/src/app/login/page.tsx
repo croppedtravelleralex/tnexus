@@ -51,7 +51,7 @@ export default function LoginPage() {
           <input
             id="email"
             className="auth-input"
-            placeholder="admin 或 demo"
+            placeholder="admin 或 user"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             required

@@ -73,7 +73,7 @@ export default function RegisterPage() {
         </div>
         <div className="space-y-2">
           <label htmlFor="password" className="auth-label">
-            密码（至少 8 位）
+            密码（至少 6 位）
           </label>
           <input
             id="password"

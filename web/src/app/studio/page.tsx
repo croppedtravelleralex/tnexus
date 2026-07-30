@@ -376,9 +376,9 @@ export default function StudioPage() {
 
       queuedTimer = setTimeout(() => {
         setError(
-          "任务仍在排队：请确认 tnexus-worker 已启动（WSL 运行 ./target/debug/tnexus-worker）",
+          "任务仍在排队，请稍候…（若超过 30 秒仍未开始，请联系管理员检查 worker 服务）",
         );
-      }, 15000);
+      }, 30000);
 
       pollTimer = setInterval(() => {
         void jobsApi

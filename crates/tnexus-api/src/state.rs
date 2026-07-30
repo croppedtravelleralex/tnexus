@@ -34,7 +34,7 @@ impl AppState {
             config.bootstrap_demo_email.clone(),
             config.bootstrap_demo_password.clone(),
         ) {
-            auth.ensure_member_account(&email, &password, "Demo User")
+            auth.ensure_member_account(&email, &password, "User")
                 .await?;
         }
 

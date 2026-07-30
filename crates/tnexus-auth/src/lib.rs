@@ -134,8 +134,8 @@ impl AuthService {
     ) -> Result<()> {
         let account = normalize_account(account);
         validate_account(&account)?;
-        if password.len() < 8 {
-            return Err(anyhow!("demo password must be at least 8 characters"));
+        if password.len() < 6 {
+            return Err(anyhow!("demo password must be at least 6 characters"));
         }
         let hash = hash_password(password)?;
         let existing = sqlx::query("SELECT id, role FROM users WHERE email = $1")
@@ -179,8 +179,8 @@ impl AuthService {
         password: &str,
         display_name: &str,
     ) -> Result<User> {
-        if password.len() < 8 {
-            return Err(anyhow!("password must be at least 8 characters"));
+        if password.len() < 6 {
+            return Err(anyhow!("password must be at least 6 characters"));
         }
         self.create_user(email, password, display_name, Role::Member)
             .await
