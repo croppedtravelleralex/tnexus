@@ -1,0 +1,37 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: tnexus
+      POSTGRES_PASSWORD: tnexus
+      POSTGRES_DB: tnexus
+    ports:
+      - "5432:5432"
+    volumes:
+      - tnexus_pg:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  api:
+    image: ghcr.io/croppedtravelleralex/tnexus:latest
+    command: tnexus-api
+    env_file: .env
+    ports:
+      - "9000:9000"
+    depends_on:
+      - postgres
+      - redis
+
+  worker:
+    image: ghcr.io/croppedtravelleralex/tnexus:latest
+    command: tnexus-worker
+    env_file: .env
+    depends_on:
+      - postgres
+      - redis
+
+volumes:
+  tnexus_pg:

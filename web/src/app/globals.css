@@ -1,0 +1,342 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-background: #fdfbf7;
+  --color-foreground: #3d3566;
+  --color-card: #ffffff;
+  --color-card-foreground: #3d3566;
+  --color-muted: #f3effa;
+  --color-muted-foreground: #6b6580;
+  --color-border: #e8e0f4;
+  --color-input: #e8e0f4;
+  --color-primary: #8b7cc8;
+  --color-primary-foreground: #ffffff;
+  --color-accent: #eef4ff;
+  --color-accent-foreground: #4b4469;
+  --color-ring: #b8a7e0;
+  --color-brand-lavender: #b8a7e0;
+  --color-brand-sky: #a0c4ff;
+  --color-brand-pink: #f9c5d1;
+  --color-brand-cream: #fdfbf7;
+  --color-accent-green: #16a34a;
+  --color-accent-green-muted: #dcfce7;
+  --color-brand-lavender: #b8a7e0;
+  --color-brand-sky: #a0c4ff;
+  --color-brand-pink: #f9c5d1;
+  --color-brand-cream: #fdfbf7;
+  --color-brand-ink: #3d3550;
+  --color-brand-muted: #7a7189;
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+  --radius-lg: 0.75rem;
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+}
+
+body {
+  min-height: 100vh;
+  color: var(--color-foreground);
+  background: var(--color-background);
+}
+
+/* Homepage — cream + lavender / sky / rose palette */
+.home-page {
+  background-color: #fdfbf7;
+  background-image:
+    radial-gradient(ellipse 80% 60% at 12% 0%, rgba(184, 167, 224, 0.38), transparent 55%),
+    radial-gradient(ellipse 70% 50% at 88% 8%, rgba(160, 196, 255, 0.32), transparent 50%),
+    radial-gradient(ellipse 55% 45% at 50% 100%, rgba(249, 197, 209, 0.28), transparent 45%);
+}
+
+.home-page header {
+  background: rgba(253, 251, 247, 0.82);
+  border-color: rgba(184, 167, 224, 0.22);
+  backdrop-filter: blur(14px);
+}
+
+.home-orb {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(72px);
+  pointer-events: none;
+  z-index: 0;
+}
+.home-orb-a {
+  width: 360px;
+  height: 360px;
+  left: -80px;
+  top: 8%;
+  background: rgba(184, 167, 224, 0.45);
+}
+.home-orb-b {
+  width: 320px;
+  height: 320px;
+  right: -60px;
+  top: 18%;
+  background: rgba(160, 196, 255, 0.4);
+}
+.home-orb-c {
+  width: 280px;
+  height: 280px;
+  left: 40%;
+  bottom: 5%;
+  background: rgba(249, 197, 209, 0.35);
+}
+
+.home-logo-glow {
+  background: rgba(255, 255, 255, 0.65);
+  border: 1px solid rgba(184, 167, 224, 0.3);
+  box-shadow:
+    0 0 48px rgba(184, 167, 224, 0.35),
+    0 12px 40px rgba(160, 196, 255, 0.2);
+  backdrop-filter: blur(8px);
+}
+
+.home-card {
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(184, 167, 224, 0.22);
+  box-shadow: 0 8px 32px rgba(184, 167, 224, 0.12);
+  backdrop-filter: blur(12px);
+  transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
+}
+.home-card:hover {
+  border-color: rgba(160, 196, 255, 0.45);
+  box-shadow: 0 12px 40px rgba(160, 196, 255, 0.18);
+  transform: translateY(-2px);
+}
+
+.home-btn-primary {
+  background: linear-gradient(135deg, #b8a7e0 0%, #a0c4ff 55%, #c4b5fd 100%) !important;
+  color: #fff !important;
+}
+.home-btn-primary:hover {
+  background: linear-gradient(135deg, #a894db 0%, #8fb8ff 55%, #b8a7e0 100%) !important;
+}
+
+.home-btn-outline {
+  border-color: rgba(184, 167, 224, 0.45) !important;
+  background: rgba(255, 255, 255, 0.6) !important;
+  color: #5b4b8a !important;
+}
+.home-btn-outline:hover {
+  background: rgba(255, 255, 255, 0.9) !important;
+  border-color: rgba(160, 196, 255, 0.55) !important;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* Auth pages — premium dark glass */
+.auth-page {
+  background:
+    radial-gradient(ellipse 70% 50% at 20% 0%, rgba(184, 167, 224, 0.22), transparent 55%),
+    radial-gradient(ellipse 60% 45% at 80% 10%, rgba(160, 196, 255, 0.18), transparent 50%),
+    linear-gradient(160deg, #07070f 0%, #0f0f1a 40%, #0a0a12 100%);
+}
+
+.auth-orb {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(80px);
+  pointer-events: none;
+}
+.auth-orb-a {
+  width: 420px;
+  height: 420px;
+  left: -120px;
+  top: 10%;
+  background: rgba(184, 167, 224, 0.28);
+}
+.auth-orb-b {
+  width: 360px;
+  height: 360px;
+  right: -80px;
+  bottom: 5%;
+  background: rgba(160, 196, 255, 0.2);
+}
+
+.auth-card {
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.08) 0%, rgba(255, 255, 255, 0.02) 40%, transparent 100%),
+    linear-gradient(180deg, rgba(24, 24, 40, 0.92), rgba(12, 12, 22, 0.96));
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 1.25rem;
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.04) inset,
+    0 24px 80px rgba(0, 0, 0, 0.55),
+    0 8px 32px rgba(99, 102, 241, 0.12);
+  backdrop-filter: blur(20px);
+}
+
+.auth-logo-ring {
+  border-radius: 1.25rem;
+  background: linear-gradient(135deg, rgba(184, 167, 224, 0.45), rgba(160, 196, 255, 0.25));
+  box-shadow:
+    0 0 40px rgba(184, 167, 224, 0.35),
+    0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.auth-input {
+  width: 100%;
+  height: 2.75rem;
+  border-radius: 0.75rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.35);
+  padding: 0 1rem;
+  font-size: 0.875rem;
+  color: #f4f4f5;
+  box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.35);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.auth-input::placeholder {
+  color: #71717a;
+}
+.auth-input:focus {
+  outline: none;
+  border-color: rgba(139, 92, 246, 0.6);
+  box-shadow:
+    inset 0 2px 8px rgba(0, 0, 0, 0.35),
+    0 0 0 3px rgba(139, 92, 246, 0.15);
+}
+
+.auth-label {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: #a1a1aa;
+}
+
+.auth-btn {
+  width: 100%;
+  height: 2.75rem;
+  border-radius: 0.75rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: linear-gradient(180deg, #6366f1 0%, #4f46e5 50%, #4338ca 100%);
+  color: white;
+  font-size: 0.875rem;
+  font-weight: 600;
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.15) inset,
+    0 8px 24px rgba(99, 102, 241, 0.4);
+  transition: transform 0.1s, box-shadow 0.15s;
+}
+.auth-btn:hover:not(:disabled) {
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.2) inset,
+    0 12px 32px rgba(99, 102, 241, 0.5);
+}
+.auth-btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+.auth-btn:disabled {
+  opacity: 0.6;
+}
+
+.auth-hint {
+  margin-top: 1rem;
+  border-radius: 0.75rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.25);
+  padding: 0.75rem 1rem;
+  font-size: 0.75rem;
+  line-height: 1.6;
+  color: #a1a1aa;
+}
+
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+.panel-card {
+  background: var(--color-card);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.panel-header {
+  border-bottom: 1px solid var(--color-border);
+  padding: 1rem 1.25rem;
+  font-weight: 600;
+  font-size: 0.9375rem;
+  flex-shrink: 0;
+}
+
+.panel-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1.25rem;
+}
+
+.neo-plane {
+  background: linear-gradient(135deg, #fafafa 0%, #f4f4f5 100%);
+  border: 1px solid var(--color-border);
+}
+
+.btn-segment-active {
+  background: var(--color-primary);
+  color: var(--color-primary-foreground);
+  border: 1px solid var(--color-primary);
+}
+
+.preset-chip {
+  background: var(--color-background);
+  border: 1px solid var(--color-border);
+  color: var(--color-foreground);
+  transition: border-color 0.15s, background 0.15s;
+}
+.preset-chip:hover {
+  background: var(--color-muted);
+  border-color: var(--color-ring);
+}
+
+.accent-green-ring:focus-visible {
+  outline: none;
+  ring: 2px solid var(--color-accent-green);
+}
+
+.home-page {
+  background:
+    radial-gradient(ellipse 80% 60% at 8% 0%, rgba(184, 167, 224, 0.38), transparent 55%),
+    radial-gradient(ellipse 70% 50% at 92% 15%, rgba(160, 196, 255, 0.32), transparent 50%),
+    radial-gradient(ellipse 60% 45% at 50% 100%, rgba(249, 197, 209, 0.28), transparent 55%),
+    var(--color-brand-cream);
+}
+
+.home-card {
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(184, 167, 224, 0.35);
+  border-radius: 1rem;
+  box-shadow:
+    0 8px 32px rgba(184, 167, 224, 0.12),
+    0 1px 0 rgba(255, 255, 255, 0.8) inset;
+  backdrop-filter: blur(14px);
+}
+
+.home-btn-primary {
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  background: linear-gradient(135deg, #b8a7e0 0%, #a0c4ff 55%, #c4b5fd 100%);
+  color: #fff;
+  box-shadow: 0 8px 24px rgba(184, 167, 224, 0.45);
+}
+.home-btn-primary:hover {
+  filter: brightness(1.05);
+}
+
+.home-btn-outline {
+  border: 1px solid rgba(184, 167, 224, 0.55);
+  background: rgba(255, 255, 255, 0.55);
+  color: #4b4469;
+  backdrop-filter: blur(8px);
+}
+.home-btn-outline:hover {
+  background: rgba(255, 255, 255, 0.85);
+}

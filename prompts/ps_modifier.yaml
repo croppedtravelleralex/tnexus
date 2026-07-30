@@ -1,0 +1,3 @@
+template: |
+  {base_prompt}
+  [style modifiers: detail={detail_level}, lighting={lighting_drama}]

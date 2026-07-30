@@ -1,0 +1,16 @@
+[package]
+name = "tnexus-auth"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+argon2 = { workspace = true }
+chrono = { workspace = true }
+jsonwebtoken = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true }
+sqlx = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+uuid = { workspace = true }

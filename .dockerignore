@@ -1,0 +1,6 @@
+target
+web/node_modules
+web/.next
+.env
+*.db
+.git
