@@ -8,6 +8,7 @@ services:
       - /root/gptimage-gateway-rs/secrets/gateway.env
     environment:
       ACCOUNTS_DB: /gptimage/data/accounts.db
+      PIN_ACCOUNT_FILE: /secrets/pin_account.json
       SCHEDULING_STATE_FILE: /data/pool/scheduling_state.json
       GATEWAY_LISTEN: 0.0.0.0:8014
       IMAGE_ENABLED: "1"
@@ -15,4 +16,5 @@ services:
     volumes:
       - /opt/tnexus/data/pool:/data/pool:rw
       - /root/gptimage/data:/gptimage/data:rw
+      - /root/gptimage-gateway-rs/secrets/pin_account.json:/secrets/pin_account.json:ro
     restart: unless-stopped
