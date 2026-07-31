@@ -24,6 +24,10 @@ def ensure_gptimage() -> None:
     if str(GPTIMAGE_ROOT) not in sys.path:
         sys.path.insert(0, str(GPTIMAGE_ROOT))
     os.chdir(GPTIMAGE_ROOT)
+    # TNexus .env may set postgres DATABASE_URL; account refresh must use gptimage sqlite.
+    gptimage_db = GPTIMAGE_ROOT / "data" / "accounts.db"
+    os.environ["STORAGE_BACKEND"] = "sqlite"
+    os.environ["DATABASE_URL"] = f"sqlite:///{gptimage_db}"
     cfg = GPTIMAGE_ROOT / "config.json"
     if not os.environ.get("CHATGPT2API_AUTH_KEY") and cfg.is_file():
         import json
