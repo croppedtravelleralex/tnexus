@@ -17,9 +17,9 @@ import { formatDuration } from "@/lib/format-duration";
 const PAGE_SIZE = 24;
 
 function thumbSrc(item: ManagedImage) {
-  if (item.thumb_api_url) return item.thumb_api_url;
   const inline = b64Fallback(item);
   if (inline) return inline;
+  if (item.thumb_api_url) return item.thumb_api_url;
   if (item.thumbnail_url) return item.thumbnail_url;
   if (item.url) return item.url;
   return undefined;
