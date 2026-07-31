@@ -9,10 +9,12 @@ services:
     environment:
       ACCOUNTS_FILE: /data/pool/accounts_pool.json
       SCHEDULING_STATE_FILE: /data/pool/scheduling_state.json
+      PIN_ACCOUNT_FILE: /secrets/pin_account.json
       GATEWAY_LISTEN: 0.0.0.0:8014
       IMAGE_ENABLED: "1"
       DATA_PLANE: upstream
     volumes:
       - /opt/tnexus/data/pool:/data/pool:ro
+      - /root/gptimage-gateway-rs/secrets/pin_account.json:/secrets/pin_account.json:ro
       - /root/gptimage-gateway-rs/data:/data:rw
     restart: unless-stopped
