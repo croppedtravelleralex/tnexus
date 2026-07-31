@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight, ImageIcon, LoaderCircle, RefreshCw, Search, Tag, Trash2 } from "lucide-react";
 import { DateRangeFilter } from "@/components/date-range-filter";
 import { ImageLightbox } from "@/components/image-lightbox";
+import { LazyImageThumb } from "@/components/lazy-image-thumb";
 import { ElevatedCard, PageShell } from "@/components/admin/page-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -13,7 +14,24 @@ import { fetchWithCache, invalidateCache } from "@/lib/api-cache";
 import { formatImageDateTime } from "@/lib/account-display";
 import { formatDuration } from "@/lib/format-duration";
 
-const PAGE_SIZE = 12;
+const PAGE_SIZE = 24;
+
+function thumbSrc(item: ManagedImage) {
+  if (item.thumb_api_url) return item.thumb_api_url;
+  if (item.thumbnail_url) return item.thumbnail_url;
+  return undefined;
+}
+
+function fullSrc(item: ManagedImage) {
+  return item.url || item.thumbnail_url || "";
+}
+
+function b64Fallback(item: ManagedImage) {
+  const raw = item.preview_b64 || item.b64_json;
+  if (!raw) return undefined;
+  if (raw.startsWith("data:")) return raw;
+  return `data:image/png;base64,${raw}`;
+}
 
 function imageKey(item: ManagedImage) {
   return item.rel;
@@ -149,7 +167,7 @@ export default function ImageManagerPage() {
 
   const lightboxImages = filtered.map((item) => ({
     id: imageKey(item),
-    src: item.url,
+    src: fullSrc(item) || b64Fallback(item) || "",
     dimensions: item.width && item.height ? `${item.width}×${item.height}` : undefined,
   }));
 
@@ -276,10 +294,13 @@ export default function ImageManagerPage() {
       ) : filtered.length === 0 ? (
         <div className="py-16 text-center text-sm text-[var(--neo-muted)]">没有找到图片</div>
       ) : (
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8">
           {currentRows.map((img) => {
             const key = imageKey(img);
             const checked = selectedSet.has(key);
+            const thumb = thumbSrc(img);
+            const fallback = b64Fallback(img);
+            const hasPreview = Boolean(thumb || fallback || img.url);
             return (
               <ElevatedCard key={key} className="overflow-hidden">
                 <div className="relative aspect-square bg-[var(--neo-surface-muted)]">
@@ -287,48 +308,45 @@ export default function ImageManagerPage() {
                     type="checkbox"
                     checked={checked}
                     onChange={(e) => togglePaths([key], e.target.checked)}
-                    className="absolute left-2 top-2 z-10 h-4 w-4 rounded"
+                    className="absolute left-1.5 top-1.5 z-10 h-3.5 w-3.5 rounded"
                   />
-                  {img.thumbnail_url || img.url ? (
-                    <button
-                      type="button"
-                      className="h-full w-full"
+                  {hasPreview ? (
+                    <LazyImageThumb
+                      src={thumb}
+                      fallbackSrc={fallback || img.url}
+                      className="h-full w-full object-cover"
                       onClick={() => {
                         const idx = filtered.findIndex((i) => imageKey(i) === key);
                         setLightboxIndex(Math.max(0, idx));
                         setLightboxOpen(true);
                       }}
-                    >
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={img.thumbnail_url || img.url} alt="" className="h-full w-full object-cover" />
-                    </button>
+                    />
                   ) : (
                     <div className="flex h-full items-center justify-center">
-                      <ImageIcon className="size-10 text-[var(--neo-muted)]" />
+                      <ImageIcon className="size-8 text-[var(--neo-muted)]" />
                     </div>
                   )}
                 </div>
-                <div className="space-y-1 p-3">
-                  <p className="truncate text-sm font-medium text-[var(--neo-ink)]">{img.prompt || img.name}</p>
-                  <p className="text-xs text-[var(--neo-muted)]">
+                <div className="space-y-0.5 p-2">
+                  <p className="truncate text-[11px] font-medium text-[var(--neo-ink)]">{img.prompt || img.name}</p>
+                  <p className="truncate text-[10px] text-[var(--neo-muted)]">
                     {img.date}
                     {formatImageDateTime(img.created_at) ? ` · ${formatImageDateTime(img.created_at)}` : ""}
                     {img.duration_ms != null && img.duration_ms > 0 ? (
-                      <span className="text-stone-400"> · 耗时 {formatDuration(img.duration_ms)}</span>
+                      <span className="text-stone-400"> · {formatDuration(img.duration_ms)}</span>
                     ) : null}
-                    {img.width && img.height ? ` · ${img.width}×${img.height}` : ""}
                   </p>
                   {(img.tags ?? []).length > 0 ? (
-                    <div className="flex flex-wrap gap-1">
-                      {(img.tags ?? []).map((tag) => (
-                        <span key={tag} className="rounded-md bg-[var(--neo-surface-muted)] px-1.5 py-0.5 text-[10px] text-[var(--neo-muted)]">
+                    <div className="flex flex-wrap gap-0.5">
+                      {(img.tags ?? []).slice(0, 3).map((tag) => (
+                        <span key={tag} className="rounded bg-[var(--neo-surface-muted)] px-1 py-0.5 text-[9px] text-[var(--neo-muted)]">
                           {tag}
                         </span>
                       ))}
                     </div>
                   ) : null}
-                  <button type="button" className="text-[11px] text-[var(--neo-primary-deep)]" onClick={() => void onEditTags(img)}>
-                    编辑标签
+                  <button type="button" className="text-[10px] text-[var(--neo-primary-deep)]" onClick={() => void onEditTags(img)}>
+                    标签
                   </button>
                 </div>
               </ElevatedCard>

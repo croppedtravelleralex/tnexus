@@ -115,7 +115,51 @@ export type AccountActivityDailyResponse = {
     images_api?: number;
     images_chat?: number;
     dialogues?: number;
+    dialogues_real?: number;
+    dialogues_nurture?: number;
   }>;
+};
+
+export type AccountRefreshAllStatus = {
+  job_id?: string;
+  state: string;
+  running: boolean;
+  started_at?: string | null;
+  finished_at?: string | null;
+  last_update_at?: string | null;
+  total: number;
+  processed: number;
+  refreshed: number;
+  available: number;
+  became_available: number;
+  quota_total?: number;
+  unlimited_quota?: number;
+  unknown_quota?: number;
+  failed: number;
+  removed?: number;
+  skipped: number;
+  pause_reason?: string;
+  current_token?: string;
+  recent?: Array<{
+    index?: number;
+    token?: string;
+    status?: string;
+    quota?: number;
+    quota_unknown?: boolean;
+    available?: boolean;
+    error?: string;
+  }>;
+  options?: Record<string, unknown>;
+  resource?: Record<string, unknown>;
+};
+
+export type IpNurturePreset = { id: string; label: string };
+export type IpNurtureBinding = {
+  binding_key: string;
+  preset_id: string;
+  preset_label?: string;
+  weights?: number[][];
+  updated_at?: string;
 };
 
 export type User = {
@@ -158,6 +202,8 @@ export type JobResult = {
   preview_url?: string | null;
   download_url?: string | null;
   thumb_url?: string | null;
+  preview_b64?: string | null;
+  b64_json?: string | null;
   agent_prompt?: string | null;
   revised_prompt?: string | null;
 };
@@ -389,6 +435,64 @@ export const accountsApi = {
       method: "POST",
       body: JSON.stringify({ session_id: sessionId, callback }),
     }),
+  deleteMany: (accessTokens: string[]) =>
+    api<{ removed: number; stats?: AccountListStats; items?: Account[] }>("/api/accounts?include_items=false", {
+      method: "DELETE",
+      body: JSON.stringify({ tokens: accessTokens }),
+    }),
+  update: (body: {
+    access_token: string;
+    type?: string;
+    status?: string;
+    quota?: number;
+    proxy?: string;
+  }) =>
+    api<{ item: Account; stats?: AccountListStats }>("/api/accounts/update?include_items=false", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  softBand: (accessToken: string, percent: number | null) =>
+    api<{ item: Account; stats?: AccountListStats }>("/api/accounts/soft-band?include_items=false", {
+      method: "POST",
+      body: JSON.stringify({
+        access_token: accessToken,
+        percent: percent ?? undefined,
+        clear: percent == null,
+      }),
+    }),
+  primeQuotaWindow: (body: {
+    access_tokens?: string[];
+    preferred_account_email?: string;
+    mode?: string;
+    force?: boolean;
+  }) =>
+    api<Record<string, unknown>>("/api/accounts/quota-window/prime", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  primeQuotaWindowStatus: () =>
+    api<Record<string, unknown>>("/api/accounts/quota-window/prime/status"),
+  refreshAllStart: (options: Record<string, unknown> = {}) =>
+    api<AccountRefreshAllStatus>("/api/accounts/refresh-all/start", {
+      method: "POST",
+      body: JSON.stringify(options),
+    }),
+  refreshAllStatus: () => api<AccountRefreshAllStatus>("/api/accounts/refresh-all/status"),
+  refreshAllStop: () =>
+    api<AccountRefreshAllStatus>("/api/accounts/refresh-all/stop", { method: "POST", body: "{}" }),
+  recoverOutlook: (accessToken: string) =>
+    api<{ progress_id: string }>("/api/accounts/recover-outlook", {
+      method: "POST",
+      body: JSON.stringify({ access_token: accessToken }),
+    }),
+  recoverOutlookProgress: (progressId: string) =>
+    api<Record<string, unknown>>(`/api/accounts/recover-outlook/progress/${encodeURIComponent(progressId)}`),
+  outlookRecoveryStatus: () => api<Record<string, unknown>>("/api/accounts/outlook-recovery/status"),
+  outlookRecoveryEnable: (enabled: boolean) =>
+    api<Record<string, unknown>>("/api/accounts/outlook-recovery/enable", {
+      method: "POST",
+      body: JSON.stringify({ enabled }),
+    }),
 };
 
 export type BindingSlotsResponse = {
@@ -424,6 +528,9 @@ export type ManagedImage = {
   size: number;
   url: string;
   thumbnail_url?: string;
+  thumb_api_url?: string;
+  b64_json?: string | null;
+  preview_b64?: string | null;
   created_at: string;
   duration_ms?: number;
   width?: number;
@@ -508,6 +615,23 @@ export const opsApi = {
     api<Record<string, unknown>>("/api/ops/nurture/enable", {
       method: "POST",
       body: JSON.stringify({ enabled }),
+    }),
+  nurtureProcessOne: (body: { prompt?: string; access_token?: string; email?: string; source?: string }) =>
+    api<{ ok: boolean; chars_out?: number; latency_ms?: number }>("/api/ops/nurture/process-one", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  ipNurturePresets: () => api<{ presets: IpNurturePreset[] }>("/api/ops/ip-nurture/presets"),
+  ipNurtureBindings: () =>
+    api<{ bindings: Record<string, IpNurtureBinding> }>("/api/ops/ip-nurture/bindings"),
+  saveIpNurtureBinding: (body: {
+    binding_key: string;
+    preset_id: string;
+    custom_matrix?: number[][];
+  }) =>
+    api<IpNurtureBinding>("/api/ops/ip-nurture/bindings", {
+      method: "POST",
+      body: JSON.stringify(body),
     }),
   pipelineSnapshot: () => api<Record<string, unknown>>("/api/ops/image-pipeline/snapshot"),
   riskMetrics: () => api<Record<string, unknown>>("/api/ops/risk/metrics"),

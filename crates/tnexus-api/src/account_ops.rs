@@ -69,7 +69,6 @@ fn ops_token(state: &AppState) -> Result<String, String> {
         .config
         .account_ops_token
         .as_deref()
-        .or(state.config.gptimage_admin_token.as_deref())
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
@@ -109,6 +108,84 @@ async fn post_json(state: &AppState, path: &str, body: Value) -> Result<Value, S
         return Ok(Value::Null);
     }
     serde_json::from_str(&text).map_err(|e| format!("account_ops JSON 解析失败: {e}"))
+}
+
+async fn get_json(state: &AppState, path: &str) -> Result<Value, String> {
+    let base = state.config.account_ops_base.trim_end_matches('/');
+    let token = ops_token(state)?;
+    let resp = state
+        .http
+        .get(format!("{base}{path}"))
+        .header("X-Account-Ops-Token", token)
+        .send()
+        .await
+        .map_err(|e| format!("account_ops 请求失败: {e}"))?;
+    let status = resp.status();
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| format!("account_ops 响应读取失败: {e}"))?;
+    if !status.is_success() {
+        let message = serde_json::from_str::<Value>(&text)
+            .ok()
+            .and_then(|v| {
+                v.get("detail")
+                    .and_then(|d| d.get("error"))
+                    .or_else(|| v.get("error"))
+                    .and_then(|e| e.as_str())
+                    .map(str::to_string)
+            })
+            .unwrap_or(text);
+        return Err(message);
+    }
+    if text.trim().is_empty() {
+        return Ok(Value::Null);
+    }
+    serde_json::from_str(&text).map_err(|e| format!("account_ops JSON 解析失败: {e}"))
+}
+
+pub fn ops_available(state: &AppState) -> bool {
+    state.config.account_ops_token.is_some()
+}
+
+pub async fn nurture_status(state: &AppState) -> Result<Value, String> {
+    get_json(state, "/v1/nurture/status").await
+}
+
+pub async fn nurture_enable(state: &AppState, enabled: bool) -> Result<Value, String> {
+    post_json(state, "/v1/nurture/enable", json!({ "enabled": enabled })).await
+}
+
+pub async fn nurture_enqueue(state: &AppState, body: Value) -> Result<Value, String> {
+    post_json(state, "/v1/nurture/enqueue", body).await
+}
+
+pub async fn nurture_process_one(state: &AppState, body: Value) -> Result<Value, String> {
+    post_json(state, "/v1/nurture/process-one", body).await
+}
+
+pub async fn outlook_auto_recovery_status(state: &AppState) -> Result<Value, String> {
+    get_json(state, "/v1/outlook/auto-recovery/status").await
+}
+
+pub async fn outlook_auto_recovery_settings(state: &AppState, body: Value) -> Result<Value, String> {
+    post_json(state, "/v1/outlook/auto-recovery/settings", body).await
+}
+
+pub async fn outlook_recover_one(state: &AppState, body: Value) -> Result<Value, String> {
+    post_json(state, "/v1/outlook/recover-one", body).await
+}
+
+pub async fn outlook_recover_progress(state: &AppState, progress_id: &str) -> Result<Value, String> {
+    get_json(state, &format!("/v1/outlook/recover/progress/{progress_id}")).await
+}
+
+pub async fn quota_prime_enqueue(state: &AppState, body: Value) -> Result<Value, String> {
+    post_json(state, "/v1/quota-window/prime", body).await
+}
+
+pub async fn quota_prime_status(state: &AppState) -> Result<Value, String> {
+    get_json(state, "/v1/quota-window/prime/status").await
 }
 
 pub async fn oauth_start(state: &AppState, email_hint: &str) -> Result<Value, String> {

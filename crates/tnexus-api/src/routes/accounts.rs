@@ -1,7 +1,6 @@
 use crate::account_ops::{self, new_progress_id};
-use crate::accounts_store::activity_daily;
-use crate::gptimage_proxy::{admin_token, proxy_get, proxy_post};
 use crate::middleware::AdminUser;
+use crate::routes::accounts_extended;
 use crate::state::AppState;
 use axum::{
     body::Body,
@@ -160,6 +159,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/re-login/progress/{progress_id}", get(get_relogin_progress))
         .route("/oauth/start", post(oauth_start))
         .route("/oauth/finish", post(oauth_finish))
+        .merge(accounts_extended::routes())
 }
 
 async fn list_accounts(
@@ -275,10 +275,12 @@ async fn export_accounts(
 }
 
 async fn get_activity_daily(
+    State(st): State<Arc<AppState>>,
     _admin: AdminUser,
     Query(q): Query<ActivityQuery>,
-) -> Json<Value> {
-    Json(activity_daily(q.days))
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let data = accounts_extended::activity_daily_local(&st, q.days).await;
+    Ok(Json(data))
 }
 
 async fn get_usage_recent(
@@ -389,16 +391,6 @@ async fn get_binding_slots(
     _admin: AdminUser,
     Query(q): Query<BindingSlotsQuery>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    if admin_token(&st).is_some() {
-        let query = format!(
-            "week_offset={}&timezone={}",
-            q.week_offset,
-            urlencoding::encode(&q.timezone)
-        );
-        if let Ok(data) = proxy_get(&st, "/api/accounts/usage/binding-slots", &query).await {
-            return Ok(Json(data));
-        }
-    }
     let map = st.accounts.email_to_binding_map().await;
     let data = crate::usage_metrics::get_binding_usage_slots(&map, q.week_offset, &q.timezone)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -442,24 +434,6 @@ async fn get_refresh_progress(
     if let Some(progress) = st.refresh_progress.get(&progress_id).await {
         return Ok(Json(progress));
     }
-    if admin_token(&st).is_some() {
-        if let Ok(data) = proxy_get(
-            &st,
-            &format!("/api/accounts/refresh/progress/{progress_id}"),
-            "",
-        )
-        .await
-        {
-            if data.get("done").and_then(|v| v.as_bool()).unwrap_or(false) {
-                if let Some(result) = data.get("result") {
-                    if let Some(items) = result.get("items").and_then(|v| v.as_array()) {
-                        let _ = st.accounts.merge_remote_items(items).await;
-                    }
-                }
-            }
-            return Ok(Json(data));
-        }
-    }
     Err((StatusCode::NOT_FOUND, "progress not found".into()))
 }
 
@@ -495,24 +469,6 @@ async fn get_relogin_progress(
     if let Some(progress) = st.relogin_progress.get(&progress_id).await {
         return Ok(Json(progress));
     }
-    if admin_token(&st).is_some() {
-        if let Ok(data) = proxy_get(
-            &st,
-            &format!("/api/accounts/re-login/progress/{progress_id}"),
-            "",
-        )
-        .await
-        {
-            if data.get("done").and_then(|v| v.as_bool()).unwrap_or(false) {
-                if let Some(result) = data.get("result") {
-                    if let Some(items) = result.get("items").and_then(|v| v.as_array()) {
-                        let _ = st.accounts.merge_remote_items(items).await;
-                    }
-                }
-            }
-            return Ok(Json(data));
-        }
-    }
     Err((StatusCode::NOT_FOUND, "progress not found".into()))
 }
 
@@ -521,21 +477,10 @@ async fn oauth_start(
     _admin: AdminUser,
     Json(body): Json<OAuthStartBody>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    match account_ops::oauth_start(&st, &body.email_hint).await {
-        Ok(data) => return Ok(Json(data)),
-        Err(native_err) => {
-            if admin_token(&st).is_some() {
-                let data = proxy_post(
-                    &st,
-                    "/api/accounts/oauth/start",
-                    json!({ "email_hint": body.email_hint }),
-                )
-                .await?;
-                return Ok(Json(data));
-            }
-            return Err((StatusCode::SERVICE_UNAVAILABLE, native_err));
-        }
-    }
+    account_ops::oauth_start(&st, &body.email_hint)
+        .await
+        .map(Json)
+        .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, e))
 }
 
 async fn oauth_finish(
@@ -543,40 +488,9 @@ async fn oauth_finish(
     _admin: AdminUser,
     Json(body): Json<OAuthFinishBody>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    let native = account_ops::oauth_finish(&st, &body.session_id, &body.callback).await;
-    let tokens = match native {
-        Ok(data) => data,
-        Err(native_err) => {
-            if admin_token(&st).is_some() {
-                let data = proxy_post(
-                    &st,
-                    "/api/accounts/oauth/finish",
-                    json!({
-                        "session_id": body.session_id,
-                        "callback": body.callback,
-                    }),
-                )
-                .await?;
-                if let Some(items) = data.get("items").and_then(|v| v.as_array()) {
-                    let summary = st.accounts.merge_remote_items(items).await.map_err(|e| {
-                        (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
-                    })?;
-                    let list = st.accounts.list(0, usize::MAX).await;
-                    let stats = list.get("stats").cloned().unwrap_or(json!({}));
-                    return Ok(Json(json!({
-                        "added": summary.added,
-                        "skipped": summary.skipped,
-                        "updated": summary.updated,
-                        "refreshed": data.get("refreshed").cloned().unwrap_or(json!(0)),
-                        "errors": data.get("errors").cloned().unwrap_or(json!([])),
-                        "stats": stats,
-                    })));
-                }
-                return Ok(Json(data));
-            }
-            return Err((StatusCode::BAD_REQUEST, native_err));
-        }
-    };
+    let tokens = account_ops::oauth_finish(&st, &body.session_id, &body.callback)
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
     let payload = json!({
         "access_token": tokens.get("access_token").and_then(|v| v.as_str()).unwrap_or(""),
         "refresh_token": tokens.get("refresh_token"),

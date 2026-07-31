@@ -65,6 +65,11 @@ pub struct JobResultView {
     pub preview_url: Option<String>,
     pub download_url: Option<String>,
     pub thumb_url: Option<String>,
+    /// Raw base64 PNG (no data: prefix) when inline preview is available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview_b64: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub b64_json: Option<String>,
     pub agent_prompt: Option<String>,
     pub revised_prompt: Option<String>,
     pub keywords: Option<Vec<String>>,

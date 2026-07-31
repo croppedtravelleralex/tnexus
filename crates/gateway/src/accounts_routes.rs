@@ -145,12 +145,14 @@ pub async fn scheduling_bulk(
     State(st): State<Arc<AppState>>,
     Json(body): Json<SchedulingBulkBody>,
 ) -> Json<Value> {
-    let _guard = st.accounts.lock().await;
-    let updated = body.emails.len();
+    let updated = st
+        .scheduling_gate
+        .set_bulk(&body.emails, body.enabled);
     Json(json!({
         "ok": true,
         "updated": updated,
         "enabled": body.enabled,
+        "source": "gateway-local",
     }))
 }
 

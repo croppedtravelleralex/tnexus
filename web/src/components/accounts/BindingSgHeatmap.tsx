@@ -19,9 +19,13 @@ export const SLOT_LABELS = [
   "22-24",
 ] as const;
 
+const WEIGHT_CYCLE = [0, 0.25, 0.5, 0.75, 1] as const;
+
 type Props = {
   weights: number[][];
   label?: string;
+  editable?: boolean;
+  onChange?: (weights: number[][]) => void;
   className?: string;
 };
 
@@ -45,6 +49,13 @@ function normalizeWeights(weights: number[][]) {
   );
 }
 
+function nextWeight(current: number) {
+  const w = clampWeight(current);
+  const idx = WEIGHT_CYCLE.findIndex((v) => Math.abs(v - w) < 0.001);
+  const next = idx < 0 ? 0 : (idx + 1) % WEIGHT_CYCLE.length;
+  return WEIGHT_CYCLE[next];
+}
+
 function matrixToWeights(matrix: number[][] | undefined, max: number) {
   if (!matrix?.length) return normalizeWeights([]);
   const peak = Math.max(1, max);
@@ -61,8 +72,15 @@ export function bindingMatrixPeak(matrix: number[][] | undefined) {
   return peak;
 }
 
-export function BindingSgHeatmap({ weights, label, className }: Props) {
+export function BindingSgHeatmap({ weights, label, editable = false, onChange, className }: Props) {
   const matrix = useMemo(() => normalizeWeights(weights), [weights]);
+
+  const handleCellClick = (day: number, slot: number) => {
+    if (!editable || !onChange) return;
+    const next = matrix.map((row) => [...row]);
+    next[day][slot] = nextWeight(next[day][slot]);
+    onChange(next);
+  };
 
   return (
     <div className={cn("inline-flex flex-col gap-0.5", className)}>
@@ -85,18 +103,28 @@ export function BindingSgHeatmap({ weights, label, className }: Props) {
           </div>
           <div className="grid grid-cols-7 gap-px">
             {matrix.map((row, day) =>
-              row.map((weight, slot) => (
-                <span
-                  key={`${day}-${slot}`}
-                  title={`${DAY_LABELS[day]} ${SLOT_LABELS[slot]} · ${clampWeight(weight).toFixed(2)}`}
-                  className={cn("size-2.5 rounded-[2px]", weightColor(weight))}
-                />
-              )),
+              row.map((weight, slot) => {
+                const tip = `${DAY_LABELS[day]} ${SLOT_LABELS[slot]} · 权重 ${clampWeight(weight).toFixed(2)} · Asia/Singapore`;
+                return (
+                  <button
+                    key={`${day}-${slot}`}
+                    type="button"
+                    title={tip}
+                    disabled={!editable}
+                    onClick={() => handleCellClick(day, slot)}
+                    className={cn(
+                      "size-2.5 rounded-[2px] transition",
+                      weightColor(weight),
+                      editable ? "cursor-pointer hover:ring-1 hover:ring-stone-300" : "cursor-default",
+                    )}
+                  />
+                );
+              }),
             )}
           </div>
         </div>
       </div>
-      <div className="text-[9px] text-stone-400">时区 Asia/Shanghai</div>
+      <div className="text-[9px] text-stone-400">时区 Asia/Singapore</div>
     </div>
   );
 }
@@ -104,3 +132,5 @@ export function BindingSgHeatmap({ weights, label, className }: Props) {
 export function activityMatrixToWeights(matrix: number[][] | undefined) {
   return matrixToWeights(matrix, bindingMatrixPeak(matrix));
 }
+
+export { DAY_LABELS, normalizeWeights as normalizeBindingWeights };

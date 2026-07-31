@@ -6,20 +6,26 @@ import {
   Copy,
   LoaderCircle,
   LogIn,
+  MessageSquare,
   Pause,
+  Pencil,
   Play,
   RefreshCw,
+  Sun,
+  Trash2,
   TriangleAlert,
 } from "lucide-react";
 import { useMemo } from "react";
 import { AccountUsageHeatstrip } from "@/components/accounts/account-usage-heatstrip";
 import { BindingActivityHeatmaps } from "@/components/accounts/BindingActivityHeatmaps";
 import { BindingActivityHeatmapToolbar, type HeatmapTimezone } from "@/components/accounts/BindingActivityHeatmapToolbar";
+import { normalizeBindingWeights } from "@/components/accounts/BindingSgHeatmap";
 import { CfStatusLight, cfDaysForAccount } from "@/components/accounts/CfStatusLight";
 import { EgressDriftLights } from "@/components/accounts/EgressDriftLights";
 import { ScheduleCountdownIcons } from "@/components/accounts/ScheduleCountdownIcons";
 import { Badge } from "@/components/ui/badge";
-import type { Account } from "@/lib/api";
+import { Button } from "@/components/ui/button";
+import type { Account, IpNurtureBinding, IpNurturePreset } from "@/lib/api";
 import {
   aggregateCfDays,
   aggregateEgressDays,
@@ -42,6 +48,7 @@ import {
 import { cn } from "@/lib/utils";
 
 export type AccountViewMode = "flat" | "grouped";
+export type SortKey = { key: string; dir: "asc" | "desc" };
 
 const TABLE_COLUMN_COUNT = 13;
 
@@ -58,6 +65,20 @@ function isManualSchedulingEnabled(account: Account) {
   return receive === "verified_ready" || receive === "verified" || receive === "local_verified";
 }
 
+function weightsForBinding(
+  bindingKey: string,
+  presets: IpNurturePreset[],
+  bindings: Record<string, IpNurtureBinding>,
+) {
+  const binding = bindings[bindingKey];
+  if (binding?.weights?.length) {
+    return normalizeBindingWeights(binding.weights);
+  }
+  const preset = presets.find((item) => item.id === binding?.preset_id) || presets[0];
+  const presetWeights = (preset as IpNurturePreset & { weights?: number[][] })?.weights;
+  return normalizeBindingWeights(presetWeights || []);
+}
+
 type Props = {
   rows: Account[];
   allRows: Account[];
@@ -66,6 +87,8 @@ type Props = {
   onViewModeChange: (mode: AccountViewMode) => void;
   selected: Set<string>;
   onSelectedChange: (next: Set<string>) => void;
+  sortKeys: SortKey[];
+  onSort: (key: string, shiftKey: boolean) => void;
   usageDates: string[];
   usageByEmail: Record<string, Array<{ date: string; images: number; dialogues: number }>>;
   bindingUsageSlots: Record<string, Record<string, number[][]>>;
@@ -82,9 +105,18 @@ type Props = {
   bulkScheduling: boolean;
   refreshingTokens: Set<string>;
   isRefreshing: boolean;
+  nurturePresets: IpNurturePreset[];
+  nurtureBindings: Record<string, IpNurtureBinding>;
+  bindingSaveBusy?: Set<string>;
+  onNurturePresetChange: (bindingKey: string, presetId: string) => void;
+  onEditWeights: (bindingKey: string, presetId: string, weights: number[][]) => void;
   onToggleScheduling: (account: Account) => void;
   onRefreshAccount: (token: string) => void;
   onReloginAccount: (token: string) => void;
+  onPrimeAccount: (account: Account) => void;
+  onDialogueAccount: (account: Account) => void;
+  onEditAccount: (account: Account) => void;
+  onDeleteAccount: (token: string) => void;
 };
 
 export function AccountsDataTable({
@@ -95,6 +127,8 @@ export function AccountsDataTable({
   onViewModeChange,
   selected,
   onSelectedChange,
+  sortKeys,
+  onSort,
   usageDates,
   usageByEmail,
   bindingUsageSlots,
@@ -111,11 +145,27 @@ export function AccountsDataTable({
   bulkScheduling,
   refreshingTokens,
   isRefreshing,
+  nurturePresets,
+  nurtureBindings,
+  bindingSaveBusy,
+  onNurturePresetChange,
+  onEditWeights,
   onToggleScheduling,
   onRefreshAccount,
   onReloginAccount,
+  onPrimeAccount,
+  onDialogueAccount,
+  onEditAccount,
+  onDeleteAccount,
 }: Props) {
   const allPageSelected = rows.length > 0 && rows.every((r) => selected.has(r.access_token));
+
+  const sortIndicator = (key: string) => {
+    const idx = sortKeys.findIndex((k) => k.key === key);
+    if (idx < 0) return "";
+    const arrow = sortKeys[idx].dir === "asc" ? "↑" : "↓";
+    return sortKeys.length > 1 ? `${arrow}${idx + 1}` : arrow;
+  };
 
   const accountGroups = useMemo(() => {
     const map = new Map<string, { key: string; label: string; accounts: Account[] }>();
@@ -178,6 +228,7 @@ export function AccountsDataTable({
     const rowRefreshing = isRefreshing || refreshingTokens.has(account.access_token);
     const proxy = proxyDisplay(account);
     const restore = formatRestoreAtDetail(account.restore_at, account);
+    const primeState = String(account.quota_window_prime_state || "").toLowerCase();
 
     return (
       <tr key={account.access_token} className="border-t border-[var(--neo-border)] neo-row-hover text-sm text-stone-600">
@@ -296,6 +347,42 @@ export function AccountsDataTable({
             <ScheduleCountdownIcons account={account} showLazy={false} />
             <button
               type="button"
+              className={cn(
+                "rounded-lg p-1.5 transition",
+                primeState === "done"
+                  ? "text-emerald-600"
+                  : ["pending", "running"].includes(primeState)
+                    ? "text-orange-400"
+                    : "hover:bg-orange-50 hover:text-orange-700",
+              )}
+              title={
+                account.quota_window_prime_last_error
+                  ? `预热失败：${account.quota_window_prime_last_error}`
+                  : "打 1 张 256 最小图，钉住上游额度窗口"
+              }
+              disabled={["pending", "running", "done"].includes(primeState)}
+              onClick={() => onPrimeAccount(account)}
+            >
+              <Sun className="size-3.5" />
+            </button>
+            <button
+              type="button"
+              className="rounded-lg p-1.5 transition hover:bg-sky-50 hover:text-sky-700"
+              title="立即对该账号发起一条真实文本对话"
+              onClick={() => onDialogueAccount(account)}
+            >
+              <MessageSquare className="size-3.5" />
+            </button>
+            <button
+              type="button"
+              className="rounded-lg p-1.5 transition hover:bg-stone-100 hover:text-stone-700"
+              title="编辑账号"
+              onClick={() => onEditAccount(account)}
+            >
+              <Pencil className="size-3.5" />
+            </button>
+            <button
+              type="button"
               className="rounded-lg p-1.5 transition hover:bg-sky-50 hover:text-sky-700"
               title="刷新该账号额度"
               disabled={rowRefreshing}
@@ -313,6 +400,14 @@ export function AccountsDataTable({
                 <LogIn className="size-3.5" />
               </button>
             ) : null}
+            <button
+              type="button"
+              className="rounded-lg p-1.5 transition hover:bg-rose-50 hover:text-rose-500"
+              title="删除账号"
+              onClick={() => onDeleteAccount(account.access_token)}
+            >
+              <Trash2 className="size-3.5" />
+            </button>
           </div>
         </td>
       </tr>
@@ -361,22 +456,66 @@ export function AccountsDataTable({
               <th className="w-10 px-2 py-2">
                 <input type="checkbox" checked={allPageSelected} onChange={toggleSelectAll} aria-label="全选本页" />
               </th>
-              <th className="w-56 px-2 py-2">Token / 邮箱</th>
-              <th className="w-24 px-2 py-2">类型</th>
-              <th className="w-20 px-2 py-2">状态</th>
-              <th className="w-20 px-2 py-2">调度</th>
-              <th className="w-28 px-2 py-2">记录</th>
-              <th className="w-40 px-2 py-2">代理 / 出口</th>
-              <th className="w-28 px-2 py-2">创建时间 ↓</th>
-              <th className="w-24 px-2 py-2">额度</th>
-              <th className="w-36 px-2 py-2">窗口/恢复</th>
-              <th className="w-14 px-2 py-2">在途</th>
-              <th className="w-20 px-2 py-2">操作</th>
+              <th className="w-56 px-2 py-2">
+                <button type="button" className="hover:text-stone-700" onClick={(e) => onSort("email", e.shiftKey)}>
+                  Token / 邮箱 {sortIndicator("email")}
+                </button>
+              </th>
+              <th className="w-24 px-2 py-2">
+                <button type="button" className="hover:text-stone-700" onClick={(e) => onSort("type", e.shiftKey)}>
+                  类型 {sortIndicator("type")}
+                </button>
+              </th>
+              <th className="w-20 px-2 py-2">
+                <button type="button" className="hover:text-stone-700" onClick={(e) => onSort("status", e.shiftKey)}>
+                  状态 {sortIndicator("status")}
+                </button>
+              </th>
+              <th className="w-20 px-2 py-2">
+                <button type="button" className="hover:text-stone-700" onClick={(e) => onSort("scheduling", e.shiftKey)}>
+                  调度 {sortIndicator("scheduling")}
+                </button>
+              </th>
+              <th className="w-28 px-2 py-2">
+                <button type="button" className="hover:text-stone-700" onClick={(e) => onSort("record", e.shiftKey)}>
+                  记录 {sortIndicator("record")}
+                </button>
+              </th>
+              <th className="w-40 px-2 py-2">
+                <button type="button" className="hover:text-stone-700" onClick={(e) => onSort("proxy", e.shiftKey)}>
+                  代理 / 出口 {sortIndicator("proxy")}
+                </button>
+              </th>
+              <th className="w-28 px-2 py-2">
+                <button type="button" className="hover:text-stone-700" onClick={(e) => onSort("created_at", e.shiftKey)}>
+                  创建时间 {sortIndicator("created_at")}
+                </button>
+              </th>
+              <th className="w-24 px-2 py-2">
+                <button type="button" className="hover:text-stone-700" onClick={(e) => onSort("quota", e.shiftKey)}>
+                  额度 {sortIndicator("quota")}
+                </button>
+              </th>
+              <th className="w-36 px-2 py-2">
+                <button type="button" className="hover:text-stone-700" onClick={(e) => onSort("window", e.shiftKey)}>
+                  窗口/恢复 {sortIndicator("window")}
+                </button>
+              </th>
+              <th className="w-14 px-2 py-2">
+                <button type="button" className="hover:text-stone-700" onClick={(e) => onSort("inflight", e.shiftKey)}>
+                  在途 {sortIndicator("inflight")}
+                </button>
+              </th>
+              <th className="w-28 px-2 py-2">操作</th>
             </tr>
           </thead>
           <tbody>
             {tableBlocks.map((block) => {
               if (block.kind === "group") {
+                const binding = nurtureBindings[block.key];
+                const presetId = binding?.preset_id || nurturePresets[0]?.id || "";
+                const weights = weightsForBinding(block.key, nurturePresets, nurtureBindings);
+                const saving = bindingSaveBusy?.has(block.key) ?? false;
                 return (
                   <tr key={`group-${block.key}`} className="border-t border-stone-200 bg-stone-50/90">
                     <td colSpan={TABLE_COLUMN_COUNT} className="px-3 py-2">
@@ -390,14 +529,41 @@ export function AccountsDataTable({
                         </div>
                         <EgressDriftLights days={aggregateEgressDays(block.accounts)} />
                         <CfStatusLight days={aggregateCfDays(block.accounts)} />
-                        <BindingActivityHeatmaps
-                          matrices={bindingUsageSlots[block.key] || {}}
-                          weekLabel={heatmapWeekLabel}
-                          weekdayLabels={heatmapWeekdayLabels}
-                          dayLabels={heatmapDayLabels}
-                          timezoneLabel={heatmapTimezoneLabel}
-                          compact
-                        />
+                        <div className="flex items-end gap-2">
+                          <div className="space-y-1">
+                            <div className="text-[10px] text-stone-500">养号日历</div>
+                            <select
+                              value={presetId}
+                              disabled={saving || nurturePresets.length === 0}
+                              onChange={(e) => onNurturePresetChange(block.key, e.target.value)}
+                              className="neo-input h-7 w-32 rounded-lg px-2 text-xs"
+                            >
+                              {nurturePresets.map((preset) => (
+                                <option key={preset.id} value={preset.id}>
+                                  {preset.label}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          <BindingActivityHeatmaps
+                            matrices={bindingUsageSlots[block.key] || {}}
+                            weekLabel={heatmapWeekLabel}
+                            weekdayLabels={heatmapWeekdayLabels}
+                            dayLabels={heatmapDayLabels}
+                            timezoneLabel={heatmapTimezoneLabel}
+                            compact
+                          />
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="h-7 rounded-lg px-2 text-xs"
+                            disabled={saving || nurturePresets.length === 0}
+                            onClick={() => onEditWeights(block.key, presetId, weights)}
+                          >
+                            编辑权重
+                          </Button>
+                        </div>
                       </div>
                     </td>
                   </tr>

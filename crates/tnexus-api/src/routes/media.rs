@@ -3,8 +3,9 @@ use crate::middleware::AdminUser;
 use crate::models::JobResultRecord;
 use crate::state::AppState;
 use axum::{
-    extract::{Query, State},
-    http::StatusCode,
+    extract::{Path, Query, State},
+    http::{header, HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -98,6 +99,7 @@ pub fn routes() -> Router<Arc<AppState>> {
 pub fn image_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", get(list_images))
+        .route("/thumb/{id}", get(get_image_thumb))
         .route("/delete", post(delete_images))
         .route("/tags", get(list_tags).post(set_image_tags))
 }
@@ -281,7 +283,10 @@ async fn list_images(
             "date": created_at.format("%Y-%m-%d").to_string(),
             "size": 0,
             "url": url,
-            "thumbnail_url": view.thumb_url.or(Some(url.clone())),
+            "thumbnail_url": thumb.clone().or(Some(url.clone())),
+            "thumb_api_url": format!("/api/images/thumb/{}", view.id),
+            "b64_json": view.b64_json,
+            "preview_b64": view.preview_b64,
             "created_at": created_at.to_rfc3339(),
             "duration_ms": wall_ms,
             "prompt": prompt,
@@ -366,4 +371,78 @@ async fn set_image_tags(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(json!({ "ok": true, "tags": tags })))
+}
+
+#[derive(Debug, Deserialize)]
+struct ThumbQuery {
+    #[serde(default = "default_thumb_width")]
+    w: u32,
+}
+
+fn default_thumb_width() -> u32 {
+    240
+}
+
+async fn get_image_thumb(
+    State(state): State<Arc<AppState>>,
+    _admin: AdminUser,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Query(q): Query<ThumbQuery>,
+) -> Result<Response, (StatusCode, String)> {
+    let id = Uuid::parse_str(id.trim())
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid id".into()))?;
+    let row = sqlx::query(
+        "SELECT inline_preview_b64 FROM job_results WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .ok_or((StatusCode::NOT_FOUND, "image not found".into()))?;
+    let b64: Option<String> = row.get("inline_preview_b64");
+    let Some(raw) = b64.filter(|s| !s.trim().is_empty()) else {
+        return Err((StatusCode::NOT_FOUND, "no inline preview".into()));
+    };
+    let bytes = if raw.starts_with("data:") {
+        raw.split_once(',').map(|(_, p)| p).unwrap_or(raw.as_str())
+    } else {
+        raw.as_str()
+    };
+    let input = base64::Engine::decode(
+        &base64::engine::general_purpose::STANDARD,
+        bytes,
+    )
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("b64 decode: {e}")))?;
+    let img = image::load_from_memory(&input)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("decode image: {e}")))?;
+    let max_w = q.w.clamp(64, 640);
+    let thumb = img.thumbnail(max_w, max_w);
+    let use_webp = headers
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.contains("image/webp"))
+        .unwrap_or(true);
+    let mut buf = Vec::new();
+    if use_webp {
+        let mut cursor = std::io::Cursor::new(&mut buf);
+        thumb
+            .write_to(&mut cursor, image::ImageFormat::WebP)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        Ok((
+            [(header::CONTENT_TYPE, "image/webp")],
+            buf,
+        )
+            .into_response())
+    } else {
+        let mut cursor = std::io::Cursor::new(&mut buf);
+        thumb
+            .write_to(&mut cursor, image::ImageFormat::Jpeg)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        Ok((
+            [(header::CONTENT_TYPE, "image/jpeg")],
+            buf,
+        )
+            .into_response())
+    }
 }

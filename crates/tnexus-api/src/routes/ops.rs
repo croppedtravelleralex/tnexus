@@ -1,4 +1,4 @@
-use crate::gptimage_proxy::{admin_token, proxy_get, proxy_post};
+use crate::account_ops;
 use crate::middleware::AdminUser;
 use crate::state::AppState;
 use axum::{
@@ -27,12 +27,36 @@ struct NurtureEnableBody {
     enabled: bool,
 }
 
+#[derive(Debug, Deserialize)]
+struct NurtureProcessOneBody {
+    #[serde(default)]
+    prompt: String,
+    #[serde(default)]
+    access_token: String,
+    #[serde(default)]
+    email: String,
+    #[serde(default)]
+    source: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct IpNurtureBindingBody {
+    binding_key: String,
+    #[serde(default)]
+    preset_id: String,
+    #[serde(default)]
+    custom_matrix: Option<Vec<Vec<f64>>>,
+}
+
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/summary", get(ops_summary))
         .route("/nurture/status", get(nurture_status))
         .route("/nurture/enable", post(nurture_enable))
         .route("/nurture/enqueue", post(nurture_enqueue))
+        .route("/nurture/process-one", post(nurture_process_one))
+        .route("/ip-nurture/presets", get(ip_nurture_presets))
+        .route("/ip-nurture/bindings", get(ip_nurture_bindings).post(ip_nurture_save_binding))
         .route("/image-pipeline/snapshot", get(image_pipeline_snapshot))
         .route("/risk/metrics", get(risk_metrics))
 }
@@ -76,6 +100,8 @@ async fn ops_summary(
         "jobs_failed": jobs_failed,
         "results_total": results_total,
         "accounts_total": accounts_total,
+        "source": "tnexus-local",
+        "account_ops": account_ops::ops_available(&state),
     })))
 }
 
@@ -83,9 +109,10 @@ async fn nurture_status(
     State(state): State<Arc<AppState>>,
     _admin: AdminUser,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    if admin_token(&state).is_some() {
-        let data = proxy_get(&state, "/api/ops/nurture/status", "").await?;
-        return Ok(Json(data));
+    if account_ops::ops_available(&state) {
+        if let Ok(data) = account_ops::nurture_status(&state).await {
+            return Ok(Json(data));
+        }
     }
     Ok(Json(json!({
         "enabled": false,
@@ -95,6 +122,7 @@ async fn nurture_status(
         "max_per_account_per_day": 0,
         "last_error": null,
         "source": "tnexus-local",
+        "message": "养号服务未配置（需 ACCOUNT_OPS_TOKEN + GPTIMAGE_ROOT）",
     })))
 }
 
@@ -103,16 +131,16 @@ async fn nurture_enable(
     _admin: AdminUser,
     Json(body): Json<NurtureEnableBody>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    if admin_token(&state).is_some() {
-        let data = proxy_post(
-            &state,
-            "/api/ops/nurture/enable",
-            json!({ "enabled": body.enabled }),
-        )
-        .await?;
+    if account_ops::ops_available(&state) {
+        let data = account_ops::nurture_enable(&state, body.enabled)
+            .await
+            .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, e))?;
         return Ok(Json(data));
     }
-    Ok(Json(json!({ "enabled": body.enabled, "source": "tnexus-local" })))
+    Err((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "养号服务未配置（需 ACCOUNT_OPS_TOKEN + GPTIMAGE_ROOT）".into(),
+    ))
 }
 
 async fn nurture_enqueue(
@@ -120,34 +148,92 @@ async fn nurture_enqueue(
     _admin: AdminUser,
     Json(body): Json<NurtureEnqueueBody>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    if admin_token(&state).is_some() {
-        let data = proxy_post(
-            &state,
-            "/api/ops/nurture/enqueue",
-            json!({
-                "prompt": body.prompt,
-                "source": if body.source.is_empty() { "tnexus_ui" } else { body.source.as_str() },
-                "access_tokens": body.access_tokens,
-            }),
-        )
-        .await?;
-        return Ok(Json(data));
+    if !account_ops::ops_available(&state) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "养号服务未配置（需 ACCOUNT_OPS_TOKEN + GPTIMAGE_ROOT）".into(),
+        ));
     }
-    Err((
-        StatusCode::SERVICE_UNAVAILABLE,
-        "养号队列需要配置 GPTIMAGE_ADMIN_TOKEN 并连接 gptimage".into(),
-    ))
+    let mut accounts = Vec::new();
+    for token in &body.access_tokens {
+        if let Some(row) = state.accounts.export_account_for_token(token).await {
+            accounts.push(row);
+        }
+    }
+    let data = account_ops::nurture_enqueue(
+        &state,
+        json!({
+            "prompt": body.prompt,
+            "source": if body.source.is_empty() { "tnexus_ui" } else { body.source.as_str() },
+            "access_tokens": body.access_tokens,
+            "accounts": accounts,
+        }),
+    )
+    .await
+    .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(data))
+}
+
+async fn nurture_process_one(
+    State(state): State<Arc<AppState>>,
+    _admin: AdminUser,
+    Json(body): Json<NurtureProcessOneBody>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    if !account_ops::ops_available(&state) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "定向对话未配置（需 ACCOUNT_OPS_TOKEN + GPTIMAGE_ROOT）".into(),
+        ));
+    }
+    let mut payload = json!({
+        "prompt": body.prompt,
+        "access_token": body.access_token,
+        "email": body.email,
+        "source": if body.source.is_empty() { "tnexus_accounts_ui" } else { body.source.as_str() },
+    });
+    if !body.access_token.is_empty() {
+        if let Some(account) = state.accounts.export_account_for_token(&body.access_token).await {
+            payload["account"] = account;
+        }
+    }
+    let data = account_ops::nurture_process_one(&state, payload)
+        .await
+        .map_err(|e| (StatusCode::CONFLICT, e))?;
+    Ok(Json(data))
+}
+
+async fn ip_nurture_presets(
+    State(state): State<Arc<AppState>>,
+    _admin: AdminUser,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    Ok(Json(state.nurture_store.presets()))
+}
+
+async fn ip_nurture_bindings(
+    State(state): State<Arc<AppState>>,
+    _admin: AdminUser,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    Ok(Json(state.nurture_store.bindings().await))
+}
+
+async fn ip_nurture_save_binding(
+    State(state): State<Arc<AppState>>,
+    _admin: AdminUser,
+    Json(body): Json<IpNurtureBindingBody>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let matrix = body.custom_matrix.map(|rows| json!(rows));
+    let data = state
+        .nurture_store
+        .save_binding(&body.binding_key, &body.preset_id, matrix)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(data))
 }
 
 async fn image_pipeline_snapshot(
     State(state): State<Arc<AppState>>,
     _admin: AdminUser,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    if admin_token(&state).is_some() {
-        if let Ok(data) = proxy_get(&state, "/api/ops/image-pipeline/snapshot", "").await {
-            return Ok(Json(data));
-        }
-    }
     Ok(Json(local_pipeline_snapshot(&state).await))
 }
 
@@ -170,52 +256,26 @@ async fn local_pipeline_snapshot(state: &AppState) -> Value {
     let mut count = 0usize;
     for row in &rows {
         let timings: serde_json::Value = row.get("phase_timings_ms");
-        let ps = timings.get("ps_ms").and_then(|v| v.as_f64()).unwrap_or(0.0);
-        let sse = timings
-            .get("sse_stream_ms")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0);
-        let dl = timings.get("download_ms").and_then(|v| v.as_f64()).unwrap_or(0.0);
-        if ps + sse + dl <= 0.0 {
-            continue;
+        if let Some(v) = timings.get("ps_ms").and_then(|v| v.as_f64()) {
+            ps_ms += v;
         }
-        ps_ms += ps;
-        sse_ms += sse;
-        download_ms += dl;
+        if let Some(v) = timings.get("sse_ms").and_then(|v| v.as_f64()) {
+            sse_ms += v;
+        }
+        if let Some(v) = timings.get("download_ms").and_then(|v| v.as_f64()) {
+            download_ms += v;
+        }
         count += 1;
     }
-    let avg = |sum: f64| if count > 0 { sum / count as f64 } else { 0.0 };
-
-    let running: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*)::bigint FROM jobs WHERE status NOT IN ('done', 'failed')",
-    )
-    .fetch_one(&state.pool)
-    .await
-    .unwrap_or(0);
-
+    let denom = count.max(1) as f64;
     json!({
         "source": "tnexus-local",
-        "in_flight": running,
-        "ps_queue_depth": running,
-        "ss_queue_depth": running,
-        "ps": { "limit": 4, "active": running.min(4), "queued": (running - running.min(4)).max(0) },
-        "ss": { "limit": 8, "active": running.min(8), "queued": (running - running.min(8)).max(0) },
-        "slot_topology": {
-            "ps_capacity": 4,
-            "ss_capacity": 8,
-            "ps_inflight": running.min(4),
-            "ss_inflight": running.min(8),
-            "ps_queued": (running - running.min(4)).max(0),
-            "ss_queued": (running - running.min(8)).max(0),
-            "pipeline_in_flight": running,
+        "sample_count": count,
+        "avg_phase_ms": {
+            "ps": ps_ms / denom,
+            "sse": sse_ms / denom,
+            "download": download_ms / denom,
         },
-        "phase_avg_ms": {
-            "ps_ms": avg(ps_ms),
-            "sse_stream_ms": avg(sse_ms),
-            "download_ms": avg(download_ms),
-            "samples": count,
-        },
-        "segments": [],
     })
 }
 
@@ -223,31 +283,9 @@ async fn risk_metrics(
     State(state): State<Arc<AppState>>,
     _admin: AdminUser,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    if admin_token(&state).is_some() {
-        if let Ok(data) = proxy_get(&state, "/api/ops/risk-audit/status", "").await {
-            return Ok(Json(data));
-        }
-    }
-    let failed_24h: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*)::bigint FROM jobs WHERE status = 'failed' AND updated_at > NOW() - INTERVAL '24 hours'",
-    )
-    .fetch_one(&state.pool)
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let done_24h: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*)::bigint FROM jobs WHERE status = 'done' AND updated_at > NOW() - INTERVAL '24 hours'",
-    )
-    .fetch_one(&state.pool)
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let breakdown = state.accounts.schedulable_breakdown().await;
     Ok(Json(json!({
         "source": "tnexus-local",
-        "jobs_failed_24h": failed_24h,
-        "jobs_done_24h": done_24h,
-        "failure_rate_24h": if done_24h + failed_24h > 0 {
-            failed_24h as f64 / (done_24h + failed_24h) as f64
-        } else {
-            0.0
-        },
+        "schedulable_breakdown": breakdown,
     })))
 }

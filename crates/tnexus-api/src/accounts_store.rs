@@ -349,18 +349,45 @@ impl AccountsStore {
         let mut excluded_by_status = 0u64;
         let mut excluded_by_failure_evidence = 0u64;
         let mut excluded_by_receive_state = 0u64;
+        let mut excluded_by_quota = 0u64;
+        let mut excluded_by_inflight = 0u64;
         let mut schedulable = 0u64;
         for row in guard.values() {
             let receive_state = Self::receive_state_for(&row.email, &scheduling);
             let has_token = !row.access_token.is_empty();
-            let status = if has_token { "正常" } else { "异常" };
+            let status = row
+                .field_str("status")
+                .unwrap_or_else(|| {
+                    if has_token {
+                        "正常".to_string()
+                    } else {
+                        "异常".to_string()
+                    }
+                });
             let manual_on = Self::manual_scheduling_enabled(&receive_state);
+            let quota = row.fields.get("quota").and_then(|v| v.as_i64()).unwrap_or(0);
+            let inflight = row
+                .fields
+                .get("image_inflight")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let soft_band = row
+                .fields
+                .get("soft_band_percent")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
             if status != "正常" {
                 excluded_by_status += 1;
             } else if !has_token {
                 excluded_by_failure_evidence += 1;
             } else if !manual_on {
                 excluded_by_receive_state += 1;
+            } else if quota <= 0 && !row.fields.get("image_quota_unknown").and_then(|v| v.as_bool()).unwrap_or(false) {
+                excluded_by_quota += 1;
+            } else if inflight > 0 {
+                excluded_by_inflight += 1;
+            } else if soft_band > 0 {
+                excluded_by_quota += 1;
             } else {
                 schedulable += 1;
             }
@@ -370,18 +397,33 @@ impl AccountsStore {
                 "excluded_by_status": excluded_by_status,
                 "excluded_by_failure_evidence": excluded_by_failure_evidence,
                 "excluded_by_receive_state": excluded_by_receive_state,
-                "excluded_by_quota": 0,
+                "excluded_by_quota": excluded_by_quota,
                 "excluded_by_quota_freshness": 0,
                 "excluded_by_dup_binding": 0,
                 "excluded_by_dup_egress": 0,
                 "excluded_by_interval": 0,
                 "excluded_by_backoff": 0,
-                "excluded_by_inflight": 0,
+                "excluded_by_inflight": excluded_by_inflight,
                 "schedulable": schedulable,
                 "ready_not_dispatchable": 0,
             },
             "total": guard.len(),
+            "source": "tnexus-local",
         })
+    }
+
+    pub async fn activity_daily_from_pool(&self, days: usize) -> Value {
+        let guard = self.inner.read().await;
+        let mut registered_by_date: HashMap<String, usize> = HashMap::new();
+        for row in guard.values() {
+            if let Some(created) = row.field_str("created_at") {
+                let date = created.get(0..10).unwrap_or("").to_string();
+                if !date.is_empty() {
+                    *registered_by_date.entry(date).or_default() += 1;
+                }
+            }
+        }
+        build_activity_daily(days, &registered_by_date)
     }
 
     pub async fn import_payloads(&self, payloads: Vec<Value>) -> Result<ImportSummary> {
@@ -527,65 +569,174 @@ impl AccountsStore {
     fn account_file_to_export(&self, row: &AccountFile) -> Value {
         row.to_value()
     }
+
+    pub async fn delete_by_tokens(&self, tokens: &[String]) -> Result<usize> {
+        let token_set: std::collections::HashSet<String> = tokens
+            .iter()
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .collect();
+        if token_set.is_empty() {
+            return Ok(0);
+        }
+        let mut guard = self.inner.write().await;
+        let before = guard.len();
+        guard.retain(|_, row| !token_set.contains(&row.access_token));
+        let removed = before.saturating_sub(guard.len());
+        if removed > 0 {
+            save_accounts_file(&self.pool_path, &guard)?;
+            let mut scheduling = self.scheduling.write().await;
+            scheduling.retain(|email, _| guard.contains_key(email));
+            save_scheduling_state(&self.scheduling_path, &scheduling)?;
+        }
+        Ok(removed)
+    }
+
+    pub async fn update_by_token(&self, token: &str, patch: &Value) -> Result<Option<Value>> {
+        let token = token.trim();
+        if token.is_empty() {
+            return Ok(None);
+        }
+        let mut guard = self.inner.write().await;
+        let found_key = guard
+            .iter()
+            .find(|(_, row)| row.access_token == token)
+            .map(|(k, _)| k.clone());
+        let Some(key) = found_key else {
+            return Ok(None);
+        };
+        if let Some(row) = guard.get_mut(&key) {
+            row.merge_value(patch);
+            let scheduling = self.scheduling.read().await;
+            let item = Self::row_to_json(row, &scheduling);
+            save_accounts_file(&self.pool_path, &guard)?;
+            return Ok(Some(item));
+        }
+        Ok(None)
+    }
 }
 
 fn compute_stats(items: &[Value]) -> Value {
     let total = items.len();
     let mut normal = 0usize;
+    let mut limited = 0usize;
     let mut abnormal = 0usize;
+    let mut disabled = 0usize;
     let mut schedulable = 0usize;
+    let mut scheduling_enabled = 0usize;
+    let mut total_quota: i64 = 0;
+    let mut available_image_quota: i64 = 0;
+    let mut verified_quota_count = 0usize;
+    let mut stale_quota_count = 0usize;
     for item in items {
         let status = item.get("status").and_then(|v| v.as_str()).unwrap_or("");
-        if status == "正常" {
-            normal += 1;
-        } else {
-            abnormal += 1;
+        match status {
+            "正常" => normal += 1,
+            "限流" => limited += 1,
+            "禁用" => disabled += 1,
+            _ => abnormal += 1,
         }
         if item.get("image_schedulable").and_then(|v| v.as_bool()).unwrap_or(false) {
             schedulable += 1;
+        }
+        let receive = item
+            .get("panda_receive_state")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if receive.is_empty()
+            || matches!(receive, "verified_ready" | "verified" | "local_verified")
+        {
+            scheduling_enabled += 1;
+        }
+        let quota = item.get("quota").and_then(|v| v.as_i64()).unwrap_or(0);
+        total_quota += quota;
+        if quota > 0 {
+            verified_quota_count += 1;
+            available_image_quota += quota;
+        } else if item.get("image_quota_unknown").and_then(|v| v.as_bool()).unwrap_or(false) {
+            verified_quota_count += 1;
+        } else {
+            stale_quota_count += 1;
         }
     }
     json!({
         "total": total,
         "active": normal,
-        "limited": 0,
+        "limited": limited,
         "abnormal": abnormal,
-        "disabled": 0,
-        "total_quota": 0,
+        "disabled": disabled,
+        "total_quota": total_quota,
         "schedulable": schedulable,
-        "scheduling_enabled": schedulable,
+        "scheduling_enabled": scheduling_enabled,
         "image_schedulable": schedulable,
-        "available_image_quota": 0,
-        "verified_quota_count": 0,
-        "stale_quota_count": total,
+        "available_image_quota": available_image_quota,
+        "verified_quota_count": verified_quota_count,
+        "stale_quota_count": stale_quota_count,
+        "source": "tnexus-local",
     })
 }
 
-pub fn activity_daily(days: usize) -> Value {
+fn build_activity_daily(days: usize, registered_by_date: &HashMap<String, usize>) -> Value {
     let days = days.clamp(1, 90);
     let today = chrono::Utc::now().date_naive();
+    let since = today - chrono::Days::new((days.saturating_sub(1)) as u64);
+    let events = crate::usage_metrics::read_events_public(since).unwrap_or_default();
+    let mut images_api_by_date: HashMap<String, usize> = HashMap::new();
+    let mut images_chat_by_date: HashMap<String, usize> = HashMap::new();
+    let mut dialogues_by_date: HashMap<String, usize> = HashMap::new();
+    let mut dialogues_real_by_date: HashMap<String, usize> = HashMap::new();
+    let mut dialogues_nurture_by_date: HashMap<String, usize> = HashMap::new();
+    for event in events {
+        let date = event.ts.get(0..10).unwrap_or("").to_string();
+        if date.is_empty() {
+            continue;
+        }
+        match event.metric.as_str() {
+            "images_api" => *images_api_by_date.entry(date).or_default() += 1,
+            "images_chat" => *images_chat_by_date.entry(date).or_default() += 1,
+            "dialogues_real" => {
+                *dialogues_real_by_date.entry(date.clone()).or_default() += 1;
+                *dialogues_by_date.entry(date).or_default() += 1;
+            }
+            "dialogues_nurture" => {
+                *dialogues_nurture_by_date.entry(date.clone()).or_default() += 1;
+                *dialogues_by_date.entry(date).or_default() += 1;
+            }
+            "dialogues" => *dialogues_by_date.entry(date).or_default() += 1,
+            _ => {}
+        }
+    }
     let mut items = Vec::with_capacity(days);
     for i in (0..days).rev() {
         let date = today - chrono::Days::new(i as u64);
+        let key = date.format("%Y-%m-%d").to_string();
+        let images_api = *images_api_by_date.get(&key).unwrap_or(&0);
+        let images_chat = *images_chat_by_date.get(&key).unwrap_or(&0);
+        let images = images_api + images_chat;
         items.push(json!({
-            "date": date.format("%Y-%m-%d").to_string(),
-            "registered": 0,
+            "date": key,
+            "registered": registered_by_date.get(&key).copied().unwrap_or(0),
             "uploaded": 0,
             "received": 0,
             "deleted": 0,
-            "images": 0,
-            "images_api": 0,
-            "images_chat": 0,
-            "dialogues": 0,
-            "dialogues_real": 0,
-            "dialogues_nurture": 0,
+            "images": images,
+            "images_api": images_api,
+            "images_chat": images_chat,
+            "dialogues": dialogues_by_date.get(&key).copied().unwrap_or(0),
+            "dialogues_real": dialogues_real_by_date.get(&key).copied().unwrap_or(0),
+            "dialogues_nurture": dialogues_nurture_by_date.get(&key).copied().unwrap_or(0),
         }));
     }
     json!({
         "days": days,
-        "sync_label": "本地",
+        "sync_label": "TNexus 本地",
+        "source": "tnexus-local",
         "items": items,
     })
+}
+
+pub fn activity_daily(days: usize) -> Value {
+    build_activity_daily(days, &HashMap::new())
 }
 
 fn pool_file_path() -> PathBuf {

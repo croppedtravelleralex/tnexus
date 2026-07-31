@@ -3849,9 +3849,11 @@ dependencies = [
  "async-trait",
  "axum",
  "axum-extra",
+ "base64",
  "chrono",
  "dotenvy",
  "futures",
+ "image",
  "redis",
  "reqwest",
  "serde",
@@ -3867,7 +3869,6 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
- "urlencoding",
  "uuid",
 ]
 

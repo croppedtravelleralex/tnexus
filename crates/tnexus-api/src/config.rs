@@ -25,6 +25,8 @@ pub struct AppConfig {
     pub bootstrap_demo_email: Option<String>,
     pub bootstrap_demo_password: Option<String>,
     pub presign_ttl_secs: u64,
+    pub gateway_base: String,
+    pub gateway_internal_token: Option<String>,
 }
 
 impl AppConfig {
@@ -82,6 +84,12 @@ impl AppConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(1800),
+            gateway_base: env::var("GATEWAY_BASE")
+                .or_else(|_| env::var("GPTIMAGE_GATEWAY_BASE"))
+                .unwrap_or_else(|_| "http://127.0.0.1:8014".into()),
+            gateway_internal_token: env::var("GATEWAY_AUTH_KEY")
+                .ok()
+                .or_else(|| env::var("GATEWAY_INTERNAL_TOKEN").ok()),
         })
     }
 }

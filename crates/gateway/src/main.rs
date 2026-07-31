@@ -1,5 +1,6 @@
 //! gptimage-gateway-rs MVP gateway (Rust face).
 
+mod scheduling_gate;
 mod accounts_routes;
 mod auth_routes;
 mod backend_routes;
@@ -8,6 +9,7 @@ mod image_assets;
 mod state;
 mod upstream_face;
 
+use crate::scheduling_gate::SchedulingGate;
 use crate::image_assets::ImageAssetStore;
 use anyhow::Context;
 use gateway_auth::{AuthConfig, AuthService};
@@ -156,6 +158,7 @@ async fn main() -> anyhow::Result<()> {
         static_dir: static_dir.clone(),
         image_assets,
         public_base_url: cfg.public_base_url.clone(),
+        scheduling_gate: SchedulingGate::from_env(),
     });
 
     let auth_public = Router::new()
@@ -349,8 +352,14 @@ async fn collect_image_accounts(
 
     match resolve_account(st, preferred.clone(), is_admin).await {
         Ok(acc) => {
-            seen.insert(acc.email.to_lowercase());
-            accounts.push(acc);
+            if is_admin
+                || st
+                    .scheduling_gate
+                    .is_email_schedulable(&acc.email, &acc.access_token)
+            {
+                seen.insert(acc.email.to_lowercase());
+                accounts.push(acc);
+            }
         }
         Err(r) if !is_admin => return Err(r),
         Err(_) => {}
@@ -369,8 +378,22 @@ async fn collect_image_accounts(
         for key in keys {
             if seen.insert(key.clone()) {
                 if let Some(acc) = guard.get(&key) {
-                    accounts.push(acc.clone());
+                    if st
+                        .scheduling_gate
+                        .is_email_schedulable(&acc.email, &acc.access_token)
+                    {
+                        accounts.push(acc.clone());
+                    }
                 }
+            }
+        }
+    }
+
+    if accounts.is_empty() {
+        // Allow pin/preferred even when gate would block, for explicit admin override via header.
+        if let Ok(acc) = resolve_account(st, preferred.clone(), is_admin).await {
+            if seen.insert(acc.email.to_lowercase()) {
+                accounts.push(acc);
             }
         }
     }
@@ -731,6 +754,7 @@ async fn image_generations(
     let mut result: Result<helper_client::BridgeOk, anyhow::Error> =
         Err(anyhow::anyhow!("image generation not attempted"));
     let mut used_account = account.clone();
+    let _inflight_guard = st.scheduling_gate.begin_inflight(&used_account.email);
 
     for (i, cand) in candidates.iter().take(max_attempts).enumerate() {
         used_account = cand.clone();
@@ -909,7 +933,13 @@ fn err(
     fault: Option<&str>,
 ) -> Response {
     let body: Value = openai_error(message, code, fault);
-    (status, Json(body)).into_response()
+    let mut resp = (status, Json(body)).into_response();
+    if status == StatusCode::TOO_MANY_REQUESTS {
+        if let Ok(val) = header::HeaderValue::from_str("30") {
+            resp.headers_mut().insert(header::RETRY_AFTER, val);
+        }
+    }
+    resp
 }
 
 fn build_image_asset_url(

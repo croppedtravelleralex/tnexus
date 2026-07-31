@@ -2,6 +2,7 @@
 
 use crate::config::DataPlane;
 use crate::image_assets::ImageAssetStore;
+use crate::scheduling_gate::SchedulingGate;
 use gateway_auth::AuthService;
 use helper_client::{HelperClient, PinAccount};
 use std::collections::HashMap;
@@ -23,4 +24,5 @@ pub struct AppState {
     pub static_dir: Option<PathBuf>,
     pub image_assets: Arc<ImageAssetStore>,
     pub public_base_url: String,
+    pub scheduling_gate: SchedulingGate,
 }

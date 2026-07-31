@@ -1,6 +1,9 @@
 use crate::accounts_store::AccountsStore;
 use crate::account_ops;
 use crate::config::AppConfig;
+use crate::local_nurture::{LocalNurtureStore, OutlookRecoveryStore};
+use crate::quota_prime_job::QuotaPrimeJob;
+use crate::refresh_all::RefreshAllStore;
 use redis::aio::ConnectionManager;
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -18,6 +21,10 @@ pub struct AppState {
     pub accounts: AccountsStore,
     pub refresh_progress: account_ops::ProgressStore,
     pub relogin_progress: account_ops::ProgressStore,
+    pub refresh_all: RefreshAllStore,
+    pub quota_prime: QuotaPrimeJob,
+    pub nurture_store: LocalNurtureStore,
+    pub outlook_recovery: OutlookRecoveryStore,
 }
 
 impl AppState {
@@ -69,6 +76,10 @@ impl AppState {
             accounts,
             refresh_progress: account_ops::ProgressStore::new(),
             relogin_progress: account_ops::ProgressStore::new(),
+            refresh_all: RefreshAllStore::new(),
+            quota_prime: QuotaPrimeJob::new(),
+            nurture_store: LocalNurtureStore::new(),
+            outlook_recovery: OutlookRecoveryStore::new(),
         })
     }
 }

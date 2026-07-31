@@ -185,12 +185,15 @@ pub async fn result_to_view(state: &AppState, r: JobResultRecord) -> Result<JobR
         .cloned()
     {
         let keywords = r.keywords.and_then(|v| serde_json::from_value(v).ok());
+        let b64 = r.inline_preview_b64.clone();
         return Ok(JobResultView {
             id: r.id,
             provider: r.provider,
             preview_url: Some(url.clone()),
             download_url: Some(url.clone()),
             thumb_url: Some(url),
+            preview_b64: b64.clone(),
+            b64_json: b64,
             agent_prompt: r.agent_prompt,
             revised_prompt: r.revised_prompt,
             keywords,
@@ -214,12 +217,15 @@ pub async fn result_to_view(state: &AppState, r: JobResultRecord) -> Result<JobR
         None
     };
     let keywords = r.keywords.and_then(|v| serde_json::from_value(v).ok());
+    let b64 = r.inline_preview_b64.clone();
     Ok(JobResultView {
         id: r.id,
         provider: r.provider,
         preview_url,
         download_url,
         thumb_url,
+        preview_b64: b64.clone(),
+        b64_json: b64,
         agent_prompt: r.agent_prompt,
         revised_prompt: r.revised_prompt,
         keywords,
