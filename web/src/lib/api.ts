@@ -1,5 +1,15 @@
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:9000";
 
+/** 将 API 相对路径（如 /api/images/thumb/...）转为可加载的完整 URL */
+export function apiAssetUrl(path: string | null | undefined): string | undefined {
+  if (!path) return undefined;
+  if (path.startsWith("http://") || path.startsWith("https://") || path.startsWith("data:")) {
+    return path;
+  }
+  if (path.startsWith("/")) return `${API_BASE}${path}`;
+  return path;
+}
+
 import type { Conversation, ConversationState } from "@/lib/conversations";
 import type { GenConfig } from "@/lib/gen-config";
 
@@ -326,6 +336,8 @@ export const jobsApi = {
       body: JSON.stringify({ ids }),
     }),
   get: (id: string) => api<JobDetail>(`/api/jobs/${id}`),
+  getStatus: (id: string) =>
+    api<{ status: string; error_message?: string | null; progress: number }>(`/api/jobs/${id}/status`),
   eventsUrl: (id: string) => `${API_BASE}/api/jobs/${id}/events`,
 };
 

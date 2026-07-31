@@ -1,5 +1,6 @@
 use crate::jobs::result_to_view;
-use crate::middleware::AdminUser;
+use crate::middleware::{AdminUser, AuthUser};
+use tnexus_auth::Role;
 use crate::models::JobResultRecord;
 use crate::state::AppState;
 use axum::{
@@ -400,19 +401,35 @@ fn default_thumb_width() -> u32 {
 
 async fn get_image_thumb(
     State(state): State<Arc<AppState>>,
-    _admin: AdminUser,
+    user: AuthUser,
     Path(id): Path<String>,
     headers: HeaderMap,
     Query(q): Query<ThumbQuery>,
 ) -> Result<Response, (StatusCode, String)> {
     let id = Uuid::parse_str(id.trim())
         .map_err(|_| (StatusCode::BAD_REQUEST, "invalid id".into()))?;
-    let row = sqlx::query(
-        "SELECT inline_preview_b64, r2_key_thumb, r2_key_preview, source_url FROM job_results WHERE id = $1",
-    )
-    .bind(id)
-    .fetch_optional(&state.pool)
-    .await
+    let user_id = Uuid::parse_str(&user.claims.sub)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "bad user".into()))?;
+    let is_admin = user.claims.role == Role::Admin;
+    let row = if is_admin {
+        sqlx::query(
+            "SELECT inline_preview_b64, r2_key_thumb, r2_key_preview, source_url FROM job_results WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&state.pool)
+        .await
+    } else {
+        sqlx::query(
+            "SELECT jr.inline_preview_b64, jr.r2_key_thumb, jr.r2_key_preview, jr.source_url
+             FROM job_results jr
+             JOIN jobs j ON j.id = jr.job_id
+             WHERE jr.id = $1 AND j.user_id = $2",
+        )
+        .bind(id)
+        .bind(user_id)
+        .fetch_optional(&state.pool)
+        .await
+    }
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     .ok_or((StatusCode::NOT_FOUND, "image not found".into()))?;
 

@@ -158,6 +158,14 @@ export default function StudioPage() {
     persistConversation(conversationId, buildState());
   }, [conversationId, buildState, persistConversation]);
 
+  useEffect(() => {
+    if (!busy || startedAt <= 0) return;
+    const tick = () => setElapsedMs(Date.now() - startedAt);
+    tick();
+    const timer = setInterval(tick, 500);
+    return () => clearInterval(timer);
+  }, [busy, startedAt]);
+
   const onSelectJob = (job: JobListItem) => {
     setActiveJobId(job.id);
     setPrompt(job.input_prompt);
@@ -306,22 +314,10 @@ export default function StudioPage() {
 
       pollTimer = setInterval(() => {
         void jobsApi
-          .get(job_id)
+          .getStatus(job_id)
           .then((d) => {
             setStage(d.status);
-            setProgress(
-              d.status === "done"
-                ? 100
-                : d.status === "failed"
-                  ? 0
-                  : d.status === "generating"
-                    ? 55
-                    : d.status === "directing"
-                      ? 25
-                      : d.status === "uploading"
-                        ? 85
-                        : 5,
-            );
+            setProgress(d.progress);
             if (d.status === "done" || d.status === "failed") {
               void finishJob(job_id, d.error_message ?? undefined);
             }
@@ -339,7 +335,7 @@ export default function StudioPage() {
         }
       };
       es.onerror = () => {
-        void jobsApi.get(job_id).then((d) => {
+        void jobsApi.getStatus(job_id).then((d) => {
           if (d.status === "done" || d.status === "failed") {
             void finishJob(job_id, d.error_message ?? undefined);
           }

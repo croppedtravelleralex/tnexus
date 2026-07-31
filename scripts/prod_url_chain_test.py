@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """End-to-end URL chain test against production tnexus.relai.asia."""
+import base64
 import json
 import sys
 import time
@@ -7,7 +8,20 @@ import urllib.request
 import http.cookiejar
 
 API = "https://tnexus.relai.asia"
-EXPECTED_PREFIX = "https://tnexus.relai.asia/"
+HTTPS_PREFIX = "https://tnexus.relai.asia/"
+
+
+def preview_bytes(preview: str) -> int:
+    if preview.startswith("data:"):
+        comma = preview.find(",")
+        if comma < 0:
+            raise ValueError("malformed data URL")
+        payload = preview[comma + 1 :]
+        if ";base64" in preview[:comma]:
+            return len(base64.b64decode(payload))
+        return len(payload.encode())
+    with urllib.request.urlopen(preview, timeout=120) as resp:
+        return len(resp.read())
 
 
 def main() -> int:
@@ -62,12 +76,18 @@ def main() -> int:
         print(f"poll {i} status={status}")
         if status == "done":
             preview = (detail.get("results") or [{}])[0].get("preview_url")
-            print(f"preview_url={preview}")
-            if not preview or not preview.startswith(EXPECTED_PREFIX):
+            kind = "inline_b64" if preview and preview.startswith("data:") else "https"
+            print(f"preview_kind={kind}")
+            if preview and len(preview) > 120:
+                print(f"preview_url={preview[:80]}...({len(preview)} chars)")
+            else:
+                print(f"preview_url={preview}")
+            if not preview or not (
+                preview.startswith(HTTPS_PREFIX) or preview.startswith("data:image/")
+            ):
                 print(json.dumps(detail, indent=2)[:3000])
                 return 1
-            with urllib.request.urlopen(preview, timeout=120) as resp:
-                nbytes = len(resp.read())
+            nbytes = preview_bytes(preview)
             print(f"preview_bytes={nbytes}")
             print("TNEXUS_URL_CHAIN_OK")
             return 0

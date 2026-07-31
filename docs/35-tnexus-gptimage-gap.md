@@ -1,6 +1,6 @@
 # 35 — TNexus 距离彻底替代 Python gptimage 还差多少
 
-最后更新：**2026-07-31（共享 accounts.db，删除 JSON 快照）**
+最后更新：**2026-07-31（Studio 性能修复 + 共享 accounts.db）**
 
 ## 结论（一句话）
 
@@ -48,6 +48,9 @@
 | 养号日历预设/绑定 | ✅ 本地 JSON + `ip-nurture` API |
 | 生图 b64 持久化（worker 写 `inline_preview_b64`） | ✅ `a54d057` |
 | 图片管理优先内联 b64 缩略图 | ✅ `9dcb82a` |
+| Studio 轮询 `GET /api/jobs/{id}/status`（仅 status/error，无 b64） | ✅ |
+| Job 详情/列表 thumb 走 `/api/images/thumb/{id}`（普通用户可读自己的图） | ✅ |
+| 生图 UI 实时耗时（500ms tick，不再固定 1 秒） | ✅ |
 
 ### 运维执行面（account-ops → gptimage 库）
 

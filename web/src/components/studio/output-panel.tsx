@@ -2,6 +2,7 @@
 
 import { useMemo, useRef, useState } from "react";
 import type { JobResult } from "@/lib/api";
+import { apiAssetUrl } from "@/lib/api";
 import { formatDuration } from "@/lib/format-duration";
 import { Download, Loader2, RotateCcw, ZoomIn } from "lucide-react";
 import { downloadImage, ImagePreviewDialog } from "@/components/studio/image-preview-dialog";
@@ -80,8 +81,8 @@ function SuccessTile({
   image: JobResult;
   onPreview: (url: string, downloadUrl?: string | null) => void;
 }) {
-  const preview = image.preview_url || image.thumb_url;
-  const download = image.download_url || image.preview_url;
+  const preview = apiAssetUrl(image.preview_url || image.thumb_url);
+  const download = apiAssetUrl(image.download_url || image.preview_url);
 
   return (
     <div className="group relative h-44 w-44 shrink-0 overflow-hidden rounded-lg border border-zinc-200 bg-zinc-100 shadow-sm">

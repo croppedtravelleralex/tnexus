@@ -78,7 +78,7 @@ pub async fn list_job_summaries(state: &AppState, user_id: Uuid, limit: i64) -> 
     let rows = sqlx::query(
         r#"SELECT j.id, j.input_prompt, j.status, j.created_at, j.updated_at,
                   COUNT(r.id)::bigint AS result_count,
-                  (SELECT inline_preview_b64 FROM job_results WHERE job_id = j.id ORDER BY variant_index LIMIT 1) AS thumb_b64,
+                  (SELECT id FROM job_results WHERE job_id = j.id ORDER BY variant_index LIMIT 1) AS thumb_result_id,
                   (SELECT r2_key_thumb FROM job_results WHERE job_id = j.id ORDER BY variant_index LIMIT 1) AS thumb_key,
                   (SELECT source_url FROM job_results WHERE job_id = j.id ORDER BY variant_index LIMIT 1) AS source_url
            FROM jobs j
@@ -96,18 +96,22 @@ pub async fn list_job_summaries(state: &AppState, user_id: Uuid, limit: i64) -> 
     let mut out = Vec::new();
     for row in rows {
         let id: Uuid = row.get("id");
-        let thumb_b64: Option<String> = row.get("thumb_b64");
+        let thumb_result_id: Option<Uuid> = row.get("thumb_result_id");
         let thumb_key: Option<String> = row.get("thumb_key");
         let source_url: Option<String> = row.get("source_url");
         let thumb_url = if let Some(url) = source_url.filter(|s| !s.is_empty()) {
-            Some(url)
+            if url.contains("/v1/images/assets/") {
+                thumb_result_id.map(|id| thumb_api_url(id, 120))
+            } else {
+                Some(url)
+            }
         } else if let (Some(storage), Some(key)) = (state.storage.as_ref(), thumb_key) {
             storage
                 .presign_get(&key, state.config.presign_ttl_secs, false)
                 .await
                 .ok()
-        } else if let Some(b64) = thumb_b64 {
-            Some(format!("data:image/png;base64,{b64}"))
+        } else if let Some(id) = thumb_result_id {
+            Some(thumb_api_url(id, 120))
         } else {
             None
         };
@@ -176,6 +180,25 @@ pub async fn get_job_detail(state: &AppState, job_id: Uuid, user_id: Uuid) -> Re
     Ok(Some(JobDetail { job, results: views }))
 }
 
+pub async fn get_job_status(
+    state: &AppState,
+    job_id: Uuid,
+    user_id: Uuid,
+) -> Result<Option<(String, Option<String>)>> {
+    let row = sqlx::query(
+        "SELECT status, error_message FROM jobs WHERE id = $1 AND user_id = $2",
+    )
+    .bind(job_id)
+    .bind(user_id)
+    .fetch_optional(&state.pool)
+    .await?;
+    Ok(row.map(|r| (r.get("status"), r.get("error_message"))))
+}
+
+fn thumb_api_url(result_id: Uuid, width: u32) -> String {
+    format!("/api/images/thumb/{result_id}?w={width}")
+}
+
 pub async fn result_to_view(state: &AppState, r: JobResultRecord) -> Result<JobResultView> {
     let storage = state.storage.as_ref();
     let has_persisted = r
@@ -207,15 +230,15 @@ pub async fn result_to_view(state: &AppState, r: JobResultRecord) -> Result<JobR
         let ephemeral_gateway = url.contains("/v1/images/assets/");
         if has_persisted || !ephemeral_gateway {
             let keywords = r.keywords.and_then(|v| serde_json::from_value(v).ok());
-            let b64 = r.inline_preview_b64.clone();
+            let thumb = thumb_api_url(r.id, 512);
             return Ok(JobResultView {
                 id: r.id,
                 provider: r.provider,
-                preview_url: Some(url.clone()),
+                preview_url: Some(thumb.clone()),
                 download_url: Some(url.clone()),
-                thumb_url: Some(url),
-                preview_b64: b64.clone(),
-                b64_json: b64,
+                thumb_url: Some(thumb_api_url(r.id, 240)),
+                preview_b64: None,
+                b64_json: None,
                 agent_prompt: r.agent_prompt,
                 revised_prompt: r.revised_prompt,
                 keywords,
@@ -224,8 +247,13 @@ pub async fn result_to_view(state: &AppState, r: JobResultRecord) -> Result<JobR
     }
     let preview_url = if let (Some(s), Some(key)) = (storage, &r.r2_key_preview) {
         Some(s.presign_get(key, state.config.presign_ttl_secs, false).await?)
-    } else if let Some(b64) = &r.inline_preview_b64 {
-        Some(format!("data:image/png;base64,{b64}"))
+    } else if r
+        .inline_preview_b64
+        .as_ref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+    {
+        Some(thumb_api_url(r.id, 768))
     } else {
         None
     };
@@ -236,19 +264,25 @@ pub async fn result_to_view(state: &AppState, r: JobResultRecord) -> Result<JobR
     };
     let thumb_url = if let (Some(s), Some(key)) = (storage, &r.r2_key_thumb) {
         Some(s.presign_get(key, state.config.presign_ttl_secs, false).await?)
+    } else if r
+        .inline_preview_b64
+        .as_ref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+    {
+        Some(thumb_api_url(r.id, 240))
     } else {
         None
     };
     let keywords = r.keywords.and_then(|v| serde_json::from_value(v).ok());
-    let b64 = r.inline_preview_b64.clone();
     Ok(JobResultView {
         id: r.id,
         provider: r.provider,
         preview_url,
         download_url,
         thumb_url,
-        preview_b64: b64.clone(),
-        b64_json: b64,
+        preview_b64: None,
+        b64_json: None,
         agent_prompt: r.agent_prompt,
         revised_prompt: r.revised_prompt,
         keywords,

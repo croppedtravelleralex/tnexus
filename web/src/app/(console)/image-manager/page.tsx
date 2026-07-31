@@ -9,7 +9,7 @@ import { ElevatedCard, PageShell } from "@/components/admin/page-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { imagesApi, type ManagedImage } from "@/lib/api";
+import { imagesApi, apiAssetUrl, type ManagedImage } from "@/lib/api";
 import { fetchWithCache, invalidateCache } from "@/lib/api-cache";
 import { formatImageDateTime } from "@/lib/account-display";
 import { formatDuration } from "@/lib/format-duration";
@@ -19,18 +19,18 @@ const PAGE_SIZE = 24;
 function thumbSrc(item: ManagedImage) {
   const inline = b64Fallback(item);
   if (inline) return inline;
-  if (item.thumb_api_url) return item.thumb_api_url;
-  if (item.thumbnail_url) return item.thumbnail_url;
-  if (item.url) return item.url;
+  if (item.thumb_api_url) return apiAssetUrl(item.thumb_api_url);
+  if (item.thumbnail_url) return apiAssetUrl(item.thumbnail_url);
+  if (item.url) return apiAssetUrl(item.url);
   return undefined;
 }
 
 function thumbFallback(item: ManagedImage) {
-  return b64Fallback(item) || item.thumbnail_url || item.url || undefined;
+  return b64Fallback(item) || apiAssetUrl(item.thumbnail_url) || apiAssetUrl(item.url) || undefined;
 }
 
 function fullSrc(item: ManagedImage) {
-  return item.url || item.thumbnail_url || "";
+  return apiAssetUrl(item.url) || apiAssetUrl(item.thumbnail_url) || "";
 }
 
 function b64Fallback(item: ManagedImage) {

@@ -1,5 +1,5 @@
 use crate::config::JOB_QUEUE_KEY;
-use crate::jobs::{create_job, delete_jobs, get_job_detail, list_job_summaries, list_jobs};
+use crate::jobs::{create_job, delete_jobs, get_job_detail, get_job_status, list_job_summaries, list_jobs};
 use crate::middleware::AuthUser;
 use crate::models::{parse_director_models, parse_mode, parse_provider, parse_workflow, JobDetail, JobListItem, JobRecord};
 use crate::state::AppState;
@@ -51,6 +51,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/", post(create_job_handler).get(list_jobs_handler).delete(delete_jobs_handler))
         .route("/summaries", get(list_summaries_handler))
         .route("/{id}", get(get_job_handler))
+        .route("/{id}/status", get(get_job_status_handler))
         .route("/{id}/events", get(job_events_handler))
 }
 
@@ -177,6 +178,32 @@ async fn get_job_handler(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or((StatusCode::NOT_FOUND, "not found".into()))?;
     Ok(Json(detail))
+}
+
+#[derive(Serialize)]
+struct JobStatusResponse {
+    status: String,
+    error_message: Option<String>,
+    progress: u8,
+}
+
+async fn get_job_status_handler(
+    State(state): State<Arc<AppState>>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<JobStatusResponse>, (StatusCode, String)> {
+    let user_id = Uuid::parse_str(&user.claims.sub)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "bad user".into()))?;
+    let row = get_job_status(&state, id, user_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "not found".into()))?;
+    let (status, error_message) = row;
+    Ok(Json(JobStatusResponse {
+        progress: progress_for_status(&status),
+        status,
+        error_message,
+    }))
 }
 
 async fn job_events_handler(

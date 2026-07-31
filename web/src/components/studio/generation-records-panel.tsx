@@ -3,7 +3,7 @@
 import { CheckSquare, Plus, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { jobsApi, type JobListItem } from "@/lib/api";
+import { jobsApi, apiAssetUrl, type JobListItem } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { formatDuration } from "@/lib/format-duration";
 import { cn } from "@/lib/utils";
@@ -170,7 +170,7 @@ export function GenerationRecordsPanel({ activeId, onSelect, onNew, refreshKey }
                       <div className="h-11 w-11 shrink-0 overflow-hidden rounded-lg bg-[var(--neo-surface-muted)]">
                         {job.thumb_url ? (
                           // eslint-disable-next-line @next/next/no-img-element
-                          <img src={job.thumb_url} alt="" className="h-full w-full object-cover" />
+                          <img src={apiAssetUrl(job.thumb_url)} alt="" className="h-full w-full object-cover" />
                         ) : (
                           <div className="flex h-full items-center justify-center text-[10px] text-[var(--neo-muted)]">
                             {isRunning ? "…" : "无图"}

@@ -1,6 +1,6 @@
 # HANDOFF — TNexus（含 gateway-rs 合并）
 
-最后更新：**2026-07-31（共享 accounts.db + 删除 JSON 快照）**
+最后更新：**2026-07-31（Studio 轮询减负 + 共享 accounts.db）**
 
 ## 读什么（按顺序）
 
@@ -59,6 +59,9 @@
 | gateway `:8014` `tnexus-gateway` | ✅ 与 TNexus `crates/gateway` 同步 |
 | `UPSTREAM_API_KEY` 定期刷新（cron） | ⚠️ 需运维；TTL ≈24h，过期报 `invalid session` |
 | 号池与 8012 共享 live `accounts.db`（WAL + 事务写入） | ✅ `tnexus-accounts-db` |
+| Studio 生图轮询改轻量 `/api/jobs/{id}/status`（不再每 2s 拉全量 b64） | ✅ |
+| 生成记录/结果预览改 thumb API（左侧列表不再内联 MB 级 data URL） | ✅ |
+| 生图进行中计时器实时刷新（不再固定显示「1秒」） | ✅ |
 | `pin_account.json` 与 pool/sqlite 同步 | ⚠️ 曾过期；刷新后需与 pool 对齐 |
 | Outlook 恢复 UI、养号结果 merge 回 JSON | 📋 下一迭代 |
 | gateway-rs 物理归档 | 已迁入 `crates/gateway`，待删独立仓 |
@@ -107,16 +110,16 @@ cd "$TNEXUS_ROOT" && git pull && bash deploy/panda/deploy.sh
 
 `.env` 必含：`ACCOUNTS_DB`、`SCHEDULING_STATE_FILE`、`ACCOUNT_OPS_*`、`TNEXUS_ACCOUNT_OPS_IMAGE`；`deploy.sh` 会通过 `patch_env.sh` 自动补齐缺失项。
 
-### 刷新 worker → gateway JWT（`UPSTREAM_API_KEY`）
+### 刷新 worker → gateway JWT
 
-Worker 调 `:8014/v1/*` 需 Bearer JWT（`AUTH_MODE=jwt`）。**不是号池 ChatGPT token**；约 24h 过期，过期时报 `401 invalid session`。
+**已并入 `deploy.sh`**，无需单独操作。若仅 JWT 过期、不想全量重建：
 
 ```bash
-python3 /root/gptimage-gateway-rs/scripts/panda_setup_tnexus_env.py
-cd /root/TNexus && bash deploy/panda/deploy.sh   # 必须 force-recreate worker
+bash /root/TNexus/deploy/panda/refresh_upstream_jwt.sh
+cd /root/TNexus && docker compose --env-file /opt/tnexus/.env -f deploy/panda/docker-compose.yml up -d --force-recreate worker
 ```
 
-建议 cron 每日执行上述脚本（或改 gateway `AUTH_MODE=apikey` + 固定 `GATEWAY_AUTH_KEY`）。
+**禁止**再跑 `panda_setup_tnexus_env.py`（会整文件覆盖 `.env`）。
 
 ### 号池并发写入
 
@@ -150,7 +153,7 @@ curl -fsS -b /tmp/cj https://tnexus.relai.asia/api/accounts?offset=0&limit=1
 |------|------|------|
 | `/accounts` 404 | 旧 GHCR 镜像无静态页 | `deploy.sh` 拉最新 |
 | `/api/accounts` 404 | 同上 | 同上 |
-| worker 401 `invalid session` | **`UPSTREAM_API_KEY`（gateway JWT）过期**，非号池 OAuth | `panda_setup_tnexus_env.py` + `deploy.sh` |
+| worker 401 `invalid session` | **`UPSTREAM_API_KEY`（gateway JWT）过期** | `bash deploy/panda/deploy.sh`（自动刷新） |
 | 8012 通、8014/TNexus 不通 | 多为 **Gateway JWT 过期** 或 pin 未对齐 | `panda_setup_tnexus_env.py` + `deploy.sh`；确认 `ACCOUNTS_DB` 指向 live db |
 | 图片管理灰块（旧图） | 历史记录仅存 gateway 内存 URL | 新图已写 `inline_preview_b64`；旧图不可恢复 |
 | worker env 未生效 | `docker restart` 不刷新 env | `deploy.sh` force-recreate |
@@ -160,6 +163,8 @@ curl -fsS -b /tmp/cj https://tnexus.relai.asia/api/accounts?offset=0&limit=1
 | 养号/Outlook 503 | account-ops 未配或 GPTIMAGE_ROOT 不可用 | 查 `9011/health` 与容器日志 |
 | 窗口预热仅 queued | account-ops 未启用 prime 服务 | 配 GATEWAY_BASE 回退或修 GPTIMAGE_ROOT |
 | 调度门不生效 | gateway :8014 未更新 | 单独发布 `crates/gateway` 并重启 |
+| Studio 一直「1秒」/ 55% 假死 | 轮询 `GET /api/jobs/{id}` 返回全量 inline b64，JSON 过大超时；计时器未 tick | 已改 status 轮询 + thumb API；2K 竞演仍可能需 2–5 分钟 |
+| 页面/切换/列表加载慢 | 生成记录 API 内联 100 条 b64 缩略图；静态导出整页跳转 | 已改 thumb API；首屏仍受静态导出影响 |
 
 ---
 
