@@ -76,8 +76,10 @@ pub fn load() -> Result<Config> {
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(0);
+    /// 0 = no practical cap (10k in-flight image HTTP requests).
+    const UNLIMITED_IMAGE_PERMITS: usize = 10_000;
     let sem_permits = if image_global_concurrency == 0 {
-        usize::MAX / 4
+        UNLIMITED_IMAGE_PERMITS
     } else {
         image_global_concurrency.max(1)
     };
