@@ -3,4 +3,10 @@ uvicorn[standard]>=0.32
 pydantic>=2.0
 curl_cffi>=0.7
 Pillow>=10.0
+sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.0
+pybase64>=1.4.3
+tiktoken>=0.12.0
+gitpython>=3.1.0
+python-multipart>=0.0.9
 # gptimage services (OpenAIBackendAPI) via GPTIMAGE_ROOT
