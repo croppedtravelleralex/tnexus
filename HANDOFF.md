@@ -95,17 +95,17 @@ account-ops :9011             — OAuth / refresh / relogin / nurture / outlook 
 
 **进度详见** [docs/35-tnexus-gptimage-gap.md](docs/35-tnexus-gptimage-gap.md)（含完成度百分比）。
 
-### 部署（GHCR）
+### 部署（一条命令）
 
 ```bash
-# Panda
+# Panda — 只需这一条（patch env + gateway + 刷新 JWT + pull + 重启）
 export TNEXUS_ROOT=/root/TNexus
-cd "$TNEXUS_ROOT" && git pull
-bash deploy/panda/deploy.sh               # pull + up api worker account-ops
-# gateway :8014 单独 compose：deploy/panda/gateway-compose.yml
+cd "$TNEXUS_ROOT" && git pull && bash deploy/panda/deploy.sh
 ```
 
-`.env` 必含：`ACCOUNTS_DB`、`SCHEDULING_STATE_FILE`、`ACCOUNT_OPS_*`、`TNEXUS_ACCOUNT_OPS_IMAGE`；可选 `GATEWAY_BASE`/`GATEWAY_AUTH_KEY`（预热回退）。**勿配** `GPTIMAGE_ADMIN_TOKEN`。**已废弃**：`ACCOUNTS_FILE` / `accounts_pool.json` / `export_pool.sh`。
+**不再需要** `export_pool.sh`、`panda_setup_tnexus_env.py` 或手动 `patch_env.sh`。JWT 由 `deploy/panda/refresh_upstream_jwt.sh` 在部署时自动刷新（只改 `UPSTREAM_API_KEY`，不覆盖整个 `.env`）。
+
+`.env` 必含：`ACCOUNTS_DB`、`SCHEDULING_STATE_FILE`、`ACCOUNT_OPS_*`、`TNEXUS_ACCOUNT_OPS_IMAGE`；`deploy.sh` 会通过 `patch_env.sh` 自动补齐缺失项。
 
 ### 刷新 worker → gateway JWT（`UPSTREAM_API_KEY`）
 

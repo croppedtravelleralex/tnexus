@@ -1,18 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# Panda deploy — pull GHCR images and restart (no build on Panda).
+# Panda one-shot deploy — patch env, gateway, refresh JWT, pull GHCR, restart. No Python.
 TNEXUS_ROOT="${TNEXUS_ROOT:-/root/TNexus}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_FILE="$TNEXUS_ROOT/deploy/panda/docker-compose.yml"
 ENV_FILE="/opt/tnexus/.env"
 
-if [[ ! -f "$ENV_FILE" ]]; then
-  echo "missing $ENV_FILE" >&2
-  exit 1
-fi
 if [[ ! -f "$COMPOSE_FILE" ]]; then
   echo "missing $COMPOSE_FILE — git pull $TNEXUS_ROOT first" >&2
   exit 1
 fi
+
+if [[ ! -f "$ENV_FILE" ]]; then
+  echo "bootstrapping $ENV_FILE from deploy/panda/.env.example" >&2
+  mkdir -p /opt/tnexus/data/pool
+  cp "$TNEXUS_ROOT/deploy/panda/.env.example" "$ENV_FILE"
+  chmod 600 "$ENV_FILE"
+fi
+
+bash "$SCRIPT_DIR/patch_env.sh"
+rm -f /opt/tnexus/data/pool/accounts_pool.json
+
+# Gateway must be up before JWT refresh; then worker picks up new key on recreate.
+bash "$SCRIPT_DIR/gateway-deploy.sh"
+bash "$SCRIPT_DIR/refresh_upstream_jwt.sh"
 
 set -a
 # shellcheck disable=SC1090
