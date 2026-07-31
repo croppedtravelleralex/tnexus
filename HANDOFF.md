@@ -1,6 +1,6 @@
 # HANDOFF — TNexus（含 gateway-rs 合并）
 
-最后更新：**2026-07-31（号池失效根因澄清 + 图片持久化 + 文档同步）**
+最后更新：**2026-07-31（共享 accounts.db + 删除 JSON 快照）**
 
 ## 读什么（按顺序）
 
@@ -58,7 +58,7 @@
 | GHCR 拉取最新镜像（api + worker + account-ops + 静态 UI） | ✅ 2026-07-31 18:03 `9dcb82a` |
 | gateway `:8014` `tnexus-gateway` | ✅ 与 TNexus `crates/gateway` 同步 |
 | `UPSTREAM_API_KEY` 定期刷新（cron） | ⚠️ 需运维；TTL ≈24h，过期报 `invalid session` |
-| 号池 JSON 与 sqlite 实时同步 | ⚠️ 仅 `deploy.sh` 时 `export_pool.sh`；非实时 |
+| 号池与 8012 共享 live `accounts.db`（WAL + 事务写入） | ✅ `tnexus-accounts-db` |
 | `pin_account.json` 与 pool/sqlite 同步 | ⚠️ 曾过期；刷新后需与 pool 对齐 |
 | Outlook 恢复 UI、养号结果 merge 回 JSON | 📋 下一迭代 |
 | gateway-rs 物理归档 | 已迁入 `crates/gateway`，待删独立仓 |
@@ -87,25 +87,25 @@ tnexus.relai.asia (nginx)
 
 chatgpt2api-local :8012       — 生产 gpt-image（live accounts.db，禁止替换）
 /opt/tnexus/.env              — secrets + UPSTREAM_API_KEY（gateway JWT）
-/opt/tnexus/data/pool/        — accounts_pool.json 快照（gateway/api 只读）
-/root/gptimage/data/accounts.db — 号池真源（8012 直读；TNexus 经 export 同步）
+/opt/tnexus/data/pool/        — scheduling_state.json、usage_events.ndjson（调度/用量）
+/root/gptimage/data/accounts.db — 号池真源（8012 + TNexus api/gateway 共享读写，WAL）
 
 account-ops :9011             — OAuth / refresh / relogin / nurture / outlook / quota-prime
 ```
 
 **进度详见** [docs/35-tnexus-gptimage-gap.md](docs/35-tnexus-gptimage-gap.md)（含完成度百分比）。
 
-### 部署（只读导号 + GHCR）
+### 部署（GHCR）
 
 ```bash
 # Panda
 export TNEXUS_ROOT=/root/TNexus
 cd "$TNEXUS_ROOT" && git pull
-bash deploy/panda/export_pool.sh          # sqlite → /opt/tnexus/data/pool/
 bash deploy/panda/deploy.sh               # pull + up api worker account-ops
+# gateway :8014 单独 compose：deploy/panda/gateway-compose.yml
 ```
 
-`.env` 必含：`ACCOUNTS_FILE`、`SCHEDULING_STATE_FILE`、`ACCOUNT_OPS_*`、`TNEXUS_ACCOUNT_OPS_IMAGE`；可选 `GATEWAY_BASE`/`GATEWAY_AUTH_KEY`（预热回退）。**勿配** `GPTIMAGE_ADMIN_TOKEN`。
+`.env` 必含：`ACCOUNTS_DB`、`SCHEDULING_STATE_FILE`、`ACCOUNT_OPS_*`、`TNEXUS_ACCOUNT_OPS_IMAGE`；可选 `GATEWAY_BASE`/`GATEWAY_AUTH_KEY`（预热回退）。**勿配** `GPTIMAGE_ADMIN_TOKEN`。**已废弃**：`ACCOUNTS_FILE` / `accounts_pool.json` / `export_pool.sh`。
 
 ### 刷新 worker → gateway JWT（`UPSTREAM_API_KEY`）
 
@@ -118,12 +118,11 @@ cd /root/TNexus && bash deploy/panda/deploy.sh   # 必须 force-recreate worker
 
 建议 cron 每日执行上述脚本（或改 gateway `AUTH_MODE=apikey` + 固定 `GATEWAY_AUTH_KEY`）。
 
-### 同步号池快照（sqlite → TNexus JSON）
+### 号池并发写入
 
-```bash
-bash /root/TNexus/deploy/panda/export_pool.sh
-# gateway 读 /opt/tnexus/data/pool/accounts_pool.json，不读 8012 容器内 live db
-```
+8012（Python）与 TNexus（Rust `tnexus-accounts-db`）共享同一 sqlite 文件。双方均启用 **WAL** + **busy_timeout**；Rust 侧单行 upsert / delete / inflight 更新在 **事务** 内完成，避免整表覆盖。
+
+Panda 上线后删除旧快照：`rm -f /opt/tnexus/data/pool/accounts_pool.json`，并在 `/opt/tnexus/.env` 将 `ACCOUNTS_FILE` 改为 `ACCOUNTS_DB=/gptimage/data/accounts.db`（可用 `deploy/panda/patch_env.sh`）。
 
 ### 验收
 
@@ -152,7 +151,7 @@ curl -fsS -b /tmp/cj https://tnexus.relai.asia/api/accounts?offset=0&limit=1
 | `/accounts` 404 | 旧 GHCR 镜像无静态页 | `deploy.sh` 拉最新 |
 | `/api/accounts` 404 | 同上 | 同上 |
 | worker 401 `invalid session` | **`UPSTREAM_API_KEY`（gateway JWT）过期**，非号池 OAuth | `panda_setup_tnexus_env.py` + `deploy.sh` |
-| 8012 通、8014/TNexus 不通 | 不同进程/数据源/鉴权（见 doc 35 §号池为何不同步） | 刷新 JWT + `export_pool.sh` |
+| 8012 通、8014/TNexus 不通 | 多为 **Gateway JWT 过期** 或 pin 未对齐 | `panda_setup_tnexus_env.py` + `deploy.sh`；确认 `ACCOUNTS_DB` 指向 live db |
 | 图片管理灰块（旧图） | 历史记录仅存 gateway 内存 URL | 新图已写 `inline_preview_b64`；旧图不可恢复 |
 | worker env 未生效 | `docker restart` 不刷新 env | `deploy.sh` force-recreate |
 | 公网 `:8014` 超时 | 仅云安全组、未开 UFW | `ufw allow 8014/tcp` |

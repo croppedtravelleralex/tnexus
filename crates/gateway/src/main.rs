@@ -129,7 +129,7 @@ async fn main() -> anyhow::Result<()> {
                 "accounts ready (pin + helper candidates)"
             );
         }
-        Err(e) => warn!(error=%e, "helper candidates unavailable; using pin/ACCOUNTS_FILE only"),
+        Err(e) => warn!(error=%e, "helper candidates unavailable; using pin/ACCOUNTS_DB only"),
     }
 
     let static_dir = std::env::var("GATEWAY_STATIC_DIR")

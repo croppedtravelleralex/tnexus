@@ -1,5 +1,5 @@
 # TNexus gateway on Panda :8014 — scheduling_gate + upstream.
-# Reuses existing gateway.env (JWT/auth) and TNexus pool mount.
+# Shares live gptimage accounts.db with :8012 (WAL + transactional writes).
 services:
   gateway:
     image: ${TNEXUS_GATEWAY_IMAGE:-ghcr.io/croppedtravelleralex/tnexus-gateway:latest}
@@ -7,14 +7,12 @@ services:
     env_file:
       - /root/gptimage-gateway-rs/secrets/gateway.env
     environment:
-      ACCOUNTS_FILE: /data/pool/accounts_pool.json
+      ACCOUNTS_DB: /gptimage/data/accounts.db
       SCHEDULING_STATE_FILE: /data/pool/scheduling_state.json
-      PIN_ACCOUNT_FILE: /secrets/pin_account.json
       GATEWAY_LISTEN: 0.0.0.0:8014
       IMAGE_ENABLED: "1"
       DATA_PLANE: upstream
     volumes:
-      - /opt/tnexus/data/pool:/data/pool:ro
-      - /root/gptimage-gateway-rs/secrets/pin_account.json:/secrets/pin_account.json:ro
-      - /root/gptimage-gateway-rs/data:/data:rw
+      - /opt/tnexus/data/pool:/data/pool:rw
+      - /root/gptimage/data:/gptimage/data:rw
     restart: unless-stopped

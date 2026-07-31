@@ -1,7 +1,8 @@
-//! Account pool file loader for tnexus-api (gptimage-compatible responses).
+//! Account pool backed by shared gptimage `accounts.db` (gptimage-compatible responses).
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use tnexus_accounts_db::AccountsDb;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
@@ -107,7 +108,7 @@ pub struct AccountsStore {
     inner: Arc<RwLock<HashMap<String, AccountFile>>>,
     scheduling: Arc<RwLock<HashMap<String, String>>>,
     scheduling_path: PathBuf,
-    pool_path: PathBuf,
+    db: AccountsDb,
 }
 
 impl Default for AccountsStore {
@@ -116,7 +117,10 @@ impl Default for AccountsStore {
             inner: Arc::new(RwLock::new(HashMap::new())),
             scheduling: Arc::new(RwLock::new(HashMap::new())),
             scheduling_path: scheduling_state_path(),
-            pool_path: pool_file_path(),
+            db: AccountsDb::open("data/accounts.db").unwrap_or_else(|_| {
+                AccountsDb::open(std::env::temp_dir().join("tnexus-accounts-missing.db"))
+                    .expect("temp accounts db")
+            }),
         })
     }
 }
@@ -124,20 +128,12 @@ impl Default for AccountsStore {
 impl AccountsStore {
     pub fn from_env() -> Result<Self> {
         let scheduling_path = scheduling_state_path();
-        let pool_path = pool_file_path();
+        let db = AccountsDb::from_env()?;
         let scheduling = load_scheduling_state(&scheduling_path)?;
         let mut map = HashMap::new();
-        if pool_path.exists() {
-            for row in load_accounts_file(pool_path.clone())? {
+        for value in db.list_account_values()? {
+            if let Some(row) = AccountFile::from_value(&value) {
                 map.insert(row.email.to_lowercase(), row);
-            }
-        }
-        if let Ok(path) = std::env::var("ACCOUNTS_FILE") {
-            let custom = PathBuf::from(path);
-            if custom != pool_path {
-                for row in load_accounts_file(custom)? {
-                    map.insert(row.email.to_lowercase(), row);
-                }
             }
         }
         if let Ok(path) = std::env::var("PIN_ACCOUNT_FILE") {
@@ -148,7 +144,7 @@ impl AccountsStore {
             inner: Arc::new(RwLock::new(map)),
             scheduling: Arc::new(RwLock::new(scheduling)),
             scheduling_path,
-            pool_path,
+            db,
         })
     }
 
@@ -439,16 +435,18 @@ impl AccountsStore {
                     if existing.access_token == row.access_token {
                         existing.merge_value(&value);
                         summary.skipped += 1;
-                        continue;
+                    } else {
+                        existing.merge_value(&value);
+                        summary.updated += 1;
                     }
-                    existing.merge_value(&value);
-                    summary.updated += 1;
                 } else {
-                    guard.insert(key, row);
+                    guard.insert(key.clone(), row);
                     summary.added += 1;
                 }
+                if let Some(row) = guard.get(&key) {
+                    persist_account_row(&self.db, row)?;
+                }
             }
-            save_accounts_file(&self.pool_path, &guard)?;
         }
         Ok(summary)
     }
@@ -580,11 +578,20 @@ impl AccountsStore {
             return Ok(0);
         }
         let mut guard = self.inner.write().await;
-        let before = guard.len();
-        guard.retain(|_, row| !token_set.contains(&row.access_token));
-        let removed = before.saturating_sub(guard.len());
+        let mut removed_tokens: Vec<String> = Vec::new();
+        guard.retain(|_, row| {
+            if token_set.contains(&row.access_token) {
+                removed_tokens.push(row.access_token.clone());
+                false
+            } else {
+                true
+            }
+        });
+        let removed = removed_tokens.len();
         if removed > 0 {
-            save_accounts_file(&self.pool_path, &guard)?;
+            for token in &removed_tokens {
+                let _ = self.db.delete_by_access_token(token)?;
+            }
             let mut scheduling = self.scheduling.write().await;
             scheduling.retain(|email, _| guard.contains_key(email));
             save_scheduling_state(&self.scheduling_path, &scheduling)?;
@@ -609,7 +616,7 @@ impl AccountsStore {
             row.merge_value(patch);
             let scheduling = self.scheduling.read().await;
             let item = Self::row_to_json(row, &scheduling);
-            save_accounts_file(&self.pool_path, &guard)?;
+            persist_account_row(&self.db, row)?;
             return Ok(Some(item));
         }
         Ok(None)
@@ -739,25 +746,8 @@ pub fn activity_daily(days: usize) -> Value {
     build_activity_daily(days, &HashMap::new())
 }
 
-fn pool_file_path() -> PathBuf {
-    std::env::var("ACCOUNTS_FILE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("data/accounts_pool.json"))
-}
-
-fn save_accounts_file(path: &Path, map: &HashMap<String, AccountFile>) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).with_context(|| format!("create dir {:?}", parent))?;
-    }
-    let mut rows: Vec<Value> = map.values().map(|row| row.to_value()).collect();
-    rows.sort_by(|a, b| {
-        let ea = a.get("email").and_then(|v| v.as_str()).unwrap_or("");
-        let eb = b.get("email").and_then(|v| v.as_str()).unwrap_or("");
-        ea.cmp(eb)
-    });
-    let raw = serde_json::to_string_pretty(&rows).context("serialize accounts pool")?;
-    fs::write(path, raw).with_context(|| format!("write accounts pool {:?}", path))?;
-    Ok(())
+fn persist_account_row(db: &AccountsDb, row: &AccountFile) -> Result<()> {
+    db.upsert_account_value(&row.to_value())
 }
 
 fn scheduling_state_path() -> PathBuf {
@@ -794,13 +784,4 @@ fn load_single(path: PathBuf) -> Result<AccountFile> {
     let raw = fs::read_to_string(&path).with_context(|| format!("read {:?}", path))?;
     let value: Value = serde_json::from_str(&raw).context("parse PIN_ACCOUNT_FILE")?;
     AccountFile::from_value(&value).context("parse PIN_ACCOUNT_FILE account")
-}
-
-fn load_accounts_file(path: PathBuf) -> Result<Vec<AccountFile>> {
-    let raw = fs::read_to_string(&path).with_context(|| format!("read {:?}", path))?;
-    let items: Vec<Value> = serde_json::from_str(&raw).context("parse ACCOUNTS_FILE")?;
-    Ok(items
-        .into_iter()
-        .filter_map(|value| AccountFile::from_value(&value))
-        .collect())
 }

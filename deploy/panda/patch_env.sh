@@ -14,8 +14,13 @@ ensure_kv() {
 mkdir -p /opt/tnexus/data/pool
 test -f "$ENV" || { echo "missing $ENV"; exit 1; }
 
+if grep -q "^ACCOUNTS_FILE=" "$ENV" 2>/dev/null; then
+  sed -i '/^ACCOUNTS_FILE=/d' "$ENV"
+  echo "removed deprecated ACCOUNTS_FILE from $ENV"
+fi
+
 ensure_kv TNEXUS_ACCOUNT_OPS_IMAGE ghcr.io/croppedtravelleralex/tnexus-account-ops:latest
-ensure_kv ACCOUNTS_FILE /data/pool/accounts_pool.json
+ensure_kv ACCOUNTS_DB /gptimage/data/accounts.db
 ensure_kv SCHEDULING_STATE_FILE /data/pool/scheduling_state.json
 ensure_kv USAGE_EVENTS_FILE /data/pool/usage_events.ndjson
 ensure_kv ACCOUNT_OPS_BASE http://127.0.0.1:9011

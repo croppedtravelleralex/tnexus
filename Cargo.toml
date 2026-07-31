@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/tnexus-accounts-db",
     "crates/tnexus-domain",
     "crates/tnexus-auth",
     "crates/tnexus-storage",
@@ -62,6 +63,7 @@ tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+tnexus-accounts-db = { path = "crates/tnexus-accounts-db" }
 tnexus-auth = { path = "crates/tnexus-auth" }
 tnexus-domain = { path = "crates/tnexus-domain" }
 tnexus-storage = { path = "crates/tnexus-storage" }

@@ -1,12 +1,14 @@
 use anyhow::{bail, Context, Result};
 use helper_client::PinAccount;
 use serde::Deserialize;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
+use tnexus_accounts_db::AccountsDb;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataPlane {
@@ -92,10 +94,11 @@ pub fn load() -> Result<Config> {
 
     let mut accounts = HashMap::new();
     accounts.insert(account.email.to_lowercase(), account.clone());
-    if let Ok(path) = env::var("ACCOUNTS_FILE") {
-        for af in load_accounts_file(PathBuf::from(path))? {
-            let pin = to_pin(af);
-            accounts.insert(pin.email.to_lowercase(), pin);
+    if let Ok(db) = AccountsDb::from_env() {
+        for (_, value) in db.accounts_by_email()? {
+            if let Some(pin) = value_to_pin(&value) {
+                accounts.insert(pin.email.to_lowercase(), pin);
+            }
         }
     }
 
@@ -127,13 +130,6 @@ fn load_account_file(path: PathBuf) -> Result<PinAccount> {
     Ok(to_pin(af))
 }
 
-fn load_accounts_file(path: PathBuf) -> Result<Vec<AccountFile>> {
-    let raw = fs::read_to_string(&path).with_context(|| format!("read {:?}", path))?;
-    let parsed: Vec<AccountFile> =
-        serde_json::from_str(&raw).context("parse ACCOUNTS_FILE as array")?;
-    Ok(parsed)
-}
-
 fn to_pin(af: AccountFile) -> PinAccount {
     PinAccount {
         email: af.email,
@@ -142,4 +138,35 @@ fn to_pin(af: AccountFile) -> PinAccount {
         proxy: af.proxy,
         user_agent: af.user_agent,
     }
+}
+
+fn value_to_pin(value: &Value) -> Option<PinAccount> {
+    let email = value
+        .get("email")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
+    let access_token = value
+        .get("access_token")
+        .or_else(|| value.get("accessToken"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    Some(PinAccount {
+        email: email.to_string(),
+        access_token,
+        device_id: value
+            .get("device_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        proxy: value
+            .get("proxy")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        user_agent: value
+            .get("user_agent")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+    })
 }

@@ -178,7 +178,7 @@ TNexus/
 #### P2-D 持久化与号池数据面
 
 - [ ] **P2-D1** 账号存储：SQLite/Postgres 方案选型（现 gateway `HashMap` 重启丢失 — 必须改）
-- [ ] **P2-D2** 与 `pin_account.json` + `accounts_pool.json` 加载兼容
+- [ ] **P2-D2** 与 `pin_account.json` + 共享 `accounts.db` 加载兼容
 - [ ] **P2-D3** 代理绑定、fp、token 字段与 gptimage `Account` 模型对齐
 - [ ] **P2-D4** 调度门 / slot 记账：评估复用 `gptimage/crates/image_schedule_core`（path 依赖）vs 自研子集
 

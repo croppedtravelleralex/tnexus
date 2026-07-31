@@ -131,7 +131,7 @@
 | `PIN_ACCOUNT_FILE` / `PIN_ACCOUNT_JSON` | — | **全仓唯一真正必填项**：二者全缺则 `bail!` 启动失败（`config.rs:54-61`） |
 | `GATEWAY_LISTEN` | `0.0.0.0:8013` | 监听地址（`config.rs:37`） |
 | `HELPER_URL` | `http://127.0.0.1:19001` | Helper 地址（`config.rs:38`） |
-| `ACCOUNTS_FILE` | — | 追加账号池，与 pin 账号合并（`config.rs:65`） |
+| `ACCOUNTS_DB` | — | 共享 gptimage sqlite 号池，与 pin 账号合并（`config.rs` / `tnexus-accounts-db`） |
 | `IMAGE_ENABLED` | **`0`** | `1` 开启 `/v1/images/generations`；对 `/v1/images/edits` 无效 |
 | `IMAGE_GLOBAL_CONCURRENCY` | `3` | 全局生图并发（`config.rs:44`） |
 | `MVP_MIN_IMAGE_QUOTA` | `1` | 最低生图配额（`config.rs:39`） |

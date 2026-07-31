@@ -54,11 +54,10 @@ cd web && npm run dev
 # Panda:
 export TNEXUS_ROOT=/root/TNexus
 cd $TNEXUS_ROOT && git pull
-bash deploy/panda/export_pool.sh
 bash deploy/panda/deploy.sh
 ```
 
-- 数据：`/opt/tnexus/.env`、`/opt/tnexus/data/pool/`
+- 数据：`/opt/tnexus/.env`、`/opt/tnexus/data/pool/`（调度状态/用量事件）、`/root/gptimage/data/accounts.db`（号池真源，8012 与 TNexus 共享）
 - 域名：`https://tnexus.relai.asia`（号池 `/accounts`，生图 `/v1/` 反代 gateway）
 - 同机回环：`GPTIMAGE_BASE=http://127.0.0.1:8014`
 - 详见 [HANDOFF.md](HANDOFF.md)、[docs/34-tnexus-rollout-oauth-panda.md](docs/34-tnexus-rollout-oauth-panda.md)

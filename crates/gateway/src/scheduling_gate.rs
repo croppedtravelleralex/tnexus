@@ -1,10 +1,12 @@
-//! Scheduling gate — shared with tnexus-api via `SCHEDULING_STATE_FILE` + `ACCOUNTS_FILE`.
+//! Scheduling gate — shared with tnexus-api via `SCHEDULING_STATE_FILE` + live `ACCOUNTS_DB`.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use tnexus_accounts_db::AccountsDb;
+use tracing::warn;
 
 const STATE_VERIFIED: &str = "verified_ready";
 
@@ -16,18 +18,19 @@ struct SchedulingStateFile {
 
 pub struct SchedulingGate {
     scheduling_path: PathBuf,
-    accounts_path: PathBuf,
+    db: AccountsDb,
 }
 
 impl SchedulingGate {
     pub fn from_env() -> Self {
+        let db = AccountsDb::from_env().unwrap_or_else(|e| {
+            panic!("ACCOUNTS_DB required for scheduling gate: {e}");
+        });
         Self {
             scheduling_path: std::env::var("SCHEDULING_STATE_FILE")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from("data/scheduling_state.json")),
-            accounts_path: std::env::var("ACCOUNTS_FILE")
-                .map(PathBuf::from)
-                .unwrap_or_else(|_| PathBuf::from("data/accounts_pool.json")),
+            db,
         }
     }
 
@@ -56,27 +59,10 @@ impl SchedulingGate {
     }
 
     fn load_accounts_by_email(&self) -> HashMap<String, Value> {
-        let mut out = HashMap::new();
-        if !self.accounts_path.exists() {
-            return out;
-        }
-        let Ok(raw) = fs::read_to_string(&self.accounts_path) else {
-            return out;
-        };
-        let Ok(items) = serde_json::from_str::<Vec<Value>>(&raw) else {
-            return out;
-        };
-        for item in items {
-            let email = item
-                .get("email")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_lowercase();
-            if !email.is_empty() {
-                out.insert(email, item);
-            }
-        }
-        out
+        self.db.accounts_by_email().unwrap_or_else(|e| {
+            warn!(error=%e, "load accounts from sqlite failed");
+            HashMap::new()
+        })
     }
 
     fn manual_scheduling_enabled(receive_state: &str) -> bool {
@@ -159,43 +145,11 @@ impl SchedulingGate {
 
     pub fn touch_inflight(&self, email: &str, delta: i64) {
         let key = email.trim().to_lowercase();
-        if key.is_empty() || !self.accounts_path.exists() {
+        if key.is_empty() {
             return;
         }
-        let Ok(raw) = fs::read_to_string(&self.accounts_path) else {
-            return;
-        };
-        let Ok(mut items) = serde_json::from_str::<Vec<Value>>(&raw) else {
-            return;
-        };
-        let mut changed = false;
-        for item in items.iter_mut() {
-            let em = item
-                .get("email")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_lowercase();
-            if em != key {
-                continue;
-            }
-            let cur = item
-                .get("image_inflight")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
-            let next = (cur + delta).max(0);
-            if let Some(obj) = item.as_object_mut() {
-                obj.insert("image_inflight".into(), Value::from(next));
-                changed = true;
-            }
-            break;
-        }
-        if changed {
-            if let Some(parent) = self.accounts_path.parent() {
-                let _ = fs::create_dir_all(parent);
-            }
-            if let Ok(serialized) = serde_json::to_string_pretty(&items) {
-                let _ = fs::write(&self.accounts_path, serialized);
-            }
+        if let Err(e) = self.db.touch_inflight(&key, delta) {
+            warn!(error=%e, email = %key, "touch_inflight failed");
         }
     }
 

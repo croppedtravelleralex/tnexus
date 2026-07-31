@@ -29,6 +29,7 @@ tower = "0.5"
 tower-http = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+tnexus-accounts-db = { workspace = true }
 uuid = { workspace = true }
 hex = { workspace = true }
 hmac = "0.12"

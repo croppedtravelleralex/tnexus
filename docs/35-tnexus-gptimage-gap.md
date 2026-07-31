@@ -1,6 +1,6 @@
 # 35 — TNexus 距离彻底替代 Python gptimage 还差多少
 
-最后更新：**2026-07-31（号池失效根因 + 图片持久化 + 部署记录）**
+最后更新：**2026-07-31（共享 accounts.db，删除 JSON 快照）**
 
 ## 结论（一句话）
 
@@ -44,7 +44,7 @@
 | 灯箱滚轮 0.05×–20× + 拖拽 | ✅ |
 | 本地 stats / schedulable-breakdown / activity 流水 | ✅ `usage_events` + 号池 |
 | 全量慢刷 refresh-all | ✅ 本地 `refresh_all.rs` |
-| 软封 / 删除 / 更新账号 | ✅ 本地 JSON |
+| 软封 / 删除 / 更新账号 | ✅ 共享 sqlite（`tnexus-accounts-db`） |
 | 养号日历预设/绑定 | ✅ 本地 JSON + `ip-nurture` API |
 | 生图 b64 持久化（worker 写 `inline_preview_b64`） | ✅ `a54d057` |
 | 图片管理优先内联 b64 缩略图 | ✅ `9dcb82a` |
@@ -63,7 +63,7 @@
 
 | 能力 | 状态 |
 |------|------|
-| `scheduling_gate.rs` 读 `SCHEDULING_STATE_FILE` + `ACCOUNTS_FILE` | ✅ |
+| `scheduling_gate.rs` 读 `SCHEDULING_STATE_FILE` + live `ACCOUNTS_DB` | ✅ |
 | 生图选号过滤（状态/调度/额度/软封/inflight） | ✅ |
 | `scheduling_bulk` 写调度状态 | ✅ |
 | 生图 inflight 计数 | ✅ |
@@ -80,8 +80,8 @@
 | 维度 | 生产 gpt-image `:8012` | TNexus `:8014` + worker |
 |------|------------------------|-------------------------|
 | 进程 | `chatgpt2api-local` | `panda-gateway-1`（`tnexus-gateway`） |
-| 号池数据源 | **live** `/root/gptimage/data/accounts.db` | **快照** `/opt/tnexus/data/pool/accounts_pool.json` |
-| 同步时机 | 实时读写 sqlite | 仅 `export_pool.sh`（多在 deploy 时） |
+| 号池数据源 | **live** `/root/gptimage/data/accounts.db` | **同一文件**（容器内 `/gptimage/data/accounts.db`） |
+| 同步时机 | 实时读写 sqlite | 实时读写 sqlite（WAL + 事务，无 JSON 快照） |
 | 调度/额度 | Python `humanlike_scheduler`、预检、背压 | Rust `scheduling_gate` + `DATA_PLANE=upstream` |
 | 调用方鉴权 | API Key（`Authorization: Bearer`） | Worker 用 **`UPSTREAM_API_KEY`（Gateway JWT，≈24h TTL）** |
 | 生图实现 | Python `image_task_service` 全链路 | Rust `upstream` SSE（能力子集） |
@@ -90,7 +90,7 @@
 
 1. **`UPSTREAM_API_KEY` 过期**（`exp` 早于 `now`）→ Gateway 返回 `{"ok":false,"error":"invalid session"}`。  
    这是 **Worker→Gateway 的 JWT**，与号池里 ChatGPT `access_token` 无关。
-2. **号池 JSON 滞后**：复核时 **3/40** 账号 `access_token` 与 sqlite 不一致（JSON 早于 db 数小时）。8012 始终读最新 db。
+2. **历史 JSON 快照滞后**（已移除）：曾 3/40 账号 token 与 sqlite 不一致；现 8012 与 TNexus 直读同一 db。
 3. **`pin_account.json` 过期**：`alexnnnmmm@proton.me` 的 pin token 与 db/pool **均不一致**（gateway 部分路径仍读 pin）。
 4. **历史误判**：将 `invalid session` 写成「号池 session 过期」是错误的。
 
@@ -98,13 +98,13 @@
 
 ```bash
 python3 /root/gptimage-gateway-rs/scripts/panda_setup_tnexus_env.py  # 刷新 JWT
-bash deploy/panda/export_pool.sh && bash deploy/panda/deploy.sh      # 同步 pool + 重建 worker
+bash deploy/panda/deploy.sh      # 重建 worker / api / gateway
 ```
 
 | 检查 | 结果 |
 |------|------|
 | `UPSTREAM_API_KEY` 未过期 | ✅ |
-| pool vs sqlite token 不一致数 | **0/40** |
+| pool vs sqlite token 不一致数 | **0/40**（共享 db，无快照） |
 | 全链路 job `status=done` | ✅（preview 为 `data:image/png;base64,...`） |
 | `job_results.inline_preview_b64` | ✅ 有值（≈1.5MB），`source_url` 空 |
 
@@ -113,7 +113,7 @@ bash deploy/panda/export_pool.sh && bash deploy/panda/deploy.sh      # 同步 po
 | 项 | 建议 |
 |----|------|
 | JWT 续期 | cron 每日 `panda_setup_tnexus_env.py` + `deploy.sh`，或 gateway 改 `apikey` 模式 |
-| 号池快照 | refresh/relogin 后跑 `export_pool.sh`；或定时（如每小时） |
+| 号池 | 确认 `ACCOUNTS_DB=/gptimage/data/accounts.db`；删除旧 `accounts_pool.json` |
 | pin 同步 | refresh 后更新 `/root/gptimage-gateway-rs/secrets/pin_account.json` |
 | 冒烟脚本 | `prod_url_chain_test.py` 需接受 `data:` preview（持久化后不再强制 gateway URL） |
 
@@ -125,11 +125,11 @@ bash deploy/panda/export_pool.sh && bash deploy/panda/deploy.sh      # 同步 po
 |---|------|------|--------|
 | 1 | 养号/预热结果自动 merge 回 TNexus JSON | ⚠️ 部分（refresh 有，预热/养号待加强） | P1 |
 | 2 | 号池 Outlook 恢复 UI（进度条/自动恢复卡片） | ❌ API 已有 | P1 |
-| 3 | `image_inflight` 与 gateway 双写一致性 | ⚠️ 文件竞态风险 | P2 |
+| 3 | `image_inflight` 与 gateway 双写一致性 | ✅ 同库 sqlite 事务更新 | — |
 | 4 | Outlook 凭据 / YUMAIL 生产配置文档 | ⚠️ 依赖 Panda secrets | P2 |
 | 5 | Panda sync / backup / CPA | ❌（明确不做或低优） | — |
 | 6 | settings 七卡片 / 完整 ops-dashboard | ❌（明确不做） | — |
-| 7 | 账号 Postgres 持久化 | ❌ 仍 JSON 文件 | P2-D |
+| 7 | 账号 Postgres 持久化 | ❌ 仍 sqlite 共享文件 | P2-D |
 
 **管理面可交付缺口**：约 **8%**（主要为 UI 与状态回写）。
 
@@ -157,7 +157,7 @@ bash deploy/panda/export_pool.sh && bash deploy/panda/deploy.sh      # 同步 po
 
 ```bash
 # 必配
-ACCOUNTS_FILE=/data/pool/accounts_pool.json
+ACCOUNTS_DB=/gptimage/data/accounts.db
 SCHEDULING_STATE_FILE=/data/pool/scheduling_state.json
 ACCOUNT_OPS_BASE=http://127.0.0.1:9011
 ACCOUNT_OPS_TOKEN=<随机>
@@ -170,7 +170,7 @@ QUOTA_PRIME_PROMPT=a tiny red dot on white background
 
 # Gateway 容器/进程（与 TNexus 镜像分离）
 IMAGE_ENABLED=1
-# 与 api 共享 pool 路径时需挂载同一 ACCOUNTS_FILE
+# api + gateway 需挂载同一 /root/gptimage/data → /gptimage/data
 ```
 
 **禁止**：`GPTIMAGE_ADMIN_TOKEN` 指向生产 `:8012`。
@@ -180,9 +180,8 @@ IMAGE_ENABLED=1
 ```bash
 export TNEXUS_ROOT=/root/TNexus
 cd "$TNEXUS_ROOT" && git pull
-bash deploy/panda/export_pool.sh
 bash deploy/panda/deploy.sh
-# gateway :8014 若单独进程，需另行更新 gateway 二进制并重启
+# gateway :8014：docker compose -f deploy/panda/gateway-compose.yml up -d --force-recreate
 ```
 
 ### 验收清单
@@ -224,10 +223,11 @@ python3 /root/TNexus/scripts/prod_url_chain_test.py
            ├─ /v1/*      → tnexus-gateway :8014  (生图/对话 + scheduling_gate)
            └─ /*         → 静态 UI
 
-chatgpt2api-local :8012 → live accounts.db（生产 gpt-image，TNexus 不 HTTP 依赖）
+chatgpt2api-local :8012 → live accounts.db（生产 gpt-image）
+
+tnexus-api :9000 + tnexus-gateway :8014 → 同一 accounts.db（`tnexus-accounts-db`，WAL）
 
 account-ops :9011 → GPTIMAGE_ROOT Python 库
-export_pool.sh  → sqlite → /opt/tnexus/data/pool/accounts_pool.json（TNexus/gateway 快照）
 
 禁止 → TNexus 运行时 HTTP 调生产 :8012 管理 API
 ```
@@ -242,7 +242,7 @@ export_pool.sh  → sqlite → /opt/tnexus/data/pool/accounts_pool.json（TNexus
 | 2026-07-31 17:35 CST | `863fe28` | 顶栏原生导航 |
 | 2026-07-31 17:35 CST | `a54d057` | 生图持久化 `inline_preview_b64` |
 | 2026-07-31 18:03 CST | `9dcb82a` | 图片管理优先内联 b64 |
-| 2026-07-31 19:44 CST | — | 刷新 `UPSTREAM_API_KEY` + `export_pool.sh`；全链路生图 ✅ |
+| 2026-07-31 20:xx CST | — | 删除 `accounts_pool.json` 快照；8012 与 TNexus 共享 `accounts.db` |
 
 **探测（Panda 回环，2026-07-31 19:44）**
 
@@ -251,7 +251,7 @@ export_pool.sh  → sqlite → /opt/tnexus/data/pool/accounts_pool.json（TNexus
 | `GET :9000/health` | `{"status":"ok","static_ui":true}` |
 | `GET :8014/health` | `tnexus-gateway`，40 accounts，`DATA_PLANE=upstream` |
 | `GET :8012/health?format=json` | 40 账号可调度（生产，独立进程） |
-| pool token vs sqlite | **0** 不一致（export 后） |
+| pool token vs sqlite | **N/A**（同一 db，无快照） |
 | TNexus job 生图 | `done` + `inline_preview_b64` |
 
 **历史误判（已更正）**：`401 invalid session` 曾为 **Gateway JWT 过期**，非号池 ChatGPT token 过期。

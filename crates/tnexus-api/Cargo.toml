@@ -34,3 +34,4 @@ uuid = { workspace = true }
 tnexus-auth = { workspace = true }
 tnexus-domain = { workspace = true }
 tnexus-storage = { workspace = true }
+tnexus-accounts-db = { workspace = true }

@@ -15,13 +15,13 @@
 bash scripts/restart-local-api.sh   # 拉起 account_ops + api + worker
 ```
 
-`.env` 见根目录 `.env.example`（`ACCOUNTS_FILE`、`ACCOUNT_OPS_*`、`GPTIMAGE_ROOT`）。
+`.env` 见根目录 `.env.example`（`ACCOUNTS_DB`、`ACCOUNT_OPS_*`、`GPTIMAGE_ROOT`）。
 
 ---
 
 ## 阶段 2：Panda 部署 + 全量号池
 
-> 遵守部署铁律：不在 Panda 编译；导号脚本只读 sqlite。
+> 遵守部署铁律：不在 Panda 编译；号池与 `:8012` 共享 live sqlite。
 
 ### 2.1 一次性准备
 
@@ -33,7 +33,7 @@ cd /root/TNexus && git pull
 
 # 补全 /opt/tnexus/.env（对照 deploy/panda/.env.example）
 # 必加：
-#   ACCOUNTS_FILE=/data/pool/accounts_pool.json
+#   ACCOUNTS_DB=/gptimage/data/accounts.db
 #   SCHEDULING_STATE_FILE=/data/pool/scheduling_state.json
 #   USAGE_EVENTS_FILE=/data/pool/usage_events.ndjson
 #   ACCOUNT_OPS_BASE=http://127.0.0.1:9011
@@ -41,15 +41,16 @@ cd /root/TNexus && git pull
 #   TNEXUS_ACCOUNT_OPS_IMAGE=ghcr.io/croppedtravelleralex/tnexus-account-ops:latest
 ```
 
-### 2.2 导号 + 部署
+### 2.2 部署
 
 ```bash
 export TNEXUS_ROOT=/root/TNexus
-bash /root/TNexus/deploy/panda/export_pool.sh   # → /opt/tnexus/data/pool/accounts_pool.json
 bash /root/TNexus/deploy/panda/deploy.sh        # GHCR pull + up
+# 删除旧快照（若存在）
+rm -f /opt/tnexus/data/pool/accounts_pool.json
 ```
 
-`export_pool.sh` 从 `/root/gptimage/data/accounts.db` 导出，默认跳过异常/禁用账号。
+api/gateway 容器挂载 `/root/gptimage/data` → `/gptimage/data`，与 `chatgpt2api-local :8012` 读写同一 `accounts.db`（WAL + 事务）。
 
 ### 2.3 验收
 

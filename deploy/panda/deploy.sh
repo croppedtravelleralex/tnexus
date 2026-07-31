@@ -19,10 +19,6 @@ set -a
 source "$ENV_FILE"
 set +a
 
-if [[ -x "$TNEXUS_ROOT/deploy/panda/export_pool.sh" ]]; then
-  bash "$TNEXUS_ROOT/deploy/panda/export_pool.sh"
-fi
-
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" pull
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --force-recreate api worker account-ops
 
