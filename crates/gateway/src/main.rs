@@ -1,0 +1,1436 @@
+//! gptimage-gateway-rs MVP gateway (Rust face).
+
+mod accounts_routes;
+mod auth_routes;
+mod backend_routes;
+mod config;
+mod image_assets;
+mod state;
+mod upstream_face;
+
+use crate::image_assets::ImageAssetStore;
+use anyhow::Context;
+use gateway_auth::{AuthConfig, AuthService};
+use auth_routes::{
+    list_users, login, logout, me, register, require_admin, require_auth, require_member,
+    set_user_disabled,
+};
+use axum::{
+    body::Body,
+    extract::{Path, Query, State},
+    http::{header, HeaderMap, Method, StatusCode},
+    middleware,
+    response::{IntoResponse, Response},
+    routing::{get, post},
+    Json, Router,
+};
+use backend_routes::{admin_status, capabilities};
+use accounts_routes::{activity_daily, list_accounts, reload_from_storage, scheduling_bulk};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use config::DataPlane;
+use futures_util::StreamExt;
+use helper_client::{
+    HelperClient, ImageRunRequest, PinAccount, QuotaRefreshRequest, TextRunRequest,
+};
+use protocol::{
+    chat_completion_response, classify_fault, image_generation_response,
+    image_generation_url_response, openai_error, ChatCompletionRequest, ImageEditRequest,
+    ImageGenerationRequest,
+};
+use serde_json::{json, Value};
+use state::AppState;
+use std::collections::HashSet;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Instant;
+use tokio::sync::Mutex;
+use tower_http::{
+    cors::{AllowOrigin, Any, CorsLayer},
+    services::ServeDir,
+    trace::TraceLayer,
+};
+use tracing::{error, info, warn};
+use uuid::Uuid;
+
+/// Build the CORS layer from a comma-separated origin allowlist.
+///
+/// tower-http rejects `Access-Control-Allow-Credentials: true` alongside a
+/// wildcard in *any* of origin, methods, or headers — each combination is a
+/// separate assert. The credentialed branch therefore has to enumerate all
+/// three explicitly.
+fn cors_layer_from(spec: &str) -> CorsLayer {
+    let origins: Vec<_> = spec
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| s.parse::<header::HeaderValue>().ok())
+        .collect();
+
+    if origins.is_empty() {
+        return CorsLayer::new()
+            .allow_origin(Any)
+            .allow_methods(Any)
+            .allow_headers(Any);
+    }
+
+    CorsLayer::new()
+        .allow_origin(AllowOrigin::list(origins))
+        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION])
+        .allow_credentials(true)
+}
+
+/// Read `GATEWAY_CORS_ORIGINS` and build the layer.
+fn cors_layer() -> CorsLayer {
+    let spec = std::env::var("GATEWAY_CORS_ORIGINS").unwrap_or_default();
+    if spec.trim().is_empty() {
+        warn!("GATEWAY_CORS_ORIGINS unset; CORS runs without credentials");
+    } else {
+        info!("CORS allowlist active with credentials");
+    }
+    cors_layer_from(&spec)
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "gateway=info,tower_http=info".into()),
+        )
+        .init();
+
+    let cfg = config::load().context("load config")?;
+    let auth_cfg = AuthConfig::from_env().context("auth config")?;
+    let auth_svc = Arc::new(AuthService::open(auth_cfg).context("open auth db")?);
+
+    let helper = HelperClient::new(&cfg.helper_url)?;
+    if !helper.has_token() {
+        warn!(
+            "HELPER_INTERNAL_TOKEN unset — helper fails closed on /v1/internal/*, \
+             so chat and image will return 503"
+        );
+    }
+    match helper.health().await {
+        Ok(h) => info!(?h, "helper healthy"),
+        Err(e) => tracing::warn!(error=%e, "helper health check failed (will retry on request)"),
+    }
+
+    let mut accounts = cfg.accounts;
+    match helper.list_candidates(12).await {
+        Ok(cands) => {
+            for a in cands {
+                accounts.insert(a.email.to_lowercase(), a.to_pin());
+            }
+            info!(
+                n = accounts.len(),
+                "accounts ready (pin + helper candidates)"
+            );
+        }
+        Err(e) => warn!(error=%e, "helper candidates unavailable; using pin/ACCOUNTS_FILE only"),
+    }
+
+    let static_dir = std::env::var("GATEWAY_STATIC_DIR")
+        .ok()
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir());
+
+    let asset_secret = image_assets::asset_signing_secret_from_env()
+        .context("image asset signing secret")?;
+    let image_assets = Arc::new(ImageAssetStore::new(
+        asset_secret,
+        image_assets::asset_ttl_secs_from_env(),
+    ));
+
+    let state = Arc::new(AppState {
+        helper,
+        data_plane: cfg.data_plane,
+        pin: cfg.account,
+        accounts: Arc::new(Mutex::new(accounts)),
+        listen: cfg.listen.clone(),
+        min_image_quota: cfg.min_image_quota,
+        image_global_concurrency: cfg.image_global_concurrency,
+        image_sem: cfg.image_sem,
+        image_enabled: cfg.image_enabled,
+        auth: auth_svc,
+        static_dir: static_dir.clone(),
+        image_assets,
+        public_base_url: cfg.public_base_url.clone(),
+    });
+
+    let auth_public = Router::new()
+        .route("/login", post(login))
+        .route("/register", post(register));
+
+    let auth_protected = Router::new()
+        .route("/logout", post(logout))
+        .route("/me", get(me))
+        .layer(middleware::from_fn_with_state(state.clone(), require_auth));
+
+    let admin_api = Router::new()
+        .route("/users", get(list_users))
+        .route("/users/{user_id}/disabled", post(set_user_disabled))
+        .route("/status", get(admin_status))
+        .layer(middleware::from_fn(require_admin))
+        .layer(middleware::from_fn_with_state(state.clone(), require_auth));
+
+    let member_api = Router::new()
+        .route("/models", get(models))
+        .route("/chat/completions", post(chat_completions))
+        .route("/images/generations", post(image_generations))
+        .route("/images/edits", post(image_edits))
+        .layer(middleware::from_fn(require_member))
+        .layer(middleware::from_fn_with_state(state.clone(), require_auth));
+
+    let admin_v1 = Router::new()
+        .route("/accounts/candidates", get(account_candidates))
+        .route("/quota", get(quota_refresh))
+        .route("/quota/refresh", post(quota_refresh))
+        .layer(middleware::from_fn(require_admin))
+        .layer(middleware::from_fn_with_state(state.clone(), require_auth));
+
+    let admin_accounts = Router::new()
+        .route("/", get(list_accounts))
+        .route("/reload-from-storage", post(reload_from_storage))
+        .route("/activity/daily", get(activity_daily))
+        .route("/scheduling/bulk", post(scheduling_bulk))
+        .layer(middleware::from_fn(require_admin))
+        .layer(middleware::from_fn_with_state(state.clone(), require_auth));
+
+    let mut app = Router::new()
+        .route("/health", get(health))
+        .route("/api/backend/capabilities", get(capabilities))
+        .route(
+            "/v1/images/assets/{asset_id}",
+            get(get_image_asset),
+        )
+        .nest("/api/auth", auth_public.merge(auth_protected))
+        .nest("/api/admin", admin_api)
+        .nest("/api/accounts", admin_accounts)
+        .nest("/v1", member_api.merge(admin_v1))
+        .layer(cors_layer())
+        .layer(TraceLayer::new_for_http())
+        .with_state(state.clone());
+
+    if let Some(dir) = static_dir {
+        info!(path=%dir.display(), "serving static UI");
+        app = app.fallback_service(ServeDir::new(dir).append_index_html_on_directories(true));
+    }
+
+    let listener = tokio::net::TcpListener::bind(&cfg.listen)
+        .await
+        .with_context(|| format!("bind {}", cfg.listen))?;
+    info!(
+        listen=%cfg.listen,
+        helper=%cfg.helper_url,
+        data_plane=%cfg.data_plane.as_str(),
+        email=%cfg.account_email_log,
+        image_global_concurrency=%cfg.image_global_concurrency,
+        image_enabled=%cfg.image_enabled,
+        auth_disabled=%state.auth.config().auth_disabled(),
+        auth_mode=%state.auth.config().mode.as_str(),
+        "gateway listening (rust)"
+    );
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
+async fn health(State(st): State<Arc<AppState>>) -> impl IntoResponse {
+    let helper_ok = st.helper.health().await.is_ok();
+    let n_accounts = st.accounts.lock().await.len();
+    // Unauthenticated endpoint: report liveness and shape, never pool identities.
+    Json(json!({
+        "ok": true,
+        "service": "gptimage-gateway-rs",
+        "wave": "mvp",
+        "runtime": "rust",
+        "proto_bridge": true,
+        "helper_ok": helper_ok,
+        "accounts": n_accounts,
+        "image_enabled": st.image_enabled,
+        "auth_disabled": st.auth.config().auth_disabled(),
+        "auth_mode": st.auth.config().mode.as_str(),
+        "static_ui": st.static_dir.is_some(),
+    }))
+}
+
+async fn models() -> impl IntoResponse {
+    Json(json!({
+        "object": "list",
+        "data": [
+            { "id": "gpt-4o-mini", "object": "model", "owned_by": "gptimage-gateway-rs" },
+            { "id": "gpt-image-2", "object": "model", "owned_by": "gptimage-gateway-rs" }
+        ]
+    }))
+}
+
+async fn account_candidates(State(st): State<Arc<AppState>>) -> impl IntoResponse {
+    match st.helper.list_candidates(20).await {
+        Ok(list) => {
+            let mut guard = st.accounts.lock().await;
+            for a in &list {
+                guard.insert(a.email.to_lowercase(), a.to_pin());
+            }
+            let accounts: Vec<Value> = list
+                .into_iter()
+                .map(|a| {
+                    json!({
+                        "email": a.email,
+                        "proxy_host": a.proxy_host.unwrap_or_default(),
+                        "has_token": a.has_token,
+                        "status": a.status,
+                    })
+                })
+                .collect();
+            Json(json!({"ok": true, "count": accounts.len(), "accounts": accounts})).into_response()
+        }
+        Err(e) => err(
+            StatusCode::BAD_GATEWAY,
+            e.to_string(),
+            "candidates_failed",
+            Some("self"),
+        ),
+    }
+}
+
+/// Resolve which pool account serves this request.
+///
+/// `X-Preferred-Account-Email` is honoured for admins only — a member picking an
+/// arbitrary pool address would burn someone else's quota through their proxy
+/// and token. Members always get the pin account.
+async fn resolve_account(
+    st: &AppState,
+    preferred: Option<String>,
+    is_admin: bool,
+) -> Result<PinAccount, Response> {
+    let email = match preferred.filter(|s| !s.is_empty()) {
+        Some(e) if is_admin => e,
+        Some(_) => {
+            return Err(err(
+                StatusCode::FORBIDDEN,
+                "X-Preferred-Account-Email requires admin",
+                "account_override_forbidden",
+                Some("client"),
+            ))
+        }
+        None => st.pin.email.clone(),
+    };
+    let key = email.to_lowercase();
+    if let Some(acc) = st.accounts.lock().await.get(&key).cloned() {
+        return Ok(acc);
+    }
+    if let Ok(list) = st.helper.list_candidates(30).await {
+        let mut guard = st.accounts.lock().await;
+        for a in list {
+            guard.insert(a.email.to_lowercase(), a.to_pin());
+        }
+        if let Some(acc) = guard.get(&key).cloned() {
+            return Ok(acc);
+        }
+    }
+    // Previously this fabricated an account with an empty token and let the
+    // request continue, surfacing as an opaque upstream failure.
+    Err(err(
+        StatusCode::NOT_FOUND,
+        format!("account not in pool: {key}"),
+        "account_not_found",
+        Some("client"),
+    ))
+}
+
+/// Admin image requests may try multiple pool accounts when upstream SSE fails.
+async fn collect_image_accounts(
+    st: &AppState,
+    preferred: Option<String>,
+    is_admin: bool,
+) -> Result<Vec<PinAccount>, Response> {
+    let mut accounts = Vec::new();
+    let mut seen = HashSet::new();
+
+    match resolve_account(st, preferred.clone(), is_admin).await {
+        Ok(acc) => {
+            seen.insert(acc.email.to_lowercase());
+            accounts.push(acc);
+        }
+        Err(r) if !is_admin => return Err(r),
+        Err(_) => {}
+    }
+
+    if is_admin {
+        if let Ok(list) = st.helper.list_candidates(30).await {
+            let mut guard = st.accounts.lock().await;
+            for a in list {
+                guard.insert(a.email.to_lowercase(), a.to_pin());
+            }
+        }
+        let guard = st.accounts.lock().await;
+        let mut keys: Vec<_> = guard.keys().cloned().collect();
+        keys.sort();
+        for key in keys {
+            if seen.insert(key.clone()) {
+                if let Some(acc) = guard.get(&key) {
+                    accounts.push(acc.clone());
+                }
+            }
+        }
+    }
+
+    if accounts.is_empty() {
+        return Err(err(
+            StatusCode::NOT_FOUND,
+            "no accounts available for image generation",
+            "account_not_found",
+            Some("client"),
+        ));
+    }
+    Ok(accounts)
+}
+
+fn upstream_image_retryable(err: &anyhow::Error) -> bool {
+    let msg = err.to_string().to_lowercase();
+    msg.contains("file_id predicate")
+        || msg.contains("sse ended")
+        || msg.contains("image sse ended")
+        || msg.contains("upstream_unreachable")
+}
+
+async fn run_upstream_image(
+    account: &PinAccount,
+    prompt: String,
+    model: String,
+) -> Result<helper_client::BridgeOk, anyhow::Error> {
+    upstream_face::run_image(account, prompt, model)
+        .await
+        .map(|bytes| {
+            let b64 = BASE64.encode(bytes);
+            helper_client::BridgeOk {
+                ok: true,
+                content: None,
+                b64_json: Some(b64),
+                conversation_id: None,
+                fault: None,
+                error: None,
+                elapsed_ms: None,
+                raw: None,
+                quota: None,
+            }
+        })
+}
+
+async fn quota_refresh(
+    State(st): State<Arc<AppState>>,
+    user: auth_routes::AuthUser,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let preferred = preferred_email(&headers);
+    let account = match resolve_account(&st, preferred, user.claims.role.is_admin()).await {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    let req = QuotaRefreshRequest {
+        account,
+        min_remaining: st.min_image_quota,
+    };
+    match st.helper.refresh_quota(&req).await {
+        Ok(q) if q.ok => (
+            StatusCode::OK,
+            Json(json!({
+                "ok": true,
+                "email": q.email,
+                "plan": q.plan,
+                "status": q.status,
+                "remaining": q.remaining,
+                "restore_at": q.restore_at,
+                "image_quota_unknown": q.image_quota_unknown,
+                "min_remaining": q.min_remaining.unwrap_or(st.min_image_quota),
+                "imageable": q.imageable.unwrap_or(false),
+                "image_gen": q.image_gen,
+                "elapsed_ms": q.elapsed_ms,
+            })),
+        )
+            .into_response(),
+        Ok(q) => {
+            let fault = q.fault.as_deref().unwrap_or("upstream");
+            let msg = q.error.unwrap_or_else(|| "quota refresh failed".into());
+            let code = if fault == "self" {
+                StatusCode::INTERNAL_SERVER_ERROR
+            } else {
+                StatusCode::BAD_GATEWAY
+            };
+            err(code, msg, "quota_refresh_failed", Some(fault))
+        }
+        Err(e) => {
+            error!(error=%e, "helper quota call failed");
+            err(
+                StatusCode::BAD_GATEWAY,
+                e.to_string(),
+                "helper_unreachable",
+                Some("self"),
+            )
+        }
+    }
+}
+
+async fn chat_completions(
+    State(st): State<Arc<AppState>>,
+    user: auth_routes::AuthUser,
+    headers: HeaderMap,
+    Json(req): Json<ChatCompletionRequest>,
+) -> impl IntoResponse {
+    let prompt = req
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role == "user")
+        .map(|m| m.text())
+        .unwrap_or_default();
+    if prompt.trim().is_empty() {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "messages must include a user text",
+            "invalid_request",
+            Some("client"),
+        );
+    }
+
+    let account =
+        match resolve_account(&st, preferred_email(&headers), user.claims.role.is_admin()).await {
+            Ok(a) => a,
+            Err(r) => return r,
+        };
+    let model = req.model.clone();
+
+    if req.stream {
+        if st.data_plane == DataPlane::Upstream {
+            return match upstream_face::run_text_stream(&account, prompt, model).await {
+                Ok(stream) => {
+                    let stream = stream.map(|chunk| chunk.map_err(std::io::Error::other));
+                    match Response::builder()
+                        .status(StatusCode::OK)
+                        .header(header::CONTENT_TYPE, "text/event-stream")
+                        .header(header::CACHE_CONTROL, "no-cache")
+                        .header(header::CONNECTION, "keep-alive")
+                        .body(Body::from_stream(stream))
+                    {
+                        Ok(r) => r,
+                        Err(e) => err(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            e.to_string(),
+                            "stream_build_failed",
+                            Some("self"),
+                        ),
+                    }
+                }
+                Err(e) => {
+                    error!(error=%e, "upstream text stream failed");
+                    err(
+                        StatusCode::BAD_GATEWAY,
+                        e.to_string(),
+                        "text_stream_failed",
+                        Some("upstream"),
+                    )
+                }
+            };
+        }
+        let bridge_req = TextRunRequest {
+            account,
+            prompt,
+            model,
+        };
+        return match st.helper.run_text_stream(&bridge_req).await {
+            Ok(upstream) => {
+                let status = upstream.status();
+                let mut resp = Response::builder().status(status);
+                if let Some(ct) = upstream.headers().get(header::CONTENT_TYPE) {
+                    resp = resp.header(header::CONTENT_TYPE, ct);
+                }
+                resp = resp
+                    .header(header::CACHE_CONTROL, "no-cache")
+                    .header(header::CONNECTION, "keep-alive");
+                let stream = upstream
+                    .bytes_stream()
+                    .map(|chunk| chunk.map_err(std::io::Error::other));
+                match resp.body(Body::from_stream(stream)) {
+                    Ok(r) => r,
+                    Err(e) => err(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        e.to_string(),
+                        "stream_build_failed",
+                        Some("self"),
+                    ),
+                }
+            }
+            Err(e) => {
+                error!(error=%e, "helper text stream failed");
+                err(
+                    StatusCode::BAD_GATEWAY,
+                    e.to_string(),
+                    "helper_unreachable",
+                    Some("self"),
+                )
+            }
+        };
+    }
+
+    if st.data_plane == DataPlane::Upstream {
+        match upstream_face::run_text(&account, prompt, model).await {
+            Ok(content) => {
+                return (
+                    StatusCode::OK,
+                    Json(chat_completion_response(&req.model, &content)),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                error!(error=%e, "upstream text call failed");
+                return err(
+                    StatusCode::BAD_GATEWAY,
+                    e.to_string(),
+                    "text_failed",
+                    Some("upstream"),
+                );
+            }
+        }
+    }
+
+    let bridge_req = TextRunRequest {
+        account,
+        prompt,
+        model,
+    };
+    match st.helper.run_text(&bridge_req).await {
+        Ok(r) if r.ok => {
+            let content = r.content.unwrap_or_default();
+            (
+                StatusCode::OK,
+                Json(chat_completion_response(&req.model, &content)),
+            )
+                .into_response()
+        }
+        Ok(r) => {
+            let fault = r.fault.as_deref();
+            let msg = r.error.unwrap_or_else(|| "text bridge failed".into());
+            let class = classify_fault(fault, Some(&msg));
+            let code = match class {
+                protocol::ErrorClass::Self_ => StatusCode::INTERNAL_SERVER_ERROR,
+                protocol::ErrorClass::Client => StatusCode::BAD_REQUEST,
+                _ => StatusCode::BAD_GATEWAY,
+            };
+            err(code, msg, "text_failed", Some(class.as_str()))
+        }
+        Err(e) => {
+            error!(error=%e, "helper text call failed");
+            err(
+                StatusCode::BAD_GATEWAY,
+                e.to_string(),
+                "helper_unreachable",
+                Some("self"),
+            )
+        }
+    }
+}
+
+async fn image_generations(
+    State(st): State<Arc<AppState>>,
+    user: auth_routes::AuthUser,
+    headers: HeaderMap,
+    Json(req): Json<ImageGenerationRequest>,
+) -> impl IntoResponse {
+    if !st.image_enabled {
+        return err(
+            StatusCode::NOT_IMPLEMENTED,
+            "image generation deferred; set IMAGE_ENABLED=1 after backend pipeline integration",
+            "image_deferred",
+            Some("gate"),
+        );
+    }
+
+    if req.n != 1 {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "MVP only supports n=1",
+            "n_unsupported",
+            Some("client"),
+        );
+    }
+
+    let is_admin = user.claims.role.is_admin();
+    let preferred = preferred_email(&headers);
+    let candidates =
+        match collect_image_accounts(&st, preferred, is_admin).await {
+            Ok(c) => c,
+            Err(r) => return r,
+        };
+    let account = candidates[0].clone();
+
+    let permit = match st.image_sem.clone().acquire_owned().await {
+        Ok(p) => p,
+        Err(_) => {
+            return err(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "image semaphore closed",
+                "semaphore_closed",
+                Some("self"),
+            );
+        }
+    };
+
+    let qreq = QuotaRefreshRequest {
+        account: account.clone(),
+        min_remaining: st.min_image_quota,
+    };
+    if st.data_plane == DataPlane::Upstream {
+        info!(email=%account.email, "upstream image: skipping helper quota precheck");
+    } else {
+        match st.helper.refresh_quota(&qreq).await {
+            Ok(q) if q.ok && q.imageable.unwrap_or(false) => {}
+            Ok(q) if q.ok => {
+                drop(permit);
+                return err(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    format!(
+                        "image_quota_insufficient: remaining={:?} status={:?} min={} restore_at={:?}",
+                        q.remaining, q.status, st.min_image_quota, q.restore_at
+                    ),
+                    "image_quota_insufficient",
+                    Some("gate"),
+                );
+            }
+            Ok(q) => {
+                drop(permit);
+                let fault = q.fault.as_deref().unwrap_or("upstream");
+                let msg = q
+                    .error
+                    .unwrap_or_else(|| "quota refresh failed before image".into());
+                let code = if fault == "self" {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                } else {
+                    StatusCode::BAD_GATEWAY
+                };
+                return err(code, msg, "quota_refresh_failed", Some(fault));
+            }
+            Err(e) => {
+                drop(permit);
+                error!(error=%e, "helper quota precheck failed");
+                return err(
+                    StatusCode::BAD_GATEWAY,
+                    e.to_string(),
+                    "helper_unreachable",
+                    Some("self"),
+                );
+            }
+        }
+    }
+
+    let t0 = Instant::now();
+    let max_attempts = if is_admin && st.data_plane == DataPlane::Upstream {
+        candidates.len().min(5)
+    } else {
+        1
+    };
+    let mut result: Result<helper_client::BridgeOk, anyhow::Error> =
+        Err(anyhow::anyhow!("image generation not attempted"));
+    let mut used_account = account.clone();
+
+    for (i, cand) in candidates.iter().take(max_attempts).enumerate() {
+        used_account = cand.clone();
+        let attempt: Result<helper_client::BridgeOk, anyhow::Error> =
+            if st.data_plane == DataPlane::Upstream {
+                info!(email=%cand.email, attempt=i + 1, max_attempts, "upstream image attempt");
+                run_upstream_image(cand, req.prompt.clone(), req.model.clone()).await
+            } else {
+                let bridge_req = ImageRunRequest {
+                    account: cand.clone(),
+                    prompt: req.prompt.clone(),
+                    model: req.model.clone(),
+                    size: req.size.clone(),
+                };
+                st.helper.run_image(&bridge_req).await.map_err(|e| e.into())
+            };
+
+        match &attempt {
+            Ok(r) if r.ok => {
+                result = attempt;
+                break;
+            }
+            Err(e) if is_admin
+                && st.data_plane == DataPlane::Upstream
+                && upstream_image_retryable(e)
+                && i + 1 < max_attempts =>
+            {
+                warn!(
+                    email=%cand.email,
+                    attempt=i + 1,
+                    error=%e,
+                    "upstream image failed; retrying next pool account"
+                );
+                result = attempt;
+                continue;
+            }
+            _ => {
+                result = attempt;
+                break;
+            }
+        }
+    }
+    let account = used_account;
+    let elapsed_ms = t0.elapsed().as_millis();
+    drop(permit);
+
+    match result {
+        Ok(r) if r.ok => {
+            let want_url = image_assets::wants_url_response(&req.response_format);
+            if want_url {
+                let bytes = if let Some(b64) = r.b64_json.as_deref() {
+                    match BASE64.decode(b64) {
+                        Ok(b) if b.len() >= 256 => b,
+                        Ok(_) => {
+                            return err(
+                                StatusCode::BAD_GATEWAY,
+                                "empty/short image payload from bridge",
+                                "empty_image",
+                                Some("self"),
+                            );
+                        }
+                        Err(e) => {
+                            return err(
+                                StatusCode::BAD_GATEWAY,
+                                format!("invalid b64_json from bridge: {e}"),
+                                "empty_image",
+                                Some("self"),
+                            );
+                        }
+                    }
+                } else {
+                    return err(
+                        StatusCode::BAD_GATEWAY,
+                        "bridge returned no image payload for url response",
+                        "empty_image",
+                        Some("self"),
+                    );
+                };
+                match build_image_asset_url(&st, &headers, bytes) {
+                    Ok(url) => {
+                        info!(
+                            email=%account.email,
+                            elapsed_ms,
+                            url_len=url.len(),
+                            "image ok (url)"
+                        );
+                        return (StatusCode::OK, Json(image_generation_url_response(&url)))
+                            .into_response();
+                    }
+                    Err(e) => {
+                        return err(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            e.to_string(),
+                            "image_url_failed",
+                            Some("self"),
+                        );
+                    }
+                }
+            }
+
+            let b64 = r.b64_json.unwrap_or_default();
+            if b64.len() < 1000 {
+                return err(
+                    StatusCode::BAD_GATEWAY,
+                    "empty/short b64_json from bridge",
+                    "empty_image",
+                    Some("self"),
+                );
+            }
+            info!(
+                email=%account.email,
+                elapsed_ms,
+                b64_len=b64.len(),
+                "image ok"
+            );
+            (StatusCode::OK, Json(image_generation_response(&b64))).into_response()
+        }
+        Ok(r) => {
+            let fault = r.fault.as_deref();
+            let msg = r.error.unwrap_or_else(|| "image bridge failed".into());
+            let class = classify_fault(fault, Some(&msg));
+            warn!(email=%account.email, elapsed_ms, fault=?fault, error=%msg, "image failed");
+            let (code, err_code) = match class {
+                protocol::ErrorClass::Self_ => (StatusCode::INTERNAL_SERVER_ERROR, "image_failed"),
+                protocol::ErrorClass::Gate => {
+                    (StatusCode::TOO_MANY_REQUESTS, "image_quota_insufficient")
+                }
+                _ => (StatusCode::BAD_GATEWAY, "image_failed"),
+            };
+            err(code, msg, err_code, Some(class.as_str()))
+        }
+        Err(e) => {
+            error!(email=%account.email, elapsed_ms, error=%e, "image call failed");
+            err(
+                StatusCode::BAD_GATEWAY,
+                e.to_string(),
+                if st.data_plane == DataPlane::Upstream {
+                    "upstream_unreachable"
+                } else {
+                    "helper_unreachable"
+                },
+                Some(if st.data_plane == DataPlane::Upstream {
+                    "upstream"
+                } else {
+                    "self"
+                }),
+            )
+        }
+    }
+}
+
+async fn image_edits(
+    State(_st): State<Arc<AppState>>,
+    Json(_req): Json<ImageEditRequest>,
+) -> impl IntoResponse {
+    err(
+        StatusCode::NOT_IMPLEMENTED,
+        "image edits deferred; Phase B contract/fixtures only until backend integration",
+        "image_edits_deferred",
+        Some("gate"),
+    )
+}
+
+fn preferred_email(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get("x-preferred-account-email")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn err(
+    status: StatusCode,
+    message: impl Into<String>,
+    code: &str,
+    fault: Option<&str>,
+) -> Response {
+    let body: Value = openai_error(message, code, fault);
+    (status, Json(body)).into_response()
+}
+
+fn build_image_asset_url(
+    st: &AppState,
+    headers: &HeaderMap,
+    bytes: Vec<u8>,
+) -> anyhow::Result<String> {
+    let base = image_assets::resolve_public_base(&st.public_base_url, headers)?;
+    let (id, exp, sig) = st.image_assets.store(bytes);
+    Ok(st.image_assets.public_url(&base, id, exp, &sig))
+}
+
+async fn get_image_asset(
+    State(st): State<Arc<AppState>>,
+    Path(asset_id): Path<Uuid>,
+    Query(query): Query<image_assets::AssetQuery>,
+) -> Response {
+    image_assets::serve_image_asset(&st.image_assets, asset_id, query)
+}
+
+#[cfg(test)]
+mod auth_integration {
+    use super::*;
+    use gateway_auth::{AuthConfig, AuthMode, AuthService, Role};
+    use axum::body::Body;
+    use axum::http::Request;
+    use helper_client::{HelperClient, PinAccount};
+    use std::collections::HashMap;
+    use tokio::sync::Semaphore;
+    use tower::ServiceExt;
+
+    fn test_image_assets() -> Arc<image_assets::ImageAssetStore> {
+        Arc::new(image_assets::ImageAssetStore::new(
+            b"test-image-asset-signing-secret!!".to_vec(),
+            3600,
+        ))
+    }
+
+    fn test_app_state() -> Arc<AppState> {
+        let path = std::env::temp_dir().join(format!("gw-auth-{}.db", uuid::Uuid::new_v4()));
+        let cfg = AuthConfig {
+            db_path: path.to_string_lossy().into(),
+            jwt_secret: "integration-test-secret-32-bytes!!".into(),
+            jwt_ttl_secs: 3600,
+            cookie_name: "gws_session".into(),
+            cookie_secure: false,
+            allow_public_register: false,
+            mode: AuthMode::Jwt,
+            gateway_auth_key: None,
+            bootstrap_user: Some("admin".into()),
+            bootstrap_password: Some("integration-admin-pass".into()),
+        };
+        let auth = Arc::new(AuthService::open(cfg).unwrap());
+        let pin = PinAccount {
+            email: "test@example.com".into(),
+            access_token: String::new(),
+            device_id: None,
+            proxy: None,
+            user_agent: None,
+        };
+        Arc::new(AppState {
+            helper: HelperClient::new("http://127.0.0.1:1").unwrap(),
+            data_plane: DataPlane::Helper,
+            pin: pin.clone(),
+            accounts: Arc::new(Mutex::new(HashMap::from([(pin.email.clone(), pin)]))),
+            listen: "127.0.0.1:0".into(),
+            min_image_quota: 1,
+            image_global_concurrency: 1,
+            image_sem: Arc::new(Semaphore::new(1)),
+            image_enabled: false,
+            auth,
+            static_dir: None,
+            image_assets: test_image_assets(),
+            public_base_url: "http://127.0.0.1:8014".into(),
+        })
+    }
+
+    #[tokio::test]
+    async fn api_key_mode_accepts_matching_bearer() {
+        let path = std::env::temp_dir().join(format!("gw-apikey-{}.db", uuid::Uuid::new_v4()));
+        let cfg = AuthConfig {
+            db_path: path.to_string_lossy().into(),
+            jwt_secret: String::new(),
+            mode: AuthMode::ApiKey,
+            gateway_auth_key: Some(concat!("panda-", "align-key").into()),
+            bootstrap_user: None,
+            bootstrap_password: None,
+            jwt_ttl_secs: 3600,
+            cookie_name: "gws_session".into(),
+            cookie_secure: false,
+            allow_public_register: false,
+        };
+        let auth = Arc::new(AuthService::open(cfg).unwrap());
+        let pin = PinAccount {
+            email: "test@example.com".into(),
+            access_token: String::new(),
+            device_id: None,
+            proxy: None,
+            user_agent: None,
+        };
+        let st = Arc::new(AppState {
+            helper: HelperClient::new("http://127.0.0.1:1").unwrap(),
+            data_plane: DataPlane::Helper,
+            pin: pin.clone(),
+            accounts: Arc::new(Mutex::new(HashMap::from([(pin.email.clone(), pin)]))),
+            listen: "127.0.0.1:0".into(),
+            min_image_quota: 1,
+            image_global_concurrency: 1,
+            image_sem: Arc::new(Semaphore::new(1)),
+            image_enabled: false,
+            auth,
+            static_dir: None,
+            image_assets: test_image_assets(),
+            public_base_url: "http://127.0.0.1:8014".into(),
+        });
+        let app = Router::new()
+            .route("/guarded", get(|| async { "ok" }))
+            .layer(middleware::from_fn_with_state(st.clone(), require_auth))
+            .with_state(st);
+        let api_key = concat!("panda-", "align-key");
+        let ok = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/guarded")
+                    .header("authorization", format!("Bearer {api_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), StatusCode::OK);
+        let bad = app
+            .oneshot(
+                Request::builder()
+                    .uri("/guarded")
+                    .header("authorization", "Bearer wrong")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bad.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn login_cookie_allows_me_route() {
+        let st = test_app_state();
+        let login_app = Router::new()
+            .route("/login", post(login))
+            .with_state(st.clone());
+        let resp = login_app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"username":"admin","password":"integration-admin-pass"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let cookie = resp
+            .headers()
+            .get(header::SET_COOKIE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        assert!(cookie.contains("gws_session="));
+
+        let me_app = Router::new()
+            .route("/me", get(me))
+            .layer(middleware::from_fn_with_state(st.clone(), require_auth))
+            .with_state(st);
+        let me_resp = me_app
+            .oneshot(
+                Request::builder()
+                    .uri("/me")
+                    .header("cookie", cookie.split(';').next().unwrap_or(""))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(me_resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn disabled_auth_me_returns_synthetic_user() {
+        let path = std::env::temp_dir().join(format!("gw-dis-{}.db", uuid::Uuid::new_v4()));
+        let cfg = AuthConfig {
+            db_path: path.to_string_lossy().into(),
+            jwt_secret: "integration-test-secret-32-bytes!!".into(),
+            jwt_ttl_secs: 3600,
+            cookie_name: "gws_session".into(),
+            cookie_secure: false,
+            allow_public_register: false,
+            mode: AuthMode::Disabled,
+            gateway_auth_key: None,
+            bootstrap_user: None,
+            bootstrap_password: None,
+        };
+        let auth = Arc::new(AuthService::open(cfg).unwrap());
+        let pin = PinAccount {
+            email: "test@example.com".into(),
+            access_token: String::new(),
+            device_id: None,
+            proxy: None,
+            user_agent: None,
+        };
+        let st = Arc::new(AppState {
+            helper: HelperClient::new("http://127.0.0.1:1").unwrap(),
+            data_plane: DataPlane::Helper,
+            pin: pin.clone(),
+            accounts: Arc::new(Mutex::new(HashMap::from([(pin.email.clone(), pin)]))),
+            listen: "127.0.0.1:0".into(),
+            min_image_quota: 1,
+            image_global_concurrency: 1,
+            image_sem: Arc::new(Semaphore::new(1)),
+            image_enabled: true,
+            auth,
+            static_dir: None,
+            image_assets: test_image_assets(),
+            public_base_url: "http://127.0.0.1:8014".into(),
+        });
+        let me_app = Router::new()
+            .route("/me", get(me))
+            .layer(middleware::from_fn_with_state(st.clone(), require_auth))
+            .with_state(st);
+        let me_resp = me_app
+            .oneshot(Request::builder().uri("/me").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(me_resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(me_resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["user"]["username"], "dev");
+        assert_eq!(v["user"]["role"], "admin");
+    }
+
+    #[tokio::test]
+    async fn logout_revokes_jti_session() {
+        let st = test_app_state();
+        let claims = st
+            .auth
+            .authenticate("admin", "integration-admin-pass")
+            .unwrap();
+        let token = st.auth.issue_token(&claims).unwrap();
+
+        let logout_app = Router::new()
+            .route("/logout", post(logout))
+            .with_state(st.clone());
+        let resp = logout_app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/logout")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let me_app = Router::new()
+            .route("/me", get(me))
+            .layer(middleware::from_fn_with_state(st.clone(), require_auth))
+            .with_state(st);
+        let me_resp = me_app
+            .oneshot(
+                Request::builder()
+                    .uri("/me")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(me_resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn member_cannot_access_admin_middleware() {
+        let st = test_app_state();
+        st.auth
+            .create_user("member1", "pass", Role::Member)
+            .unwrap();
+        let token = st
+            .auth
+            .issue_token(&st.auth.authenticate("member1", "pass").unwrap())
+            .unwrap();
+        let app = Router::new()
+            .route("/admin-only", get(|| async { "ok" }))
+            .layer(middleware::from_fn(require_admin))
+            .layer(middleware::from_fn_with_state(st.clone(), require_auth))
+            .with_state(st);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/admin-only")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// Router construction used to panic on wildcard + `allow_credentials`.
+    /// Takes the spec directly so the cases don't race on process-wide env.
+    #[test]
+    fn cors_layer_builds_without_allowlist() {
+        let _app: Router = Router::new()
+            .route("/health", get(|| async { "ok" }))
+            .layer(cors_layer_from(""));
+    }
+
+    #[test]
+    fn cors_layer_builds_with_allowlist() {
+        let _app: Router = Router::new()
+            .route("/health", get(|| async { "ok" }))
+            .layer(cors_layer_from("https://ui.example.com"));
+    }
+
+    #[test]
+    fn cors_layer_builds_with_multiple_origins() {
+        let _app: Router = Router::new()
+            .route("/health", get(|| async { "ok" }))
+            .layer(cors_layer_from(
+                "https://a.example.com, https://b.example.com",
+            ));
+    }
+
+    #[test]
+    fn cors_layer_ignores_unparseable_origins() {
+        // All entries invalid degrades to the wildcard branch, not a panic.
+        let _app: Router = Router::new()
+            .route("/health", get(|| async { "ok" }))
+            .layer(cors_layer_from("not a header value\u{7f}, , "));
+    }
+
+    #[tokio::test]
+    async fn health_does_not_leak_pool_identity() {
+        let st = test_app_state();
+        let app = Router::new().route("/health", get(health)).with_state(st);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&bytes);
+        assert!(
+            !body.contains("test@example.com"),
+            "/health is unauthenticated and must not disclose pool addresses: {body}"
+        );
+        assert!(!body.contains("pin_email"), "got: {body}");
+        assert!(body.contains("\"ok\":true"));
+    }
+
+    #[tokio::test]
+    async fn disabled_user_is_rejected_by_middleware() {
+        let st = test_app_state();
+        let member = st
+            .auth
+            .create_user("member2", "member-pass", Role::Member)
+            .unwrap();
+        let token = st
+            .auth
+            .issue_token(&st.auth.authenticate("member2", "member-pass").unwrap())
+            .unwrap();
+        // Token stays cryptographically valid — only the DB row changes.
+        st.auth.set_disabled(&member.id, true).unwrap();
+
+        let app = Router::new()
+            .route("/guarded", get(|| async { "ok" }))
+            .layer(middleware::from_fn_with_state(st.clone(), require_auth))
+            .with_state(st);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/guarded")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "a still-valid token for a disabled user must not pass"
+        );
+    }
+
+    #[tokio::test]
+    async fn role_demotion_takes_effect_before_token_expiry() {
+        let st = test_app_state();
+        let user = st
+            .auth
+            .create_user("demoted", "demote-pass", Role::Admin)
+            .unwrap();
+        let token = st
+            .auth
+            .issue_token(&st.auth.authenticate("demoted", "demote-pass").unwrap())
+            .unwrap();
+        st.auth.set_role(&user.id, Role::Member).unwrap();
+
+        let app = Router::new()
+            .route("/admin-only", get(|| async { "ok" }))
+            .layer(middleware::from_fn(require_admin))
+            .layer(middleware::from_fn_with_state(st.clone(), require_auth))
+            .with_state(st);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/admin-only")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "role must be re-read from the DB, not trusted from the token"
+        );
+    }
+
+    #[tokio::test]
+    async fn login_response_body_omits_token() {
+        let st = test_app_state();
+        let app = Router::new()
+            .route("/login", post(login))
+            .with_state(st.clone());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"username":"admin","password":"integration-admin-pass"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(
+            body.get("token").is_none(),
+            "JWT must stay in the HttpOnly cookie, out of reach of JS: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn member_cannot_override_account_email() {
+        let st = test_app_state();
+        let err = resolve_account(&st, Some("victim@example.com".into()), false)
+            .await
+            .expect_err("member override must be refused");
+        assert_eq!(err.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn member_without_override_gets_pin_account() {
+        let st = test_app_state();
+        let acc = resolve_account(&st, None, false)
+            .await
+            .expect("pin account");
+        assert_eq!(acc.email, "test@example.com");
+    }
+
+    #[tokio::test]
+    async fn unknown_account_is_rejected_not_fabricated() {
+        let st = test_app_state();
+        // Helper is unreachable in tests, so the lookup cannot be satisfied.
+        let err = resolve_account(&st, Some("ghost@example.com".into()), true)
+            .await
+            .expect_err("unknown account must not be fabricated with an empty token");
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn admin_override_resolves_known_account() {
+        let st = test_app_state();
+        {
+            let mut guard = st.accounts.lock().await;
+            guard.insert(
+                "second@example.com".into(),
+                PinAccount {
+                    email: "second@example.com".into(),
+                    access_token: "tok".into(),
+                    device_id: None,
+                    proxy: None,
+                    user_agent: None,
+                },
+            );
+        }
+        let acc = resolve_account(&st, Some("second@example.com".into()), true)
+            .await
+            .expect("admin override");
+        assert_eq!(acc.email, "second@example.com");
+    }
+}

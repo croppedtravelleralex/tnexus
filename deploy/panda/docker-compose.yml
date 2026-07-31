@@ -19,15 +19,26 @@ services:
     volumes:
       - /opt/tnexus/data/redis:/data
 
+  account-ops:
+    image: ${TNEXUS_ACCOUNT_OPS_IMAGE:-ghcr.io/croppedtravelleralex/tnexus-account-ops:latest}
+    restart: unless-stopped
+    env_file: /opt/tnexus/.env
+    network_mode: host
+    volumes:
+      - /root/gptimage:/gptimage:ro
+
   api:
     image: ${TNEXUS_IMAGE}
     command: tnexus-api
     restart: unless-stopped
     env_file: /opt/tnexus/.env
     network_mode: host
+    volumes:
+      - /opt/tnexus/data/pool:/data/pool:rw
     depends_on:
       - postgres
       - redis
+      - account-ops
 
   worker:
     image: ${TNEXUS_IMAGE}

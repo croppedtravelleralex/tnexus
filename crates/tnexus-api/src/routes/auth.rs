@@ -151,15 +151,47 @@ async fn patch_preferences(
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let id = Uuid::parse_str(&user.claims.sub)
         .map_err(|_| (StatusCode::BAD_REQUEST, "bad user id".into()))?;
+    let current: serde_json::Value = sqlx::query_scalar(
+        "SELECT preferences FROM users WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .unwrap_or_else(|| serde_json::json!({}));
+    let merged = merge_preferences(current, body.preferences);
     let updated: serde_json::Value = sqlx::query_scalar(
         "UPDATE users SET preferences = $2 WHERE id = $1 RETURNING preferences",
     )
     .bind(id)
-    .bind(body.preferences)
+    .bind(&merged)
     .fetch_one(&state.pool)
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(updated))
+}
+
+/// Deep-merge user preferences at the top level; nested objects are merged recursively.
+fn merge_preferences(
+    current: serde_json::Value,
+    patch: serde_json::Value,
+) -> serde_json::Value {
+    let serde_json::Value::Object(mut base) = current else {
+        return patch;
+    };
+    let serde_json::Value::Object(patch_map) = patch else {
+        return serde_json::Value::Object(base);
+    };
+    for (key, value) in patch_map {
+        let next = if value.is_object() {
+            let existing = base.remove(&key).unwrap_or_else(|| serde_json::json!({}));
+            merge_preferences(existing, value)
+        } else {
+            value
+        };
+        base.insert(key, next);
+    }
+    serde_json::Value::Object(base)
 }
 
 async fn list_users(

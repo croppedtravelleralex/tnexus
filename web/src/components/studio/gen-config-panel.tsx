@@ -3,6 +3,7 @@
 import { Loader2, Sparkles } from "lucide-react";
 import { FactorPlane } from "@/components/factor-plane";
 import { Button } from "@/components/ui/button";
+import { ChoiceButton, SegmentGroup } from "@/components/ui/choice-button";
 import { Label, Textarea } from "@/components/ui/input";
 import type { FactorPoint } from "@/lib/api";
 import {
@@ -15,7 +16,6 @@ import {
 } from "@/lib/gen-config";
 import { IMAGE_ENGINES, TEXT_MODELS, textModelLabel, type TextModelId } from "@/lib/models";
 import { STYLE_PRESETS } from "@/lib/presets";
-import { cn } from "@/lib/utils";
 
 type Props = {
   prompt: string;
@@ -87,7 +87,7 @@ export function GenConfigPanel(props: Props) {
   const activeActors: TextModelId[] = mode === "casting" ? castingModels : [textModel];
 
   return (
-    <div className="panel-card border-r border-zinc-200">
+    <div className="flex h-full min-h-0 flex-col border-r border-[var(--neo-border)] bg-[var(--neo-surface)]">
       <div className="panel-header text-zinc-900">生图配置</div>
       <div className="panel-body scrollbar-hide space-y-5">
         <Textarea
@@ -116,19 +116,14 @@ export function GenConfigPanel(props: Props) {
             <Label>构思模型（演员，可多选）</Label>
             <div className="flex flex-wrap gap-2">
               {TEXT_MODELS.map((m) => (
-                <button
+                <ChoiceButton
                   key={m.id}
-                  type="button"
+                  variant="chip"
+                  active={castingModels.includes(m.id)}
                   onClick={() => onToggleCastingModel(m.id)}
-                  className={cn(
-                    "rounded-md border px-3 py-1.5 text-xs",
-                    castingModels.includes(m.id)
-                      ? "btn-segment-active"
-                      : "border-zinc-200 text-zinc-600 hover:bg-zinc-50"
-                  )}
                 >
                   {m.label}
-                </button>
+                </ChoiceButton>
               ))}
             </div>
           </div>
@@ -142,19 +137,14 @@ export function GenConfigPanel(props: Props) {
                 <span className="w-16 shrink-0 text-xs font-medium text-zinc-700">{textModelLabel(actorId)}</span>
                 <div className="flex flex-wrap gap-1">
                   {Array.from({ length: 10 }, (_, i) => i + 1).map((n) => (
-                    <button
+                    <ChoiceButton
                       key={n}
-                      type="button"
+                      variant="pill"
+                      active={(actorImageCounts[actorId] ?? 1) === n}
                       onClick={() => onActorImageCountChange(actorId, n)}
-                      className={cn(
-                        "min-w-[2rem] rounded border px-1.5 py-0.5 text-[10px]",
-                        (actorImageCounts[actorId] ?? 1) === n
-                          ? "btn-segment-active"
-                          : "border-zinc-200 bg-white hover:bg-zinc-100"
-                      )}
                     >
                       {n}
-                    </button>
+                    </ChoiceButton>
                   ))}
                 </div>
               </div>
@@ -173,17 +163,14 @@ export function GenConfigPanel(props: Props) {
           <Label>质量</Label>
           <div className="flex flex-wrap gap-2">
             {QUALITY_OPTIONS.map((q) => (
-              <button
+              <ChoiceButton
                 key={q.id}
-                type="button"
+                variant="chip"
+                active={genConfig.quality === q.id}
                 onClick={() => onGenConfigChange({ ...genConfig, quality: q.id })}
-                className={cn(
-                  "rounded-md border px-3 py-1.5 text-xs",
-                  genConfig.quality === q.id ? "btn-segment-active" : "border-zinc-200 hover:bg-zinc-50"
-                )}
               >
                 {q.label}
-              </button>
+              </ChoiceButton>
             ))}
           </div>
         </div>
@@ -233,17 +220,15 @@ export function GenConfigPanel(props: Props) {
           <Label>宽高比</Label>
           <div className="grid grid-cols-4 gap-2 sm:grid-cols-6">
             {ASPECT_PRESETS.map((a) => (
-              <button
+              <ChoiceButton
                 key={a.id}
-                type="button"
+                variant="chip"
+                active={activeAspect === a.id}
+                className="w-full py-2 text-center text-[10px] sm:text-xs"
                 onClick={() => onAspectChange(a.id, a.w, a.h)}
-                className={cn(
-                  "rounded-md border py-2 text-center text-[10px] sm:text-xs",
-                  activeAspect === a.id ? "border-zinc-900 bg-zinc-50 font-medium" : "border-zinc-200 hover:bg-zinc-50"
-                )}
               >
                 {a.label}
-              </button>
+              </ChoiceButton>
             ))}
           </div>
         </div>
@@ -261,17 +246,16 @@ export function GenConfigPanel(props: Props) {
           <Label>风格预设</Label>
           <div className="flex flex-wrap gap-1.5">
             {STYLE_PRESETS.map((p) => (
-              <button
+              <ChoiceButton
                 key={p.name}
-                type="button"
-                className="preset-chip rounded-md px-2.5 py-1 text-xs"
+                variant="chip"
                 onClick={() => {
                   onDirectorFactorsChange(p.director);
                   onRenderFactorsChange(p.render);
                 }}
               >
                 {p.name}
-              </button>
+              </ChoiceButton>
             ))}
           </div>
         </div>
@@ -327,21 +311,18 @@ function Segment({
   return (
     <div className="space-y-2">
       <Label>{label}</Label>
-      <div className="flex flex-wrap gap-1 rounded-lg border border-zinc-200 bg-zinc-50 p-1">
+      <SegmentGroup>
         {options.map((o) => (
-          <button
+          <ChoiceButton
             key={o.value}
-            type="button"
+            variant="segment"
+            active={value === o.value}
             onClick={() => onChange(o.value)}
-            className={cn(
-              "flex-1 rounded-md px-2 py-1.5 text-xs sm:text-sm",
-              value === o.value ? "btn-segment-active" : "text-zinc-600 hover:bg-white"
-            )}
           >
             {o.label}
-          </button>
+          </ChoiceButton>
         ))}
-      </div>
+      </SegmentGroup>
     </div>
   );
 }

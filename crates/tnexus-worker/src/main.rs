@@ -5,7 +5,7 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
 use sqlx::{PgPool, Row};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tnexus_domain::agent::{
     build_director_system_prompt, build_image_prompt, parse_director_response_with_fallback,
     DirectorOutput,
@@ -110,7 +110,14 @@ async fn process_job(
     storage: Option<&AssetStorage>,
     job_id: Uuid,
 ) -> Result<()> {
+    let wall_start = Instant::now();
     let job = load_job(pool, job_id).await?;
+    let queue_wait_ms = (chrono::Utc::now() - job.created_at)
+        .num_milliseconds()
+        .max(0) as u64;
+    let mut phase_timings = serde_json::Map::new();
+    phase_timings.insert("task_queue_ms".into(), serde_json::json!(queue_wait_ms));
+
     publish_event(redis, job_id, JobStatus::Directing, 25, None, None).await?;
     set_status(pool, job_id, JobStatus::Directing, None).await?;
 
@@ -146,6 +153,7 @@ async fn process_job(
         } else {
             api_model_name(model_id)
         };
+        let director_start = Instant::now();
         let raw = match upstream
             .director_chat(api_model, &system, &job.input_prompt)
             .await
@@ -156,6 +164,10 @@ async fn process_job(
                 serde_json::json!({ "prompt": job.input_prompt }).to_string()
             }
         };
+        phase_timings.insert(
+            "ps_ms".into(),
+            serde_json::json!(director_start.elapsed().as_millis() as u64),
+        );
         let director_out = parse_director_response_with_fallback(workflow, &raw, &job.input_prompt)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         let (image_prompt, ps_enabled) =
@@ -166,14 +178,21 @@ async fn process_job(
         set_status(pool, job_id, JobStatus::Generating, None).await?;
 
         for img_provider in &image_providers {
+            let generate_start = Instant::now();
             let generated_list = match img_provider.as_str() {
                 "chatgpt" => upstream.generate_chatgpt(&image_prompt, ps_enabled, &img_opts).await?,
                 "grok" => upstream.generate_grok(&image_prompt, ps_enabled, &img_opts).await?,
                 _ => continue,
             };
+            phase_timings.insert(
+                "sse_stream_ms".into(),
+                serde_json::json!(generate_start.elapsed().as_millis() as u64),
+            );
 
             publish_event(redis, job_id, JobStatus::Uploading, 85, None, None).await?;
             set_status(pool, job_id, JobStatus::Uploading, None).await?;
+
+            let upload_start = Instant::now();
 
             let result_label = if director_model_ids.len() > 1 || image_providers.len() > 1 {
                 format!("{model_id}:{img_provider}")
@@ -240,6 +259,11 @@ async fn process_job(
                 .execute(pool)
                 .await?;
             }
+            phase_timings.insert(
+                "download_ms".into(),
+                serde_json::json!(upload_start.elapsed().as_millis() as u64),
+            );
+            record_usage_event("studio@local", "default", "images_api", true);
         }
 
         if mi + 1 < director_model_ids.len() {
@@ -247,6 +271,11 @@ async fn process_job(
         }
     }
 
+    phase_timings.insert(
+        "wall_clock_ms".into(),
+        serde_json::json!(wall_start.elapsed().as_millis() as u64),
+    );
+    save_phase_timings(pool, job_id, &phase_timings).await?;
     set_status(pool, job_id, JobStatus::Done, None).await?;
     publish_event(redis, job_id, JobStatus::Done, 100, None, None).await?;
     Ok(())
@@ -264,11 +293,12 @@ struct JobRow {
     director_factors: serde_json::Value,
     ps_factors: serde_json::Value,
     input_prompt: String,
+    created_at: chrono::DateTime<chrono::Utc>,
 }
 
 async fn load_job(pool: &PgPool, job_id: Uuid) -> Result<JobRow> {
     let row = sqlx::query(
-        "SELECT user_id, mode, workflow_path, ps_enabled, provider, director_models, gen_config, actor_image_counts, director_factors, ps_factors, input_prompt FROM jobs WHERE id = $1",
+        "SELECT user_id, mode, workflow_path, ps_enabled, provider, director_models, gen_config, actor_image_counts, director_factors, ps_factors, input_prompt, created_at FROM jobs WHERE id = $1",
     )
     .bind(job_id)
     .fetch_one(pool)
@@ -289,7 +319,42 @@ async fn load_job(pool: &PgPool, job_id: Uuid) -> Result<JobRow> {
         director_factors: row.get("director_factors"),
         ps_factors: row.get("ps_factors"),
         input_prompt: row.get("input_prompt"),
+        created_at: row.get("created_at"),
     })
+}
+
+async fn save_phase_timings(
+    pool: &PgPool,
+    job_id: Uuid,
+    timings: &serde_json::Map<String, serde_json::Value>,
+) -> Result<()> {
+    sqlx::query("UPDATE jobs SET phase_timings_ms = $2, updated_at = NOW() WHERE id = $1")
+        .bind(job_id)
+        .bind(serde_json::Value::Object(timings.clone()))
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+fn record_usage_event(email: &str, binding: &str, metric: &str, ok: bool) {
+    let path = std::env::var("USAGE_EVENTS_FILE")
+        .unwrap_or_else(|_| "data/usage_events.ndjson".into());
+    if let Some(parent) = std::path::Path::new(&path).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let payload = serde_json::json!({
+        "ts": chrono::Utc::now().to_rfc3339(),
+        "email": email,
+        "binding": binding,
+        "metric": metric,
+        "ok": ok,
+    });
+    if let Ok(line) = serde_json::to_string(&payload) {
+        use std::io::Write;
+        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            let _ = writeln!(file, "{line}");
+        }
+    }
 }
 
 async fn set_status(

@@ -11,6 +11,8 @@ sed -i 's/\r$//' .env.example 2>/dev/null || true
 sudo service postgresql start 2>/dev/null || true
 sudo service redis-server start 2>/dev/null || true
 
+python3 scripts/repair_migrations.py 2>/dev/null || true
+
 sudo -u postgres psql -c "CREATE USER tnexus WITH PASSWORD 'tnexus';" 2>/dev/null || true
 sudo -u postgres psql -c "CREATE DATABASE tnexus OWNER tnexus;" 2>/dev/null || true
 

@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/auth";
 
 export function SiteHeader({ variant = "default" }: { variant?: "default" | "home" }) {
-  const { user, loading, logout } = useAuth();
+  const { user, bootstrapping, logout } = useAuth();
   const router = useRouter();
 
   const isHome = variant === "home";
@@ -43,7 +43,7 @@ export function SiteHeader({ variant = "default" }: { variant?: "default" | "hom
             设置
           </Button>
         </Link>
-        {!loading && user ? (
+        {!bootstrapping && user ? (
           <div className="ml-2 flex items-center gap-2 border-l border-zinc-200 pl-3">
             <span className="hidden text-sm text-zinc-600 sm:inline">
               {user.display_name || user.email}

@@ -38,7 +38,7 @@ export default function RegisterPage() {
       footer={
         <>
           已有账号？{" "}
-          <Link href="/login" className="text-violet-300 hover:text-violet-200">
+          <Link href="/login" className="auth-link">
             登录
           </Link>
         </>
@@ -86,7 +86,7 @@ export default function RegisterPage() {
             autoComplete="new-password"
           />
         </div>
-        {error && <p className="text-sm text-red-400">{error}</p>}
+        {error && <p className="text-sm text-red-600 text-shadow-bl-sm">{error}</p>}
         <button type="submit" className="auth-btn" disabled={loading}>
           {loading ? "注册中..." : "注册"}
         </button>

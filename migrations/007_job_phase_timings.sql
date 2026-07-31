@@ -1,0 +1,2 @@
+ALTER TABLE jobs
+    ADD COLUMN IF NOT EXISTS phase_timings_ms JSONB NOT NULL DEFAULT '{}';

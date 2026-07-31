@@ -1,0 +1,178 @@
+/**
+ * TNexus Neo 主题 — 等价于 Qt QSS 的全局样式表。
+ * 调立体按键、阴影、品牌色：只改本文件顶部的 --neo-* 变量即可全局生效。
+ */
+:root {
+  --neo-radius-sm: 0.375rem;
+  --neo-radius-md: 0.5rem;
+  --neo-radius-lg: 0.75rem;
+
+  --neo-ink: #3d3550;
+  --neo-muted: #6b6580;
+  --neo-border: rgba(232, 224, 244, 0.28);
+  --neo-border-strong: rgba(212, 200, 236, 0.42);
+  --neo-surface: #ffffff;
+  --neo-surface-muted: #f8f5fc;
+  --neo-surface-raised: #fdfbff;
+
+  --neo-primary: #8b7cc8;
+  --neo-primary-deep: #6f5fad;
+  --neo-primary-fg: #ffffff;
+  --neo-primary-gradient: linear-gradient(145deg, #c4b5fd 0%, #b8a7e0 42%, #a0c4ff 100%);
+  --neo-primary-gradient-hover: linear-gradient(145deg, #b8a7e0 0%, #9f8fd4 45%, #8fb8ff 100%);
+
+  --neo-shadow-idle: -5px 7px 28px rgba(61, 53, 80, 0.11), -2px 3px 12px rgba(61, 53, 80, 0.06);
+  --neo-shadow-hover: -6px 9px 36px rgba(61, 53, 80, 0.14), -3px 4px 14px rgba(61, 53, 80, 0.08);
+  --neo-shadow-active: -7px 10px 40px rgba(139, 124, 200, 0.3), -4px 5px 18px rgba(61, 53, 80, 0.12);
+  --neo-shadow-pressed: -3px 3px 14px rgba(61, 53, 80, 0.1), inset 0 2px 6px rgba(61, 53, 80, 0.08);
+  --neo-text-shadow: -1px 1px 3px rgba(61, 53, 80, 0.14), 0 2px 12px rgba(184, 167, 224, 0.22);
+}
+
+/* —— 主操作键 —— */
+.neo-btn-primary {
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: var(--neo-radius-md);
+  background: var(--neo-primary-gradient);
+  color: var(--neo-primary-fg);
+  font-weight: 600;
+  text-shadow: var(--neo-text-shadow);
+  box-shadow: var(--neo-shadow-active);
+  transition: filter 0.15s, box-shadow 0.15s, transform 0.1s;
+}
+.neo-btn-primary:hover:not(:disabled) {
+  background: var(--neo-primary-gradient-hover);
+  box-shadow: -6px 7px 32px rgba(184, 167, 224, 0.34), -3px 4px 14px rgba(61, 53, 80, 0.1);
+}
+.neo-btn-primary:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow: var(--neo-shadow-pressed);
+}
+
+.neo-btn-outline {
+  border: 1px solid var(--neo-border);
+  border-radius: var(--neo-radius-md);
+  background: var(--neo-surface);
+  color: var(--neo-ink);
+  text-shadow: var(--neo-text-shadow);
+  box-shadow: var(--neo-shadow-idle);
+  transition: background 0.15s, box-shadow 0.15s, border-color 0.15s;
+}
+.neo-btn-outline:hover:not(:disabled) {
+  background: var(--neo-surface-raised);
+  border-color: var(--neo-border-strong);
+  box-shadow: var(--neo-shadow-hover);
+}
+
+.neo-btn-toolbar {
+  border: none;
+  border-radius: var(--neo-radius-md);
+  background: transparent;
+  color: var(--neo-muted);
+  box-shadow: none;
+  font-weight: 500;
+  transition: background 0.15s, color 0.15s;
+}
+.neo-btn-toolbar:hover:not(:disabled) {
+  background: var(--neo-surface-muted);
+  color: var(--neo-ink);
+}
+
+/* —— 分段 / 芯片选择 —— */
+.neo-choice {
+  border-radius: var(--neo-radius-md);
+  font-weight: 500;
+  text-shadow: var(--neo-text-shadow);
+  transition: background 0.15s, box-shadow 0.15s, border-color 0.15s, color 0.15s, transform 0.1s;
+}
+
+.neo-choice-idle {
+  border: 1px solid var(--neo-border);
+  background: var(--neo-surface);
+  color: var(--neo-muted);
+  box-shadow: var(--neo-shadow-idle);
+}
+.neo-choice-idle:hover:not(:disabled) {
+  background: var(--neo-surface-raised);
+  color: var(--neo-ink);
+  border-color: var(--neo-border-strong);
+  box-shadow: var(--neo-shadow-hover);
+}
+
+.neo-choice-active {
+  border: 1px solid rgba(111, 95, 173, 0.35);
+  background: var(--neo-primary-gradient);
+  color: var(--neo-primary-fg);
+  box-shadow: var(--neo-shadow-active);
+}
+.neo-choice-active:hover:not(:disabled) {
+  filter: brightness(1.03);
+}
+
+.neo-choice-segment {
+  flex: 1;
+  padding: 0.375rem 0.5rem;
+  font-size: 0.8125rem;
+}
+.neo-choice-chip {
+  padding: 0.375rem 0.75rem;
+  font-size: 0.75rem;
+}
+.neo-choice-pill {
+  min-width: 2rem;
+  padding: 0.125rem 0.375rem;
+  font-size: 0.625rem;
+  border-radius: var(--neo-radius-sm);
+}
+
+.neo-segment-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  border-radius: var(--neo-radius-lg);
+  border: 1px solid var(--neo-border);
+  background: var(--neo-surface-muted);
+  padding: 0.25rem;
+  box-shadow: inset 0 1px 4px rgba(61, 53, 80, 0.04);
+}
+
+.neo-card {
+  border-radius: var(--neo-radius-lg);
+  border: 1px solid var(--neo-border);
+  background: var(--neo-surface);
+  box-shadow: var(--neo-shadow-idle);
+}
+
+.neo-input {
+  border-radius: var(--neo-radius-md);
+  border: 1px solid var(--neo-border);
+  background: var(--neo-surface);
+  box-shadow: inset 0 1px 3px rgba(61, 53, 80, 0.04), var(--neo-shadow-idle);
+}
+.neo-input:focus {
+  outline: none;
+  border-color: var(--neo-border-strong);
+  box-shadow: inset 0 1px 3px rgba(61, 53, 80, 0.04), -5px 6px 24px rgba(184, 167, 224, 0.22);
+}
+
+.neo-table-head {
+  background: var(--neo-surface-muted);
+  font-size: 0.75rem;
+  color: var(--neo-muted);
+}
+
+.neo-row-hover:hover {
+  background: color-mix(in srgb, var(--neo-surface-muted) 80%, transparent);
+}
+
+.neo-stat-cell {
+  border-radius: var(--neo-radius-md);
+  border: 1px solid var(--neo-border);
+  background: var(--neo-surface-muted);
+  box-shadow: var(--neo-shadow-idle);
+}
+
+.neo-nav-active {
+  font-weight: 600;
+  color: var(--neo-ink);
+  text-shadow: var(--neo-text-shadow);
+}

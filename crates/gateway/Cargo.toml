@@ -1,0 +1,39 @@
+[package]
+name = "gateway"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "gptimage-gateway-rs"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+gateway-auth = { path = "../gateway-auth" }
+axum = { workspace = true }
+axum-extra = { workspace = true }
+base64 = { workspace = true }
+bytes = { workspace = true }
+cookie = { workspace = true }
+futures-util = { workspace = true }
+helper_client = { path = "../helper_client" }
+upstream = { path = "../upstream" }
+protocol = { path = "../protocol" }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+tokio = { workspace = true }
+tower = "0.5"
+tower-http = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+hex = { workspace = true }
+hmac = "0.12"
+sha2 = "0.10"
+chrono = { version = "0.4", features = ["clock"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

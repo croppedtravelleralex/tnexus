@@ -2,7 +2,103 @@ const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:9000";
 
 import type { Conversation, ConversationState } from "@/lib/conversations";
 import type { GenConfig } from "@/lib/gen-config";
-import type { UserPreferences } from "@/lib/studio-layout";
+
+/** 账号级偏好（studio 布局已改为全局固定，不再写入 preferences） */
+export type UserPreferences = Record<string, unknown>;
+
+export type AccountStatus = "正常" | "限流" | "异常" | "禁用";
+
+export type Account = {
+  access_token: string;
+  email?: string | null;
+  type: string;
+  status: AccountStatus;
+  quota: number;
+  image_schedulable?: boolean;
+  image_quota_unknown?: boolean;
+  panda_receive_state?: string | null;
+  proxy?: string | null;
+  proxy_egress_ip?: string | null;
+  proxy_provider?: string | null;
+  cf_daily?: Array<{ date?: string; ok?: number; cf?: number; image_fail?: number }>;
+  egress_daily?: Array<{ date?: string; status?: string; ip?: string }>;
+  success?: number;
+  fail?: number;
+  created_at?: string | null;
+};
+
+export type AccountListStats = {
+  total: number;
+  active: number;
+  limited: number;
+  abnormal: number;
+  disabled: number;
+  total_quota: number;
+  schedulable?: number;
+  scheduling_enabled?: number;
+  image_schedulable?: number;
+  available_image_quota?: number;
+};
+
+export type AccountListResponse = {
+  items: Account[];
+  total?: number;
+  offset?: number;
+  limit?: number;
+  stats?: AccountListStats;
+};
+
+export type AccountImportPayload = {
+  access_token: string;
+  accessToken?: string;
+  email?: string;
+  proxy?: string;
+  type?: string;
+  [key: string]: unknown;
+};
+
+export type AccountMutationResponse = {
+  added?: number;
+  skipped?: number;
+  updated?: number;
+  refreshed?: number;
+  errors?: Array<{ error?: string }>;
+  items?: Account[];
+  stats?: AccountListStats;
+};
+
+export type AccountUsageRecentResponse = {
+  days: number;
+  dates: string[];
+  by_email: Record<
+    string,
+    Array<{
+      date: string;
+      images: number;
+      dialogues: number;
+      images_api?: number;
+      images_chat?: number;
+      dialogues_real?: number;
+      dialogues_nurture?: number;
+    }>
+  >;
+};
+
+export type AccountActivityDailyResponse = {
+  days: number;
+  sync_label: string;
+  items: Array<{
+    date: string;
+    registered: number;
+    uploaded: number;
+    received: number;
+    deleted: number;
+    images?: number;
+    images_api?: number;
+    images_chat?: number;
+    dialogues?: number;
+  }>;
+};
 
 export type User = {
   id: string;
@@ -110,13 +206,11 @@ export const authApi = {
   logout: () => api<{ ok: boolean }>("/api/auth/logout", { method: "POST" }),
   me: () => api<User>("/api/auth/me"),
   getPreferences: () => api<UserPreferences>("/api/auth/preferences"),
-  savePreferences: async (patch: UserPreferences) => {
-    const current = await authApi.getPreferences();
-    return api<UserPreferences>("/api/auth/preferences", {
+  savePreferences: (patch: UserPreferences) =>
+    api<UserPreferences>("/api/auth/preferences", {
       method: "PATCH",
-      body: JSON.stringify({ preferences: { ...current, ...patch } }),
-    });
-  },
+      body: JSON.stringify({ preferences: patch }),
+    }),
   listUsers: () => api<User[]>("/api/auth/users"),
   setDisabled: (id: string, disabled: boolean) =>
     api<{ ok: boolean }>(`/api/auth/users/${id}/disabled`, {
@@ -169,4 +263,284 @@ export const jobsApi = {
     }),
   get: (id: string) => api<JobDetail>(`/api/jobs/${id}`),
   eventsUrl: (id: string) => `${API_BASE}/api/jobs/${id}/events`,
+};
+
+export const accountsApi = {
+  list: (params?: { offset?: number; limit?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.offset != null) q.set("offset", String(params.offset));
+    if (params?.limit != null) q.set("limit", String(params.limit));
+    const query = q.toString();
+    return api<AccountListResponse>(`/api/accounts${query ? `?${query}` : ""}`);
+  },
+  reloadFromStorage: () =>
+    api<{ ok: boolean; total?: number; error?: string }>("/api/accounts/reload-from-storage", {
+      method: "POST",
+    }),
+  activityDaily: (days = 14) =>
+    api<AccountActivityDailyResponse>(`/api/accounts/activity/daily?days=${days}`),
+  usageRecent: (days = 6) =>
+    api<AccountUsageRecentResponse>(`/api/accounts/usage/recent?days=${days}`),
+  schedulableBreakdown: () =>
+    api<{ buckets: Record<string, number>; total: number }>("/api/accounts/schedulable-breakdown"),
+  setScheduling: (accessToken: string, enabled: boolean) =>
+    api<{ ok: boolean; enabled: boolean; item?: Account; stats?: AccountListStats }>(
+      "/api/accounts/scheduling",
+      {
+        method: "POST",
+        body: JSON.stringify({ access_token: accessToken, enabled }),
+      },
+    ),
+  schedulingBulk: (accessTokens: string[], enabled: boolean) =>
+    api<{ ok: boolean; updated: number; enabled: boolean }>("/api/accounts/scheduling/bulk", {
+      method: "POST",
+      body: JSON.stringify({ access_tokens: accessTokens, enabled }),
+    }),
+  create: (tokens: string[], accounts: AccountImportPayload[] = []) =>
+    api<AccountMutationResponse>("/api/accounts?include_items=false", {
+      method: "POST",
+      body: JSON.stringify({ tokens, accounts }),
+    }),
+  importBatch: (accounts: AccountImportPayload[]) =>
+    api<AccountMutationResponse>("/api/accounts/import-batch?include_items=false", {
+      method: "POST",
+      body: JSON.stringify({ accounts }),
+    }),
+  exportJson: async (accessTokens: string[]) => {
+    let res: Response;
+    try {
+      res = await fetch(`${API_BASE}/api/accounts/export`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ access_tokens: accessTokens, format: "json" }),
+      });
+    } catch {
+      throw new Error(`${API_OFFLINE_MESSAGE}（${API_BASE}）`);
+    }
+    if (!res.ok) {
+      const text = await res.text();
+      let message = text || res.statusText;
+      try {
+        const json = JSON.parse(text) as { error?: string };
+        message = json.error ?? message;
+      } catch {
+        // keep raw
+      }
+      throw new Error(message);
+    }
+    const blob = await res.blob();
+    const disposition = res.headers.get("content-disposition") ?? "";
+    const match = disposition.match(/filename="([^"]+)"/);
+    const filename = match?.[1] ?? "tnexus-accounts.json";
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  },
+  bindingSlots: (params?: { week_offset?: number; timezone?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.week_offset != null) q.set("week_offset", String(params.week_offset));
+    if (params?.timezone) q.set("timezone", params.timezone);
+    const query = q.toString();
+    return api<BindingSlotsResponse>(`/api/accounts/usage/binding-slots${query ? `?${query}` : ""}`);
+  },
+  refresh: (accessTokens: string[]) =>
+    api<{ progress_id: string }>("/api/accounts/refresh", {
+      method: "POST",
+      body: JSON.stringify({ access_tokens: accessTokens }),
+    }),
+  refreshProgress: (progressId: string) =>
+    api<RefreshProgressResponse>(`/api/accounts/refresh/progress/${progressId}`),
+  reLogin: (accessTokens: string[]) =>
+    api<{ progress_id: string }>("/api/accounts/re-login", {
+      method: "POST",
+      body: JSON.stringify({ access_tokens: accessTokens }),
+    }),
+  reLoginProgress: (progressId: string) =>
+    api<RefreshProgressResponse>(`/api/accounts/re-login/progress/${progressId}`),
+  oauthStart: (emailHint?: string) =>
+    api<OAuthLoginStartResponse>("/api/accounts/oauth/start", {
+      method: "POST",
+      body: JSON.stringify({ email_hint: emailHint ?? "" }),
+    }),
+  oauthFinish: (sessionId: string, callback: string) =>
+    api<AccountMutationResponse>("/api/accounts/oauth/finish", {
+      method: "POST",
+      body: JSON.stringify({ session_id: sessionId, callback }),
+    }),
+};
+
+export type BindingSlotsResponse = {
+  week_offset?: number;
+  week_start?: string;
+  week_end?: string;
+  week_label?: string;
+  timezone?: string;
+  by_binding?: Record<string, Record<string, number[][]>>;
+};
+
+export type RefreshProgressResponse = {
+  done?: boolean;
+  processed?: number;
+  total?: number;
+  error?: string | null;
+  result?: AccountMutationResponse;
+};
+
+export type OAuthLoginStartResponse = {
+  session_id: string;
+  authorize_url: string;
+  expires_in?: number;
+};
+
+export type ManagedImage = {
+  rel: string;
+  name: string;
+  date: string;
+  size: number;
+  url: string;
+  thumbnail_url?: string;
+  created_at: string;
+  width?: number;
+  height?: number;
+  tags?: string[];
+  prompt?: string;
+};
+
+export type SystemLog = {
+  id: string;
+  time: string;
+  type: "call" | "account" | "llm_ops" | string;
+  summary?: string;
+  detail?: Record<string, unknown>;
+};
+
+export const logsApi = {
+  list: (filters: {
+    type?: string;
+    start_date?: string;
+    end_date?: string;
+    source?: string;
+    outcome?: string;
+    limit?: number;
+  }) => {
+    const q = new URLSearchParams();
+    if (filters.type) q.set("type", filters.type);
+    if (filters.start_date) q.set("start_date", filters.start_date);
+    if (filters.end_date) q.set("end_date", filters.end_date);
+    if (filters.source) q.set("source", filters.source);
+    if (filters.outcome) q.set("outcome", filters.outcome);
+    if (filters.limit != null) q.set("limit", String(filters.limit));
+    const query = q.toString();
+    return api<{ items: SystemLog[] }>(`/api/logs${query ? `?${query}` : ""}`);
+  },
+  delete: (ids: string[]) =>
+    api<{ removed: number }>("/api/logs/delete", {
+      method: "POST",
+      body: JSON.stringify({ ids }),
+    }),
+};
+
+export const imagesApi = {
+  list: (filters: { start_date?: string; end_date?: string }) => {
+    const q = new URLSearchParams();
+    if (filters.start_date) q.set("start_date", filters.start_date);
+    if (filters.end_date) q.set("end_date", filters.end_date);
+    const query = q.toString();
+    return api<{ items: ManagedImage[] }>(`/api/images${query ? `?${query}` : ""}`);
+  },
+  delete: (body: { paths?: string[]; start_date?: string; end_date?: string; all_matching?: boolean }) =>
+    api<{ removed: number }>("/api/images/delete", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  tags: () => api<{ tags: string[] }>("/api/images/tags"),
+  setTags: (path: string, tags: string[]) =>
+    api<{ ok: boolean; tags: string[] }>("/api/images/tags", {
+      method: "POST",
+      body: JSON.stringify({ path, tags }),
+    }),
+};
+
+export type OpsSummary = {
+  jobs_total: number;
+  jobs_running: number;
+  jobs_done: number;
+  jobs_failed: number;
+  results_total: number;
+  accounts_total: number;
+};
+
+export const opsApi = {
+  summary: () => api<OpsSummary>("/api/ops/summary"),
+  nurtureStatus: () => api<Record<string, unknown>>("/api/ops/nurture/status"),
+  nurtureEnqueue: (body: { prompt?: string; source?: string; access_tokens?: string[] }) =>
+    api<Record<string, unknown>>("/api/ops/nurture/enqueue", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  nurtureEnable: (enabled: boolean) =>
+    api<Record<string, unknown>>("/api/ops/nurture/enable", {
+      method: "POST",
+      body: JSON.stringify({ enabled }),
+    }),
+  pipelineSnapshot: () => api<Record<string, unknown>>("/api/ops/image-pipeline/snapshot"),
+  riskMetrics: () => api<Record<string, unknown>>("/api/ops/risk/metrics"),
+};
+
+const GATEWAY_BASE = (process.env.NEXT_PUBLIC_GATEWAY_BASE ?? "http://localhost:8014").replace(/\/$/, "");
+const GATEWAY_KEY = process.env.NEXT_PUBLIC_GATEWAY_KEY ?? "";
+
+export const chatApi = {
+  streamCompletion: async (
+    body: { model: string; messages: Array<{ role: string; content: string }> },
+    onDelta: (text: string) => void,
+  ) => {
+    let res: Response;
+    try {
+      res = await fetch(`${GATEWAY_BASE}/v1/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(GATEWAY_KEY ? { Authorization: `Bearer ${GATEWAY_KEY}` } : {}),
+        },
+        body: JSON.stringify({ ...body, stream: true }),
+      });
+    } catch {
+      throw new Error(`无法连接 Gateway（${GATEWAY_BASE}）`);
+    }
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(text || res.statusText);
+    }
+    const reader = res.body?.getReader();
+    if (!reader) throw new Error("无响应流");
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data:")) continue;
+        const payload = trimmed.slice(5).trim();
+        if (payload === "[DONE]") return;
+        try {
+          const json = JSON.parse(payload) as {
+            choices?: Array<{ delta?: { content?: string } }>;
+          };
+          const delta = json.choices?.[0]?.delta?.content;
+          if (delta) onDelta(delta);
+        } catch {
+          // skip malformed chunk
+        }
+      }
+    }
+  },
 };

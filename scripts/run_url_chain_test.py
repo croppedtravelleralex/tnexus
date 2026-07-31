@@ -9,7 +9,7 @@ import urllib.request
 import http.cookiejar
 
 ROOT = r"D:\SelfMadeTool\TNexus"
-GW = os.environ.get("GW_BASE", "http://43.156.233.219:8014")
+GW = os.environ.get("GW_BASE", "https://tnexus.relai.asia")
 TN_API = "http://127.0.0.1:9000"
 
 
@@ -72,7 +72,7 @@ curl -fsS -c - -X POST http://127.0.0.1:8014/api/auth/login -H 'Content-Type: ap
         with opener.open(f"{TN_API}{path}") as resp:
             return json.loads(resp.read())
 
-    post("/api/auth/login", {"email": "demo", "password": "demo1234"})
+    post("/api/auth/login", {"email": "admin", "password": "123456"})
     job_id = post(
         "/api/jobs",
         {

@@ -1,3 +1,5 @@
+use crate::accounts_store::AccountsStore;
+use crate::account_ops;
 use crate::config::AppConfig;
 use redis::aio::ConnectionManager;
 use sqlx::PgPool;
@@ -13,6 +15,9 @@ pub struct AppState {
     pub redis: ConnectionManager,
     pub storage: Option<SharedStorage>,
     pub http: reqwest::Client,
+    pub accounts: AccountsStore,
+    pub refresh_progress: account_ops::ProgressStore,
+    pub relogin_progress: account_ops::ProgressStore,
 }
 
 impl AppState {
@@ -52,6 +57,8 @@ impl AppState {
             .timeout(std::time::Duration::from_secs(300))
             .build()?;
 
+        let accounts = AccountsStore::from_env().unwrap_or_default();
+
         Ok(Self {
             config,
             pool,
@@ -59,6 +66,9 @@ impl AppState {
             redis,
             storage,
             http,
+            accounts,
+            refresh_progress: account_ops::ProgressStore::new(),
+            relogin_progress: account_ops::ProgressStore::new(),
         })
     }
 }

@@ -11,20 +11,20 @@ import { Download } from "lucide-react";
 
 function DetailInner() {
   const id = useSearchParams().get("id");
-  const { user, loading } = useAuth();
+  const { user, bootstrapping } = useAuth();
   const router = useRouter();
   const [job, setJob] = useState<JobDetail | null>(null);
 
   useEffect(() => {
-    if (!loading && !user) router.replace("/login");
-  }, [loading, user, router]);
+    if (!bootstrapping && !user) router.replace("/login");
+  }, [bootstrapping, user, router]);
 
   useEffect(() => {
     if (!user || !id) return;
     void jobsApi.get(id).then(setJob).catch(() => undefined);
   }, [user, id]);
 
-  if (loading || !user) return null;
+  if (bootstrapping || !user) return null;
 
   return (
     <main className="mx-auto max-w-4xl space-y-4 px-6 py-8">

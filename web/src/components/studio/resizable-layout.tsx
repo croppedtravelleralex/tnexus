@@ -1,34 +1,36 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Button } from "@/components/ui/button";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   DEFAULT_COLUMN_WIDTHS,
   MIN_COLUMN_WIDTH,
-  normalizeWidths,
-  type StudioLayoutPrefs,
+  columnWidthsFromRatios,
+  defaultColumnWidths,
+  loadSavedColumnRatios,
 } from "@/lib/studio-layout";
 import { cn } from "@/lib/utils";
 
 type Props = {
-  widths: [number, number, number];
+  widths: [number, number, number] | null;
   onWidthsChange: (w: [number, number, number]) => void;
-  onSaveDefault: () => void | Promise<void>;
-  saving?: boolean;
-  saved?: boolean;
   children: [React.ReactNode, React.ReactNode, React.ReactNode];
 };
 
-export function ResizableStudioLayout({
-  widths,
-  onWidthsChange,
-  onSaveDefault,
-  saving,
-  saved,
-  children,
-}: Props) {
+export function ResizableStudioLayout({ widths, onWidthsChange, children }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [dragging, setDragging] = useState<0 | 1 | null>(null);
+  const hydrated = useRef(false);
+
+  useLayoutEffect(() => {
+    if (hydrated.current || !containerRef.current) return;
+    const total = containerRef.current.getBoundingClientRect().width - 8;
+    if (total <= 0) return;
+    const saved = loadSavedColumnRatios();
+    onWidthsChange(saved ? columnWidthsFromRatios(total, saved) : defaultColumnWidths(total));
+    hydrated.current = true;
+  }, [onWidthsChange]);
+
+  const activeWidths = widths ?? DEFAULT_COLUMN_WIDTHS;
 
   const onDrag = useCallback(
     (index: 0 | 1, clientX: number) => {
@@ -40,17 +42,17 @@ export function ResizableStudioLayout({
       if (index === 0) {
         const left = Math.max(MIN_COLUMN_WIDTH, Math.min(x - 4, total - MIN_COLUMN_WIDTH * 2));
         const rest = total - left;
-        const mid = Math.max(MIN_COLUMN_WIDTH, Math.min(widths[1], rest - MIN_COLUMN_WIDTH));
+        const mid = Math.max(MIN_COLUMN_WIDTH, Math.min(activeWidths[1], rest - MIN_COLUMN_WIDTH));
         onWidthsChange([left, mid, rest - mid]);
       } else {
-        const leftPlusMid = Math.max(widths[0] + MIN_COLUMN_WIDTH, Math.min(x - 4, total - MIN_COLUMN_WIDTH));
-        const left = widths[0];
+        const leftPlusMid = Math.max(activeWidths[0] + MIN_COLUMN_WIDTH, Math.min(x - 4, total - MIN_COLUMN_WIDTH));
+        const left = activeWidths[0];
         const mid = leftPlusMid - left;
         const right = total - leftPlusMid;
         onWidthsChange([left, Math.max(MIN_COLUMN_WIDTH, mid), Math.max(MIN_COLUMN_WIDTH, right)]);
       }
     },
-    [onWidthsChange, widths]
+    [onWidthsChange, activeWidths],
   );
 
   useEffect(() => {
@@ -67,22 +69,16 @@ export function ResizableStudioLayout({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex shrink-0 items-center justify-end gap-2 border-b border-zinc-100 px-3 py-1.5">
-        <span className="mr-auto text-xs text-zinc-400">拖拽列边界调整宽度</span>
-        <Button variant="outline" size="sm" onClick={() => void onSaveDefault()} disabled={saving}>
-          {saving ? "保存中…" : saved ? "已保存" : "设为默认布局"}
-        </Button>
-      </div>
       <div ref={containerRef} className="flex min-h-0 flex-1">
-        <div style={{ width: widths[0] }} className="min-h-0 shrink-0 overflow-hidden">
+        <div style={{ width: activeWidths[0] }} className="min-h-0 shrink-0 overflow-hidden">
           {children[0]}
         </div>
         <ResizeHandle active={dragging === 0} onPointerDown={() => setDragging(0)} />
-        <div style={{ width: widths[1] }} className="min-h-0 shrink-0 overflow-hidden">
+        <div style={{ width: activeWidths[1] }} className="min-h-0 shrink-0 overflow-hidden">
           {children[1]}
         </div>
         <ResizeHandle active={dragging === 1} onPointerDown={() => setDragging(1)} />
-        <div style={{ width: widths[2], minWidth: MIN_COLUMN_WIDTH }} className="min-h-0 shrink-0 overflow-hidden">
+        <div style={{ width: activeWidths[2], minWidth: MIN_COLUMN_WIDTH }} className="min-h-0 shrink-0 overflow-hidden">
           {children[2]}
         </div>
       </div>
@@ -99,8 +95,8 @@ function ResizeHandle({ onPointerDown, active }: { onPointerDown: () => void; ac
         onPointerDown();
       }}
       className={cn(
-        "w-1 shrink-0 cursor-col-resize bg-zinc-200 transition-colors hover:bg-zinc-400",
-        active && "bg-zinc-500"
+        "w-1 shrink-0 cursor-col-resize bg-[var(--neo-border)] transition-colors hover:bg-[var(--neo-primary)]",
+        active && "bg-[var(--neo-primary-deep)]",
       )}
     />
   );

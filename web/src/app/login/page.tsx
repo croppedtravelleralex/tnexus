@@ -37,7 +37,7 @@ export default function LoginPage() {
       footer={
         <>
           没有账号？{" "}
-          <Link href="/register" className="text-violet-300 hover:text-violet-200">
+          <Link href="/register" className="auth-link">
             注册
           </Link>
         </>
@@ -51,7 +51,7 @@ export default function LoginPage() {
           <input
             id="email"
             className="auth-input"
-            placeholder="admin 或 user"
+            placeholder="邮箱"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             required
@@ -72,26 +72,11 @@ export default function LoginPage() {
             autoComplete="current-password"
           />
         </div>
-        {error && <p className="text-sm text-red-400">{error}</p>}
+        {error && <p className="text-sm text-red-600 text-shadow-bl-sm">{error}</p>}
         <button type="submit" className="auth-btn" disabled={loading}>
           {loading ? "登录中..." : "登录"}
         </button>
       </form>
-
-      <div className="auth-hint">
-        <p className="font-medium text-zinc-300">Mock 测试账号</p>
-        <p className="mt-1">
-          管理员：<span className="text-zinc-200">admin</span> /{" "}
-          <span className="text-zinc-200">123456</span>
-        </p>
-        <p>
-          普通用户：<span className="text-zinc-200">demo</span> /{" "}
-          <span className="text-zinc-200">demo1234</span>
-        </p>
-        <p className="mt-2 text-zinc-500">
-          若提示无法连接服务器，请先启动 API（localhost:9000）
-        </p>
-      </div>
     </AuthShell>
   );
 }

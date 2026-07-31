@@ -3,8 +3,8 @@
 import { useAuth } from "@/lib/auth";
 
 export function ApiStatusBanner() {
-  const { apiOnline, loading } = useAuth();
-  if (loading || apiOnline) return null;
+  const { apiOnline, bootstrapping } = useAuth();
+  if (bootstrapping || apiOnline) return null;
 
   return (
     <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-center text-sm text-amber-900">

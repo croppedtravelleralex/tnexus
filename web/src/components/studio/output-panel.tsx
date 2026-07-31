@@ -285,7 +285,7 @@ export function OutputPanel({
                   <p className="mt-2 text-lg font-semibold tabular-nums text-zinc-700">
                     {formatDuration(elapsedMs)}
                   </p>
-                  <p className="mt-1 text-xs text-zinc-400">占位预览即将出现</p>
+                  <p className="mt-1 text-xs text-[var(--neo-muted)]">生成结果将显示在此处</p>
                 </>
               ) : (
                 <p>生成完成后预览图将在此展示</p>

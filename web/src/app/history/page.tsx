@@ -9,20 +9,20 @@ import { jobsApi, type JobRecord } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 
 export default function HistoryPage() {
-  const { user, loading } = useAuth();
+  const { user, bootstrapping } = useAuth();
   const router = useRouter();
   const [jobs, setJobs] = useState<JobRecord[]>([]);
 
   useEffect(() => {
-    if (!loading && !user) router.replace("/login");
-  }, [loading, user, router]);
+    if (!bootstrapping && !user) router.replace("/login");
+  }, [bootstrapping, user, router]);
 
   useEffect(() => {
     if (!user) return;
     void jobsApi.list().then(setJobs).catch(() => undefined);
   }, [user]);
 
-  if (loading || !user) return null;
+  if (bootstrapping || !user) return null;
 
   return (
     <div className="min-h-screen">

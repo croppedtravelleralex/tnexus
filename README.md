@@ -1,6 +1,8 @@
 # TNexus
 
-AI 生图工作台 — Rust 控制面 + Next.js 墨绿 UI。内网调用 gptimage / grok2api，资产存储 Cloudflare R2。
+AI 生图工作台 + **chatgpt2api 管理台**（合并中）— Rust 控制面（tnexus-api + gateway）+ Next.js UI。内网生图走 gateway `/v1/`，资产可存 Cloudflare R2。
+
+> **施工总控**：[plan.md](plan.md) · **当前状态**：[HANDOFF.md](HANDOFF.md) · **UI 对照源**：[docs/SOURCE.md](docs/SOURCE.md)
 
 ## 功能
 
@@ -48,24 +50,35 @@ cd web && npm run dev
 ## Panda 部署
 
 ```bash
-# 本地/WSL 禁止在 Panda 上 cargo build
-docker compose -f deploy/panda/docker-compose.yml pull
-docker compose -f deploy/panda/docker-compose.yml up -d
+# 本地禁止在 Panda 上 cargo/npm build
+# Panda:
+export TNEXUS_ROOT=/root/TNexus
+cd $TNEXUS_ROOT && git pull
+bash deploy/panda/export_pool.sh
+bash deploy/panda/deploy.sh
 ```
 
-- 路径：`/opt/tnexus`
-- 域名：`https://tnexus.closeapi.top`
-- 内网：`GPTIMAGE_BASE=http://127.0.0.1:8012`，`GROK2API_BASE=http://127.0.0.1:18000`
+- 数据：`/opt/tnexus/.env`、`/opt/tnexus/data/pool/`
+- 域名：`https://tnexus.relai.asia`（号池 `/accounts`，生图 `/v1/` 反代 gateway）
+- 同机回环：`GPTIMAGE_BASE=http://127.0.0.1:8014`
+- 详见 [HANDOFF.md](HANDOFF.md)、[docs/34-tnexus-rollout-oauth-panda.md](docs/34-tnexus-rollout-oauth-panda.md)
 
-## 仓库结构
+## 仓库结构（目标，见 plan.md P0）
 
 ```
-crates/tnexus-api      # axum HTTP API
+crates/tnexus-api      # axum HTTP API（/api/jobs、/api/auth）
 crates/tnexus-worker   # 异步任务消费者
 crates/tnexus-domain   # 导演/因子/任务模型
 crates/tnexus-auth     # JWT + argon2
 crates/tnexus-storage  # R2 + 图片变体
-web/                   # Next.js 前端
+crates/gateway         # ← 自 gptimage-gateway-rs 迁入（/v1/ + 号池 API）
+crates/auth            # gateway 鉴权（待与 tnexus-auth 收敛）
+crates/protocol        # OpenAI 契约
+crates/upstream        # TLS/SSE 数据面
+web/                   # 单一 Next.js：studio + chatgpt2api 管理台
 migrations/            # PostgreSQL
 deploy/panda/          # 生产 compose
+deploy/nginx/          # tnexus.relai.asia 反代样例
+docs/                  # 含自 gateway-rs 同步的 gap/部署文档
+plan.md                # 合并详细待办
 ```

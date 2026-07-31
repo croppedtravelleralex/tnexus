@@ -5,8 +5,8 @@ export function Input({ className, ...props }: React.InputHTMLAttributes<HTMLInp
   return (
     <input
       className={cn(
-        "flex h-9 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm text-zinc-900 placeholder:text-zinc-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400",
-        className
+        "neo-input flex h-9 w-full px-3 text-sm text-[var(--neo-ink)] placeholder:text-[var(--neo-muted)] focus-visible:outline-none",
+        className,
       )}
       {...props}
     />
@@ -17,8 +17,8 @@ export function Textarea({ className, ...props }: React.TextareaHTMLAttributes<H
   return (
     <textarea
       className={cn(
-        "flex min-h-[100px] w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 placeholder:text-zinc-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400",
-        className
+        "neo-input flex min-h-[100px] w-full px-3 py-2 text-sm text-[var(--neo-ink)] placeholder:text-[var(--neo-muted)] focus-visible:outline-none",
+        className,
       )}
       {...props}
     />
@@ -26,5 +26,7 @@ export function Textarea({ className, ...props }: React.TextareaHTMLAttributes<H
 }
 
 export function Label({ className, ...props }: React.LabelHTMLAttributes<HTMLLabelElement>) {
-  return <label className={cn("text-sm font-medium text-zinc-700", className)} {...props} />;
+  return (
+    <label className={cn("text-sm font-medium text-[var(--neo-ink)] text-shadow-bl-sm", className)} {...props} />
+  );
 }

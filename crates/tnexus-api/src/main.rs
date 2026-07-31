@@ -1,9 +1,13 @@
+mod account_ops;
+mod accounts_store;
 mod config;
+mod gptimage_proxy;
 mod jobs;
 mod middleware;
 mod models;
 mod routes;
 mod state;
+mod usage_metrics;
 
 use axum::{
     http::{header, Method, StatusCode},
@@ -56,6 +60,10 @@ fn build_router(state: Arc<AppState>) -> Router {
         .nest("/api/auth", routes::auth::routes())
         .nest("/api/conversations", routes::conversations::routes())
         .nest("/api/jobs", routes::jobs::routes())
+        .nest("/api/accounts", routes::accounts::routes())
+        .nest("/api/logs", routes::media::routes())
+        .nest("/api/images", routes::media::image_routes())
+        .nest("/api/ops", routes::ops::routes())
         .with_state(state.clone());
 
     let cors = build_cors(&state.config.cors_origins);
@@ -98,6 +106,7 @@ fn build_cors(origins: &[String]) -> CorsLayer {
             Method::GET,
             Method::POST,
             Method::PUT,
+            Method::PATCH,
             Method::DELETE,
             Method::OPTIONS,
         ])

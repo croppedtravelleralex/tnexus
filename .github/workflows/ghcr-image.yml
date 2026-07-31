@@ -28,3 +28,11 @@ jobs:
             ghcr.io/croppedtravelleralex/tnexus:${{ github.sha }}
           build-args: |
             NEXT_PUBLIC_API_BASE=https://tnexus.relai.asia
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.account-ops
+          push: true
+          tags: |
+            ghcr.io/croppedtravelleralex/tnexus-account-ops:latest
+            ghcr.io/croppedtravelleralex/tnexus-account-ops:${{ github.sha }}

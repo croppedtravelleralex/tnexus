@@ -14,6 +14,9 @@ pub struct AppConfig {
     pub static_dir: Option<String>,
     pub cors_origins: Vec<String>,
     pub gptimage_base: String,
+    pub gptimage_admin_token: Option<String>,
+    pub account_ops_base: String,
+    pub account_ops_token: Option<String>,
     pub grok2api_base: String,
     pub director_model: String,
     pub r2: Option<R2Config>,
@@ -61,6 +64,12 @@ impl AppConfig {
                 .collect(),
             gptimage_base: env::var("GPTIMAGE_BASE")
                 .unwrap_or_else(|_| "http://127.0.0.1:8012".into()),
+            gptimage_admin_token: env::var("GPTIMAGE_ADMIN_TOKEN").ok(),
+            account_ops_base: env::var("ACCOUNT_OPS_BASE")
+                .unwrap_or_else(|_| "http://127.0.0.1:9011".into()),
+            account_ops_token: env::var("ACCOUNT_OPS_TOKEN")
+                .ok()
+                .or_else(|| env::var("HELPER_INTERNAL_TOKEN").ok()),
             grok2api_base: env::var("GROK2API_BASE")
                 .unwrap_or_else(|_| "http://127.0.0.1:18000".into()),
             director_model: env::var("DIRECTOR_MODEL").unwrap_or_else(|_| "gpt-5".into()),
