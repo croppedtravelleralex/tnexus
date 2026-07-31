@@ -1,6 +1,6 @@
 //! Shared gptimage-compatible `accounts.db` access (WAL + transactional writes).
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -183,39 +183,41 @@ impl AccountsDb {
         }
         self.with_conn(|conn| {
             let tx = conn.unchecked_transaction()?;
-            let mut stmt = tx.prepare("SELECT id, access_token, data FROM accounts")?;
-            let rows = stmt.query_map([], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            })?;
-            for row in rows {
-                let (id, token, data) = row?;
-                let mut value = row_to_value(&token, &data)?;
-                let em = value
-                    .get("email")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_lowercase();
-                if em != key {
-                    continue;
+            {
+                let mut stmt = tx.prepare("SELECT id, access_token, data FROM accounts")?;
+                let rows = stmt.query_map([], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?;
+                for row in rows {
+                    let (id, token, data) = row?;
+                    let mut value = row_to_value(&token, &data)?;
+                    let em = value
+                        .get("email")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_lowercase();
+                    if em != key {
+                        continue;
+                    }
+                    let cur = value
+                        .get("image_inflight")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0);
+                    let next = (cur + delta).max(0);
+                    if let Some(obj) = value.as_object_mut() {
+                        obj.insert("image_inflight".into(), json!(next));
+                    }
+                    let data_str = normalize_data_json(&value, &token)?;
+                    tx.execute(
+                        "UPDATE accounts SET data = ?1 WHERE id = ?2",
+                        params![data_str, id],
+                    )?;
+                    break;
                 }
-                let cur = value
-                    .get("image_inflight")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(0);
-                let next = (cur + delta).max(0);
-                if let Some(obj) = value.as_object_mut() {
-                    obj.insert("image_inflight".into(), json!(next));
-                }
-                let data_str = normalize_data_json(&value, &token)?;
-                tx.execute(
-                    "UPDATE accounts SET data = ?1 WHERE id = ?2",
-                    params![data_str, id],
-                )?;
-                break;
             }
             tx.commit()?;
             Ok(())
