@@ -199,6 +199,11 @@ async fn nurture_process_one(
     let data = account_ops::nurture_process_one(&state, payload)
         .await
         .map_err(|e| (StatusCode::CONFLICT, e))?;
+    if let Some(account) = data.get("account").cloned() {
+        let _ = state.accounts.merge_remote_items(&[account]).await;
+    } else if let Some(updated) = data.get("updated_account").cloned() {
+        let _ = state.accounts.merge_remote_items(&[updated]).await;
+    }
     Ok(Json(data))
 }
 

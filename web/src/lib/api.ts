@@ -637,6 +637,27 @@ export const opsApi = {
   riskMetrics: () => api<Record<string, unknown>>("/api/ops/risk/metrics"),
 };
 
+export const proxyApi = {
+  runtime: () => api<Record<string, unknown>>("/api/proxy/runtime"),
+  saveRuntime: (runtime: Record<string, unknown>) =>
+    api<Record<string, unknown>>("/api/proxy/runtime", {
+      method: "POST",
+      body: JSON.stringify(runtime),
+    }),
+  test: (url: string) =>
+    api<Record<string, unknown>>("/api/proxy/test", {
+      method: "POST",
+      body: JSON.stringify({ url }),
+    }),
+  webshareStatus: () => api<Record<string, unknown>>("/api/ops/webshare-cf-scan/status"),
+  webshareInventory: () => api<Record<string, unknown>>("/api/ops/webshare-cf-scan/inventory"),
+  webshareRunOnce: () =>
+    api<Record<string, unknown>>("/api/ops/webshare-cf-scan/run-once", {
+      method: "POST",
+      body: "{}",
+    }),
+};
+
 const GATEWAY_BASE = (process.env.NEXT_PUBLIC_GATEWAY_BASE ?? "http://localhost:8014").replace(/\/$/, "");
 const GATEWAY_KEY = process.env.NEXT_PUBLIC_GATEWAY_KEY ?? "";
 

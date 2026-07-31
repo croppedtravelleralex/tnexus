@@ -39,6 +39,14 @@ def start_background_services() -> dict[str, Any]:
     except Exception as exc:
         log.warning("outlook_auto_recovery start failed: %s", exc)
         out.setdefault("errors", []).append(f"outlook_auto_recovery: {exc}")
+    try:
+        from services.webshare_cf_scan_service import webshare_cf_scan_service
+
+        webshare_cf_scan_service.start_background()
+        out["services"].append("webshare_cf_scan")
+    except Exception as exc:
+        log.warning("webshare_cf_scan start failed: %s", exc)
+        out.setdefault("errors", []).append(f"webshare_cf_scan: {exc}")
     _STARTED = True
     out["started"] = _STARTED
     return out
@@ -198,3 +206,55 @@ def quota_prime_status() -> dict[str, Any]:
         "status": status,
         "source": "account-ops",
     }
+
+
+def proxy_runtime_get() -> dict[str, Any]:
+    ensure_gptimage()
+    from services.config import config
+    from services.proxy_service import proxy_settings
+
+    return {
+        "runtime": config.get_public_proxy_runtime_settings(),
+        "status": proxy_settings.get_runtime_status(),
+        "source": "account-ops",
+    }
+
+
+def proxy_runtime_save(settings: dict[str, Any]) -> dict[str, Any]:
+    ensure_gptimage()
+    from services.config import config
+
+    config.update({"proxy_runtime": settings})
+    return proxy_runtime_get()
+
+
+def proxy_test(url: str) -> dict[str, Any]:
+    ensure_gptimage()
+    from services.proxy_service import test_proxy
+
+    return {"result": test_proxy((url or "").strip()), "source": "account-ops"}
+
+
+def webshare_cf_scan_status() -> dict[str, Any]:
+    ensure_gptimage()
+    from services.webshare_cf_scan_service import webshare_cf_scan_service
+
+    data = webshare_cf_scan_service.status()
+    data["source"] = "account-ops"
+    return data
+
+
+def webshare_cf_scan_inventory() -> dict[str, Any]:
+    ensure_gptimage()
+    from services.webshare_cf_scan_service import webshare_cf_scan_service
+
+    data = webshare_cf_scan_service.inventory()
+    data["source"] = "account-ops"
+    return data
+
+
+def webshare_cf_scan_run_once() -> dict[str, Any]:
+    ensure_gptimage()
+    from services.webshare_cf_scan_service import webshare_cf_scan_service
+
+    return webshare_cf_scan_service.run_once(force=True)

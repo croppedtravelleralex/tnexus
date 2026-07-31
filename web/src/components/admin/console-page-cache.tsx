@@ -6,6 +6,12 @@ import { useRef, type ReactNode } from "react";
 const MAX_CACHED_PAGES = 6;
 const PINNED_PATHS = new Set(["/studio"]);
 
+/** 重页不缓存，避免切换时主线程长时间阻塞导致「点击无反应」 */
+function isHeavyRoute(pathname: string) {
+  const p = pathname.replace(/\/$/, "") || "/";
+  return p === "/accounts" || p === "/image-manager";
+}
+
 type CacheEntry = { node: ReactNode; lastAccess: number };
 
 /**
@@ -14,6 +20,10 @@ type CacheEntry = { node: ReactNode; lastAccess: number };
 export function ConsolePageCache({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const cacheRef = useRef(new Map<string, CacheEntry>());
+
+  if (isHeavyRoute(pathname)) {
+    return <div className="flex min-h-0 flex-1 flex-col">{children}</div>;
+  }
 
   const cache = cacheRef.current;
   const existing = cache.get(pathname);

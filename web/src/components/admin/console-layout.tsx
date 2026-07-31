@@ -8,15 +8,8 @@ import { NavProgress } from "@/components/admin/nav-progress";
 import { TopNav } from "@/components/admin/top-nav";
 import { useAuth } from "@/lib/auth";
 
-const PREFETCH_ROUTES = [
-  "/studio",
-  "/accounts",
-  "/image-manager",
-  "/logs",
-  "/ops",
-  "/chat",
-  "/settings",
-] as const;
+/** 仅预取轻量页；号池/图片管理体量大，预取会拖慢当前页交互 */
+const PREFETCH_ROUTES = ["/studio", "/settings", "/logs", "/ops"] as const;
 
 export function ConsoleLayout({ children }: { children: React.ReactNode }) {
   const { user, bootstrapping } = useAuth();

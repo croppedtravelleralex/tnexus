@@ -188,6 +188,30 @@ pub async fn quota_prime_status(state: &AppState) -> Result<Value, String> {
     get_json(state, "/v1/quota-window/prime/status").await
 }
 
+pub async fn proxy_runtime_get(state: &AppState) -> Result<Value, String> {
+    get_json(state, "/v1/proxy/runtime").await
+}
+
+pub async fn proxy_runtime_save(state: &AppState, body: Value) -> Result<Value, String> {
+    post_json(state, "/v1/proxy/runtime", body).await
+}
+
+pub async fn proxy_test(state: &AppState, url: &str) -> Result<Value, String> {
+    post_json(state, "/v1/proxy/test", json!({ "url": url })).await
+}
+
+pub async fn webshare_cf_scan_status(state: &AppState) -> Result<Value, String> {
+    get_json(state, "/v1/webshare-cf-scan/status").await
+}
+
+pub async fn webshare_cf_scan_inventory(state: &AppState) -> Result<Value, String> {
+    get_json(state, "/v1/webshare-cf-scan/inventory").await
+}
+
+pub async fn webshare_cf_scan_run_once(state: &AppState) -> Result<Value, String> {
+    post_json(state, "/v1/webshare-cf-scan/run-once", json!({})).await
+}
+
 pub async fn oauth_start(state: &AppState, email_hint: &str) -> Result<Value, String> {
     post_json(
         state,

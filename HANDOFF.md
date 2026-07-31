@@ -52,8 +52,8 @@
 
 | 项 | 状态 |
 |----|------|
-| GHCR 拉取最新镜像（api + account-ops + 静态 UI） | 🔄 每次 `deploy.sh` |
-| gateway `:8014` 二进制与 TNexus 镜像**不同步** | ⚠️ 调度门需单独发布 gateway |
+| GHCR 拉取最新镜像（api + account-ops + 静态 UI） | ✅ 2026-07-31 15:25 `dd4b758` 已 deploy |
+| gateway `:8014` 二进制与 TNexus 镜像**不同步** | ⚠️ 仍为 `gptimage-gateway-rs` 镜像（07-30）；`scheduling_gate` 未上线 |
 | Outlook 恢复 UI、养号结果 merge 回 JSON | 📋 下一迭代 |
 | gateway-rs 物理归档 | 已迁入 `crates/gateway`，待删独立仓 |
 

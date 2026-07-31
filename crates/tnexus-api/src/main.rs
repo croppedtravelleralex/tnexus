@@ -66,6 +66,8 @@ fn build_router(state: Arc<AppState>) -> Router {
         .nest("/api/logs", routes::media::routes())
         .nest("/api/images", routes::media::image_routes())
         .nest("/api/ops", routes::ops::routes())
+        .nest("/api/ops/webshare-cf-scan", routes::proxy::webshare_routes())
+        .nest("/api/proxy", routes::proxy::routes())
         .with_state(state.clone());
 
     let cors = build_cors(&state.config.cors_origins);

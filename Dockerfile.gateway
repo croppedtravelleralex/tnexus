@@ -1,0 +1,17 @@
+# syntax=docker/dockerfile:1
+# TNexus gateway (scheduling_gate + upstream) — pull on Panda :8014, do not build on Panda.
+FROM rust:1.94-bookworm AS builder
+WORKDIR /app
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libclang-dev clang cmake pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+RUN cargo build --release -p gateway
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /app/target/release/gptimage-gateway-rs /usr/local/bin/gptimage-gateway-rs
+ENV GATEWAY_LISTEN=0.0.0.0:8014
+EXPOSE 8014
+ENTRYPOINT ["/usr/local/bin/gptimage-gateway-rs"]

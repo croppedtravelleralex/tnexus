@@ -261,6 +261,76 @@ def quota_window_prime_status() -> dict[str, Any]:
         raise HTTPException(status_code=503, detail={"error": str(exc)[:500]}) from exc
 
 
+class ProxyRuntimeIn(BaseModel):
+    model_config = {"extra": "allow"}
+
+
+class ProxyTestIn(BaseModel):
+    url: str = ""
+
+
+@app.get("/v1/proxy/runtime", dependencies=[Depends(require_token)])
+def proxy_runtime_get() -> dict[str, Any]:
+    try:
+        from ops_bridge import proxy_runtime_get as _get
+
+        return _get()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail={"error": str(exc)[:500]}) from exc
+
+
+@app.post("/v1/proxy/runtime", dependencies=[Depends(require_token)])
+def proxy_runtime_save(body: ProxyRuntimeIn) -> dict[str, Any]:
+    try:
+        from ops_bridge import proxy_runtime_save as _save
+
+        return _save(body.model_dump(mode="python"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"error": str(exc)[:500]}) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail={"error": str(exc)[:500]}) from exc
+
+
+@app.post("/v1/proxy/test", dependencies=[Depends(require_token)])
+def proxy_test_endpoint(body: ProxyTestIn) -> dict[str, Any]:
+    try:
+        from ops_bridge import proxy_test as _test
+
+        return _test(body.url)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail={"error": str(exc)[:500]}) from exc
+
+
+@app.get("/v1/webshare-cf-scan/status", dependencies=[Depends(require_token)])
+def webshare_cf_scan_status() -> dict[str, Any]:
+    try:
+        from ops_bridge import webshare_cf_scan_status as _status
+
+        return _status()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail={"error": str(exc)[:500]}) from exc
+
+
+@app.get("/v1/webshare-cf-scan/inventory", dependencies=[Depends(require_token)])
+def webshare_cf_scan_inventory() -> dict[str, Any]:
+    try:
+        from ops_bridge import webshare_cf_scan_inventory as _inventory
+
+        return _inventory()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail={"error": str(exc)[:500]}) from exc
+
+
+@app.post("/v1/webshare-cf-scan/run-once", dependencies=[Depends(require_token)])
+def webshare_cf_scan_run_once() -> dict[str, Any]:
+    try:
+        from ops_bridge import webshare_cf_scan_run_once as _run
+
+        return _run()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail={"error": str(exc)[:500]}) from exc
+
+
 if __name__ == "__main__":
     import uvicorn
 

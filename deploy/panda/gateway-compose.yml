@@ -1,0 +1,18 @@
+# TNexus gateway on Panda :8014 — scheduling_gate + upstream.
+# Reuses existing gateway.env (JWT/auth) and TNexus pool mount.
+services:
+  gateway:
+    image: ${TNEXUS_GATEWAY_IMAGE:-ghcr.io/croppedtravelleralex/tnexus-gateway:latest}
+    network_mode: host
+    env_file:
+      - /root/gptimage-gateway-rs/secrets/gateway.env
+    environment:
+      ACCOUNTS_FILE: /data/pool/accounts_pool.json
+      SCHEDULING_STATE_FILE: /data/pool/scheduling_state.json
+      GATEWAY_LISTEN: 0.0.0.0:8014
+      IMAGE_ENABLED: "1"
+      DATA_PLANE: upstream
+    volumes:
+      - /opt/tnexus/data/pool:/data/pool:ro
+      - /root/gptimage-gateway-rs/data:/data:rw
+    restart: unless-stopped

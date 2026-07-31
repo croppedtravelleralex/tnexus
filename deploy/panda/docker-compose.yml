@@ -25,7 +25,7 @@ services:
     env_file: /opt/tnexus/.env
     network_mode: host
     volumes:
-      - /root/gptimage:/gptimage:ro
+      - /root/gptimage:/gptimage:rw
 
   api:
     image: ${TNEXUS_IMAGE}

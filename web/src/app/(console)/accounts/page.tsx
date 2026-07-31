@@ -8,6 +8,7 @@ import { AccountsActivityPanels } from "@/components/accounts/accounts-activity-
 import { AccountsDataTable, type AccountViewMode, type SortKey } from "@/components/accounts/accounts-data-table";
 import type { HeatmapTimezone } from "@/components/accounts/BindingActivityHeatmapToolbar";
 import { NurtureWeightDialog } from "@/components/accounts/nurture-weight-dialog";
+import { OutlookRecoveryPanel } from "@/components/accounts/outlook-recovery-panel";
 import { RefreshAllPanel } from "@/components/accounts/refresh-all-panel";
 import { ElevatedCard, PageShell } from "@/components/admin/page-shell";
 import { Badge } from "@/components/ui/badge";
@@ -233,6 +234,12 @@ export default function AccountsPage() {
     () => filtered.filter((r) => r.status === "异常").map((r) => r.access_token),
     [filtered],
   );
+
+  const selectedAccount = useMemo(() => {
+    if (selected.size !== 1) return null;
+    const token = Array.from(selected)[0];
+    return filtered.find((r) => r.access_token === token) ?? null;
+  }, [selected, filtered]);
 
   const cards = statCards(stats);
 
@@ -574,6 +581,11 @@ export default function AccountsPage() {
       ) : null}
 
       <RefreshAllPanel onCompleted={() => void load({ force: true, page })} />
+
+      <OutlookRecoveryPanel
+        selectedAccount={selectedAccount}
+        onCompleted={() => void load({ force: true, page })}
+      />
 
       <ElevatedCard className="mt-4 overflow-hidden">
         <div className="flex flex-wrap items-center gap-2 border-b border-[var(--neo-border)] px-4 py-3">

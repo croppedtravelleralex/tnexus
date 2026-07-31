@@ -36,3 +36,11 @@ jobs:
           tags: |
             ghcr.io/croppedtravelleralex/tnexus-account-ops:latest
             ghcr.io/croppedtravelleralex/tnexus-account-ops:${{ github.sha }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.gateway
+          push: true
+          tags: |
+            ghcr.io/croppedtravelleralex/tnexus-gateway:latest
+            ghcr.io/croppedtravelleralex/tnexus-gateway:${{ github.sha }}

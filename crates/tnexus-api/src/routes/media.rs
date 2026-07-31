@@ -265,6 +265,11 @@ async fn list_images(
             .get("wall_clock_ms")
             .and_then(|v| v.as_u64())
             .unwrap_or_else(|| (updated_at - created_at).num_milliseconds().max(0) as u64);
+        let has_r2_thumb = record
+            .r2_key_thumb
+            .as_ref()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
         let view = result_to_view(&state, record)
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -275,6 +280,16 @@ async fn list_images(
         if url.is_empty() {
             continue;
         }
+        let has_inline = view
+            .preview_b64
+            .as_ref()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
+        let thumb_api_url = if has_inline || has_r2_thumb {
+            Some(format!("/api/images/thumb/{}", view.id))
+        } else {
+            None
+        };
         let keywords: Option<serde_json::Value> = row.get("keywords");
         let tags = parse_tags(keywords);
         items.push(json!({
@@ -284,7 +299,7 @@ async fn list_images(
             "size": 0,
             "url": url,
             "thumbnail_url": thumb.clone().or(Some(url.clone())),
-            "thumb_api_url": format!("/api/images/thumb/{}", view.id),
+            "thumb_api_url": thumb_api_url,
             "b64_json": view.b64_json,
             "preview_b64": view.preview_b64,
             "created_at": created_at.to_rfc3339(),
@@ -393,21 +408,58 @@ async fn get_image_thumb(
     let id = Uuid::parse_str(id.trim())
         .map_err(|_| (StatusCode::BAD_REQUEST, "invalid id".into()))?;
     let row = sqlx::query(
-        "SELECT inline_preview_b64 FROM job_results WHERE id = $1",
+        "SELECT inline_preview_b64, r2_key_thumb, r2_key_preview, source_url FROM job_results WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(&state.pool)
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     .ok_or((StatusCode::NOT_FOUND, "image not found".into()))?;
+
     let b64: Option<String> = row.get("inline_preview_b64");
-    let Some(raw) = b64.filter(|s| !s.trim().is_empty()) else {
-        return Err((StatusCode::NOT_FOUND, "no inline preview".into()));
-    };
+    if let Some(raw) = b64.filter(|s| !s.trim().is_empty()) {
+        return serve_resized_thumb(&raw, &headers, q.w);
+    }
+
+    let r2_key: Option<String> = row
+        .get::<Option<String>, _>("r2_key_thumb")
+        .or_else(|| row.get("r2_key_preview"))
+        .filter(|s| !s.trim().is_empty());
+
+    if let (Some(storage), Some(key)) = (state.storage.as_ref(), r2_key.as_deref()) {
+        let url = storage
+            .presign_get(key, state.config.presign_ttl_secs, false)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        let bytes = state
+            .http
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| (StatusCode::BAD_GATEWAY, format!("fetch thumb: {e}")))?
+            .bytes()
+            .await
+            .map_err(|e| (StatusCode::BAD_GATEWAY, format!("read thumb: {e}")))?;
+        let img = image::load_from_memory(&bytes)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("decode image: {e}")))?;
+        return encode_thumbnail(&img, &headers, q.w);
+    }
+
+    if let Some(url) = row
+        .get::<Option<String>, _>("source_url")
+        .filter(|s| s.starts_with("http://") || s.starts_with("https://"))
+    {
+        return Ok(axum::response::Redirect::temporary(&url).into_response());
+    }
+
+    Err((StatusCode::NOT_FOUND, "no preview available".into()))
+}
+
+fn serve_resized_thumb(raw: &str, headers: &HeaderMap, width: u32) -> Result<Response, (StatusCode, String)> {
     let bytes = if raw.starts_with("data:") {
-        raw.split_once(',').map(|(_, p)| p).unwrap_or(raw.as_str())
+        raw.split_once(',').map(|(_, p)| p).unwrap_or(raw)
     } else {
-        raw.as_str()
+        raw
     };
     let input = base64::Engine::decode(
         &base64::engine::general_purpose::STANDARD,
@@ -416,7 +468,15 @@ async fn get_image_thumb(
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("b64 decode: {e}")))?;
     let img = image::load_from_memory(&input)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("decode image: {e}")))?;
-    let max_w = q.w.clamp(64, 640);
+    encode_thumbnail(&img, headers, width)
+}
+
+fn encode_thumbnail(
+    img: &image::DynamicImage,
+    headers: &HeaderMap,
+    width: u32,
+) -> Result<Response, (StatusCode, String)> {
+    let max_w = width.clamp(64, 640);
     let thumb = img.thumbnail(max_w, max_w);
     let use_webp = headers
         .get(header::ACCEPT)
@@ -429,20 +489,12 @@ async fn get_image_thumb(
         thumb
             .write_to(&mut cursor, image::ImageFormat::WebP)
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        Ok((
-            [(header::CONTENT_TYPE, "image/webp")],
-            buf,
-        )
-            .into_response())
+        Ok(([(header::CONTENT_TYPE, "image/webp")], buf).into_response())
     } else {
         let mut cursor = std::io::Cursor::new(&mut buf);
         thumb
             .write_to(&mut cursor, image::ImageFormat::Jpeg)
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        Ok((
-            [(header::CONTENT_TYPE, "image/jpeg")],
-            buf,
-        )
-            .into_response())
+        Ok(([(header::CONTENT_TYPE, "image/jpeg")], buf).into_response())
     }
 }

@@ -181,3 +181,29 @@ account-ops :9011 → GPTIMAGE_ROOT Python 库（sqlite accounts.db）
 
 禁止 → gptimage 生产 :8012 HTTP
 ```
+
+---
+
+## 验收部署记录
+
+| 时间 | commit | 结果 |
+|------|--------|------|
+| 2026-07-31 15:25 CST | `dd4b758` | TNexus api/worker/account-ops 已 `deploy.sh` 拉取最新 GHCR 并 force-recreate |
+
+**探测（Panda 回环）**
+
+| 检查项 | 结果 |
+|--------|------|
+| `GET :9000/health` | `{"status":"ok","static_ui":true}` |
+| `GET :9011/health` | `{"ok":true,"ops_bridge":true}` |
+| `GET https://tnexus.relai.asia/accounts` | 302（未登录，正常） |
+| `GET https://tnexus.relai.asia/image-manager` | 302（未登录，正常） |
+| 号池导出 | 40 账号 → `/opt/tnexus/data/pool/accounts_pool.json` |
+
+**未随本次 deploy 更新**
+
+| 组件 | 现网镜像 | 说明 |
+|------|----------|------|
+| gateway `:8014` | `ghcr.io/.../gptimage-gateway-rs:latest`（2026-07-30） | `scheduling_gate` 在 TNexus `crates/gateway`，需单独发布 gateway 镜像/进程后调度门才生效 |
+
+**全链路冒烟**：`prod_url_chain_test.py` 登录与 job 创建 ✅；生图腿 `401 invalid session`（号池 session 过期，非部署故障）。

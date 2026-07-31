@@ -17,9 +17,15 @@ import { formatDuration } from "@/lib/format-duration";
 const PAGE_SIZE = 24;
 
 function thumbSrc(item: ManagedImage) {
-  if (item.thumb_api_url) return item.thumb_api_url;
+  const hasInline = Boolean(item.preview_b64 || item.b64_json);
+  if (hasInline && item.thumb_api_url) return item.thumb_api_url;
   if (item.thumbnail_url) return item.thumbnail_url;
-  return undefined;
+  if (item.url) return item.url;
+  return item.thumb_api_url;
+}
+
+function thumbFallback(item: ManagedImage) {
+  return b64Fallback(item) || item.thumbnail_url || item.url || undefined;
 }
 
 function fullSrc(item: ManagedImage) {
@@ -299,8 +305,8 @@ export default function ImageManagerPage() {
             const key = imageKey(img);
             const checked = selectedSet.has(key);
             const thumb = thumbSrc(img);
-            const fallback = b64Fallback(img);
-            const hasPreview = Boolean(thumb || fallback || img.url);
+            const fallback = thumbFallback(img);
+            const hasPreview = Boolean(thumb || fallback);
             return (
               <ElevatedCard key={key} className="overflow-hidden">
                 <div className="relative aspect-square bg-[var(--neo-surface-muted)]">
@@ -313,7 +319,7 @@ export default function ImageManagerPage() {
                   {hasPreview ? (
                     <LazyImageThumb
                       src={thumb}
-                      fallbackSrc={fallback || img.url}
+                      fallbackSrc={fallback}
                       className="h-full w-full object-cover"
                       onClick={() => {
                         const idx = filtered.findIndex((i) => imageKey(i) === key);
