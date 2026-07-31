@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
 import { Menu } from "lucide-react";
@@ -10,20 +9,26 @@ import { useAuth } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 
 const NAV_ITEMS = [
-  { href: "/studio", label: "TNexus", studioHome: true },
-  { href: "/accounts", label: "号池管理" },
-  { href: "/image-manager", label: "图片管理" },
-  { href: "/logs", label: "日志管理" },
-  { href: "/ops", label: "运维" },
-  { href: "/chat", label: "对话" },
-  { href: "/settings", label: "设置" },
+  { href: "/studio/", label: "TNexus", studioHome: true },
+  { href: "/accounts/", label: "号池管理" },
+  { href: "/image-manager/", label: "图片管理" },
+  { href: "/logs/", label: "日志管理" },
+  { href: "/ops/", label: "运维" },
+  { href: "/chat/", label: "对话" },
+  { href: "/settings/", label: "设置" },
 ] as const;
 
+function normPath(pathname: string) {
+  if (!pathname || pathname === "/") return "/";
+  return pathname.endsWith("/") ? pathname : `${pathname}/`;
+}
+
 function isNavActive(pathname: string, href: string, studioHome?: boolean) {
+  const p = normPath(pathname);
   if (studioHome) {
-    return pathname === "/studio" || pathname.startsWith("/history");
+    return p === "/studio/" || p.startsWith("/history/");
   }
-  return pathname === href || pathname.startsWith(`${href}/`);
+  return p === href || p.startsWith(href);
 }
 
 function navLinkClass(active: boolean, studioItem?: boolean) {
@@ -36,13 +41,36 @@ function navLinkClass(active: boolean, studioItem?: boolean) {
   );
 }
 
+/** 静态导出站点用原生 <a> 整页跳转，避免客户端路由在部分环境下卡死 */
+function NavAnchor({
+  href,
+  className,
+  onNavigate,
+  children,
+}: {
+  href: string;
+  className?: string;
+  onNavigate?: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <a
+      href={href}
+      className={className}
+      onClick={() => onNavigate?.()}
+    >
+      {children}
+    </a>
+  );
+}
+
 export function TopNav() {
   const pathname = usePathname();
   const router = useRouter();
   const { user, bootstrapping, logout } = useAuth();
   const [menuOpen, setMenuOpen] = useState(false);
 
-  if (pathname === "/login" || pathname === "/register") {
+  if (pathname === "/login" || pathname === "/login/" || pathname === "/register" || pathname === "/register/") {
     return null;
   }
 
@@ -50,7 +78,7 @@ export function TopNav() {
   const displayName = user?.display_name || user?.email || "";
 
   return (
-    <header className="sticky top-0 z-50 border-b border-[var(--neo-border)] bg-white/95">
+    <header className="sticky top-0 z-[100] border-b border-[var(--neo-border)] bg-white/95 backdrop-blur-sm">
       <div className="mx-auto flex h-12 max-w-[1600px] items-center gap-3 px-4 sm:px-6">
         <button
           type="button"
@@ -61,26 +89,25 @@ export function TopNav() {
           <Menu className="size-4" />
         </button>
 
-        <Link href="/studio" prefetch className="flex shrink-0 items-center gap-2" aria-label="TNexus 工作台">
+        <NavAnchor href="/studio/" className="flex shrink-0 items-center gap-2" aria-label="TNexus 工作台">
           <Image src="/logo.png" alt="TNexus" width={28} height={28} className="rounded-md" />
           <span className="text-[15px] font-bold tracking-tight text-[var(--neo-ink)]">TNexus</span>
-        </Link>
+        </NavAnchor>
 
         <nav className="hidden min-w-0 flex-1 items-center justify-center gap-1 sm:flex sm:gap-6">
           {NAV_ITEMS.map((item) => {
             const active = isNavActive(pathname, item.href, "studioHome" in item ? item.studioHome : false);
             return (
-              <Link
+              <NavAnchor
                 key={item.href}
                 href={item.href}
-                prefetch
-                className={navLinkClass(active, item.href === "/studio")}
+                className={navLinkClass(active, item.href === "/studio/")}
               >
                 {item.label}
                 {active ? (
                   <span className="absolute inset-x-0 -bottom-[13px] hidden h-0.5 rounded-full bg-[var(--neo-primary-deep)] sm:block" />
                 ) : null}
-              </Link>
+              </NavAnchor>
             );
           })}
         </nav>
@@ -91,14 +118,14 @@ export function TopNav() {
               <span className="hidden rounded-md bg-[var(--neo-surface-muted)] px-2 py-1 text-[11px] font-medium text-[var(--neo-muted)] sm:inline">
                 {roleLabel} · {displayName}
               </span>
-              <Button size="sm" variant="ghost" className="h-8 shadow-none" onClick={() => void logout().then(() => router.push("/login"))}>
+              <Button size="sm" variant="ghost" className="h-8 shadow-none" onClick={() => void logout().then(() => router.push("/login/"))}>
                 退出
               </Button>
             </>
           ) : (
-            <Link href="/login" prefetch>
+            <NavAnchor href="/login/">
               <Button size="sm">登录</Button>
-            </Link>
+            </NavAnchor>
           )}
         </div>
       </div>
@@ -108,11 +135,10 @@ export function TopNav() {
           {NAV_ITEMS.map((item) => {
             const active = isNavActive(pathname, item.href, "studioHome" in item ? item.studioHome : false);
             return (
-              <Link
+              <NavAnchor
                 key={item.href}
                 href={item.href}
-                prefetch
-                onClick={() => setMenuOpen(false)}
+                onNavigate={() => setMenuOpen(false)}
                 className={cn(
                   "mb-0.5 block w-full rounded-lg px-3 py-2 text-left text-sm shadow-none",
                   active
@@ -121,7 +147,7 @@ export function TopNav() {
                 )}
               >
                 {item.label}
-              </Link>
+              </NavAnchor>
             );
           })}
         </nav>
