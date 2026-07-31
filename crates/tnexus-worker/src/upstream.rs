@@ -1,7 +1,10 @@
 use anyhow::{Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
+use futures::future::try_join_all;
 use serde::Deserialize;
+use std::sync::Arc;
 use tnexus_domain::agent::DirectorOutput;
+use tokio::sync::Semaphore;
 
 #[derive(Clone)]
 pub struct UpstreamClient {
@@ -12,6 +15,10 @@ pub struct UpstreamClient {
     pub chatgpt_image_model: String,
     pub grok_image_model: String,
     pub api_key: Option<String>,
+    /// `url` (default) or `b64_json`
+    pub image_response_format: String,
+    /// 0 = unlimited parallel image HTTP requests
+    pub image_parallel_concurrency: usize,
 }
 
 impl UpstreamClient {
@@ -21,6 +28,10 @@ impl UpstreamClient {
         } else {
             req
         }
+    }
+
+    fn url_mode(&self) -> bool {
+        !self.image_response_format.eq_ignore_ascii_case("b64_json")
     }
 }
 
@@ -51,9 +62,9 @@ struct ImageDataItem {
     revised_prompt: Option<String>,
 }
 
+#[derive(Clone)]
 pub struct ImageGenOptions {
     pub size: String,
-    pub count: u32,
     pub quality: Option<String>,
     pub transparent_bg: bool,
 }
@@ -62,6 +73,13 @@ pub struct GeneratedImage {
     pub bytes: Option<Vec<u8>>,
     pub source_url: Option<String>,
     pub revised_prompt: Option<String>,
+}
+
+pub struct SlotGenerateTask {
+    pub img_provider: String,
+    pub prompt: String,
+    pub ps_enabled: bool,
+    pub opts: ImageGenOptions,
 }
 
 impl UpstreamClient {
@@ -107,43 +125,54 @@ impl UpstreamClient {
         Ok(content)
     }
 
-    pub async fn generate_chatgpt(
-        &self,
-        prompt: &str,
-        prompt_enhance: bool,
-        opts: &ImageGenOptions,
-    ) -> Result<Vec<GeneratedImage>> {
-        self.generate_images(
-            &self.gptimage_base,
-            &self.chatgpt_image_model,
-            prompt,
-            prompt_enhance,
-            "prompt_enhance",
-            opts,
-            "b64_json",
-        )
-        .await
+    pub async fn generate_slot(&self, task: &SlotGenerateTask) -> Result<GeneratedImage> {
+        let format = if self.url_mode() {
+            "url"
+        } else {
+            "b64_json"
+        };
+        let base = match task.img_provider.as_str() {
+            "grok" => &self.grok2api_base,
+            _ => &self.gptimage_base,
+        };
+        let model = match task.img_provider.as_str() {
+            "grok" => &self.grok_image_model,
+            _ => &self.chatgpt_image_model,
+        };
+        let enhance_field = "prompt_enhance";
+        self.generate_one(base, model, &task.prompt, task.ps_enabled, enhance_field, &task.opts, format)
+            .await
     }
 
-    pub async fn generate_grok(
+    pub async fn generate_slots_parallel(
         &self,
-        prompt: &str,
-        prompt_enhance: bool,
-        opts: &ImageGenOptions,
+        tasks: Vec<SlotGenerateTask>,
     ) -> Result<Vec<GeneratedImage>> {
-        self.generate_images(
-            &self.grok2api_base,
-            &self.grok_image_model,
-            prompt,
-            prompt_enhance,
-            "prompt_enhance",
-            opts,
-            "b64_json",
-        )
-        .await
+        if tasks.is_empty() {
+            return Ok(vec![]);
+        }
+        let sem = if self.image_parallel_concurrency == 0 {
+            None
+        } else {
+            Some(Arc::new(Semaphore::new(self.image_parallel_concurrency)))
+        };
+        let futs = tasks.into_iter().map(|task| {
+            let upstream = self.clone();
+            let sem = sem.clone();
+            async move {
+                if let Some(s) = sem {
+                    let _permit = s
+                        .acquire()
+                        .await
+                        .map_err(|_| anyhow::anyhow!("parallel semaphore closed"))?;
+                }
+                upstream.generate_slot(&task).await
+            }
+        });
+        try_join_all(futs).await
     }
 
-    async fn generate_images(
+    async fn generate_one(
         &self,
         base: &str,
         model: &str,
@@ -152,11 +181,11 @@ impl UpstreamClient {
         enhance_field: &str,
         opts: &ImageGenOptions,
         response_format: &str,
-    ) -> Result<Vec<GeneratedImage>> {
+    ) -> Result<GeneratedImage> {
         let mut body = serde_json::json!({
             "model": model,
             "prompt": prompt,
-            "n": opts.count.max(1).min(10),
+            "n": 1,
             "size": opts.size,
             "response_format": response_format
         });
@@ -190,53 +219,59 @@ impl UpstreamClient {
         }
         let resp: ImageGenerationResponse =
             serde_json::from_str(&text).context("image generation json")?;
-        let mut out = Vec::new();
-        for item in resp.data {
-            if let Some(url) = item
-                .url
-                .as_ref()
-                .map(|s| s.trim())
-                .filter(|s| !s.is_empty())
-            {
-                let resp = self
-                    .http
-                    .get(url)
-                    .send()
-                    .await
-                    .with_context(|| format!("fetch image url {url}"))?;
-                let status = resp.status();
-                let bytes = resp
-                    .bytes()
-                    .await
-                    .with_context(|| format!("read image body from {url}"))?;
-                if !status.is_success() {
-                    return Err(anyhow::anyhow!(
-                        "fetch image url HTTP {status}: {}",
-                        String::from_utf8_lossy(&bytes)
-                    ));
-                }
-                out.push(GeneratedImage {
-                    bytes: Some(bytes.to_vec()),
-                    source_url: None,
-                    revised_prompt: item.revised_prompt.clone(),
+        let item = resp
+            .data
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("no image payload"))?;
+
+        if let Some(url) = item
+            .url
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
+            if self.url_mode() {
+                return Ok(GeneratedImage {
+                    bytes: None,
+                    source_url: Some(url.to_string()),
+                    revised_prompt: item.revised_prompt,
                 });
-                continue;
             }
-            let bytes = if let Some(b64) = &item.b64_json {
-                STANDARD.decode(b64).context("decode b64")?
-            } else {
-                continue;
-            };
-            out.push(GeneratedImage {
-                bytes: Some(bytes),
-                source_url: None,
-                revised_prompt: item.revised_prompt.clone(),
+            let resp = self
+                .http
+                .get(url)
+                .send()
+                .await
+                .with_context(|| format!("fetch image url {url}"))?;
+            let status = resp.status();
+            let bytes = resp
+                .bytes()
+                .await
+                .with_context(|| format!("read image body from {url}"))?;
+            if !status.is_success() {
+                return Err(anyhow::anyhow!(
+                    "fetch image url HTTP {status}: {}",
+                    String::from_utf8_lossy(&bytes)
+                ));
+            }
+            return Ok(GeneratedImage {
+                bytes: Some(bytes.to_vec()),
+                source_url: Some(url.to_string()),
+                revised_prompt: item.revised_prompt,
             });
         }
-        if out.is_empty() {
+
+        let bytes = if let Some(b64) = &item.b64_json {
+            STANDARD.decode(b64).context("decode b64")?
+        } else {
             return Err(anyhow::anyhow!("no image payload"));
-        }
-        Ok(out)
+        };
+        Ok(GeneratedImage {
+            bytes: Some(bytes),
+            source_url: None,
+            revised_prompt: item.revised_prompt,
+        })
     }
 }
 

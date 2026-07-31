@@ -42,6 +42,7 @@ use protocol::{
 use serde_json::{json, Value};
 use state::AppState;
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -159,6 +160,7 @@ async fn main() -> anyhow::Result<()> {
         image_assets,
         public_base_url: cfg.public_base_url.clone(),
         scheduling_gate: SchedulingGate::from_env(),
+        image_account_rr: AtomicUsize::new(0),
     });
 
     let auth_public = Router::new()
@@ -684,7 +686,11 @@ async fn image_generations(
             Ok(c) => c,
             Err(r) => return r,
         };
-    let account = candidates[0].clone();
+    let start_idx = st
+        .image_account_rr
+        .fetch_add(1, Ordering::Relaxed)
+        % candidates.len();
+    let account = candidates[start_idx].clone();
 
     let permit = match st.image_sem.clone().acquire_owned().await {
         Ok(p) => p,
@@ -747,7 +753,7 @@ async fn image_generations(
 
     let t0 = Instant::now();
     let max_attempts = if is_admin && st.data_plane == DataPlane::Upstream {
-        candidates.len().min(5)
+        candidates.len().max(1)
     } else {
         1
     };
@@ -756,11 +762,13 @@ async fn image_generations(
     let mut used_account = account.clone();
     let _inflight_guard = st.scheduling_gate.begin_inflight(&used_account.email);
 
-    for (i, cand) in candidates.iter().take(max_attempts).enumerate() {
+    for try_no in 0..max_attempts {
+        let i = (start_idx + try_no) % candidates.len();
+        let cand = &candidates[i];
         used_account = cand.clone();
-        let attempt: Result<helper_client::BridgeOk, anyhow::Error> =
+        let attempt_result: Result<helper_client::BridgeOk, anyhow::Error> =
             if st.data_plane == DataPlane::Upstream {
-                info!(email=%cand.email, attempt=i + 1, max_attempts, "upstream image attempt");
+                info!(email=%cand.email, attempt=try_no + 1, max_attempts, "upstream image attempt");
                 run_upstream_image(cand, req.prompt.clone(), req.model.clone()).await
             } else {
                 let bridge_req = ImageRunRequest {
@@ -772,27 +780,27 @@ async fn image_generations(
                 st.helper.run_image(&bridge_req).await.map_err(|e| e.into())
             };
 
-        match &attempt {
+        match &attempt_result {
             Ok(r) if r.ok => {
-                result = attempt;
+                result = attempt_result;
                 break;
             }
             Err(e) if is_admin
                 && st.data_plane == DataPlane::Upstream
                 && upstream_image_retryable(e)
-                && i + 1 < max_attempts =>
+                && try_no + 1 < max_attempts =>
             {
                 warn!(
                     email=%cand.email,
-                    attempt=i + 1,
+                    attempt=try_no + 1,
                     error=%e,
                     "upstream image failed; retrying next pool account"
                 );
-                result = attempt;
+                result = attempt_result;
                 continue;
             }
             _ => {
-                result = attempt;
+                result = attempt_result;
                 break;
             }
         }
@@ -1014,6 +1022,8 @@ mod auth_integration {
             static_dir: None,
             image_assets: test_image_assets(),
             public_base_url: "http://127.0.0.1:8014".into(),
+            scheduling_gate: SchedulingGate::from_env().expect("ACCOUNTS_DB for gateway tests"),
+            image_account_rr: AtomicUsize::new(0),
         })
     }
 
@@ -1054,6 +1064,8 @@ mod auth_integration {
             static_dir: None,
             image_assets: test_image_assets(),
             public_base_url: "http://127.0.0.1:8014".into(),
+            scheduling_gate: SchedulingGate::from_env().expect("ACCOUNTS_DB for gateway tests"),
+            image_account_rr: AtomicUsize::new(0),
         });
         let app = Router::new()
             .route("/guarded", get(|| async { "ok" }))
@@ -1167,6 +1179,8 @@ mod auth_integration {
             static_dir: None,
             image_assets: test_image_assets(),
             public_base_url: "http://127.0.0.1:8014".into(),
+            scheduling_gate: SchedulingGate::from_env().expect("ACCOUNTS_DB for gateway tests"),
+            image_account_rr: AtomicUsize::new(0),
         });
         let me_app = Router::new()
             .route("/me", get(me))

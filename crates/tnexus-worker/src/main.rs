@@ -2,19 +2,22 @@ mod upstream;
 
 use anyhow::{Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
+use futures::future::try_join_all;
 use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
 use sqlx::{PgPool, Row};
 use std::time::{Duration, Instant};
 use tnexus_domain::agent::{
     build_director_system_prompt, build_image_prompt, parse_director_response_with_fallback,
-    DirectorOutput,
 };
 use tnexus_domain::factors::FactorPoint;
 use tnexus_domain::gen_config::GenConfig;
 use tnexus_domain::job::{JobStatus, WorkflowPath};
 use tnexus_storage::{AssetStorage, R2Config};
-use upstream::{agent_prompt_text, api_model_name, keywords_json, ImageGenOptions, UpstreamClient};
+use upstream::{
+    agent_prompt_text, api_model_name, keywords_json, ImageGenOptions, SlotGenerateTask,
+    UpstreamClient,
+};
 use uuid::Uuid;
 
 const JOB_QUEUE_KEY: &str = "tnexus:jobs";
@@ -30,7 +33,26 @@ struct WorkerConfig {
     chatgpt_image_model: String,
     grok_image_model: String,
     upstream_api_key: Option<String>,
+    image_response_format: String,
+    image_parallel_concurrency: usize,
     r2: Option<R2Config>,
+}
+
+struct ActorPlan {
+    model_id: String,
+    image_prompt: String,
+    ps_enabled: bool,
+    agent_prompt: String,
+    keywords: Option<serde_json::Value>,
+    count: u32,
+}
+
+struct SlotPersistTask {
+    result_label: String,
+    variant_index: i32,
+    agent_prompt: String,
+    keywords: Option<serde_json::Value>,
+    generated: upstream::GeneratedImage,
 }
 
 #[tokio::main]
@@ -45,7 +67,7 @@ async fn main() -> Result<()> {
 
     let cfg = load_config()?;
     let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(5)
+        .max_connections(32)
         .connect(&cfg.database_url)
         .await?;
 
@@ -61,6 +83,7 @@ async fn main() -> Result<()> {
     let upstream = UpstreamClient {
         http: reqwest::Client::builder()
             .timeout(Duration::from_secs(300))
+            .pool_max_idle_per_host(64)
             .build()?,
         gptimage_base: cfg.gptimage_base.clone(),
         grok2api_base: cfg.grok2api_base.clone(),
@@ -68,9 +91,15 @@ async fn main() -> Result<()> {
         chatgpt_image_model: cfg.chatgpt_image_model.clone(),
         grok_image_model: cfg.grok_image_model.clone(),
         api_key: cfg.upstream_api_key.clone(),
+        image_response_format: cfg.image_response_format.clone(),
+        image_parallel_concurrency: cfg.image_parallel_concurrency,
     };
 
-    tracing::info!("tnexus-worker started");
+    tracing::info!(
+        image_format = %cfg.image_response_format,
+        image_parallel = cfg.image_parallel_concurrency,
+        "tnexus-worker started"
+    );
 
     loop {
         let job_id: Option<(String, String)> = redis.blpop(JOB_QUEUE_KEY, 5.0).await?;
@@ -125,7 +154,6 @@ async fn process_job(
     let director_factors: FactorPoint = serde_json::from_value(job.director_factors)?;
     let ps_factors: FactorPoint = serde_json::from_value(job.ps_factors)?;
     let director_params = director_factors.director_params();
-    let ps_params = ps_factors.ps_params();
 
     let system = build_director_system_prompt(workflow, &director_params, &job.input_prompt);
     let director_model_ids = if job.director_models.is_empty() {
@@ -134,139 +162,138 @@ async fn process_job(
         job.director_models.clone()
     };
     let image_providers = image_providers_for(&job.provider);
-
-    for (mi, model_id) in director_model_ids.iter().enumerate() {
-        let count = actor_count_for(&job.actor_image_counts, model_id);
-        let img_opts = ImageGenOptions {
-            size: job.gen_config.size_string(),
-            count,
-            quality: if job.gen_config.quality == "auto" {
-                None
-            } else {
-                Some(job.gen_config.quality.clone())
-            },
-            transparent_bg: job.gen_config.transparent_bg,
-        };
-
-        let api_model = if model_id == "gpt" {
-            upstream.director_model.as_str()
+    let img_opts_base = ImageGenOptions {
+        size: job.gen_config.size_string(),
+        quality: if job.gen_config.quality == "auto" {
+            None
         } else {
-            api_model_name(model_id)
-        };
-        let director_start = Instant::now();
-        let raw = match upstream
-            .director_chat(api_model, &system, &job.input_prompt)
-            .await
-        {
-            Ok(s) if !s.trim().is_empty() => s,
-            Ok(_) | Err(_) => {
-                tracing::warn!(model_id, "director chat empty/failed; using input prompt fallback");
-                serde_json::json!({ "prompt": job.input_prompt }).to_string()
-            }
-        };
-        phase_timings.insert(
-            "ps_ms".into(),
-            serde_json::json!(director_start.elapsed().as_millis() as u64),
-        );
-        let director_out = parse_director_response_with_fallback(workflow, &raw, &job.input_prompt)
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        let (image_prompt, ps_enabled) =
-            build_image_prompt(workflow, &director_out, &ps_params, job.ps_enabled);
-        let agent_prompt = agent_prompt_text(&director_out);
+            Some(job.gen_config.quality.clone())
+        },
+        transparent_bg: job.gen_config.transparent_bg,
+    };
 
-        publish_event(redis, job_id, JobStatus::Generating, 55, None, None).await?;
-        set_status(pool, job_id, JobStatus::Generating, None).await?;
-
-        for img_provider in &image_providers {
-            let generate_start = Instant::now();
-            let generated_list = match img_provider.as_str() {
-                "chatgpt" => upstream.generate_chatgpt(&image_prompt, ps_enabled, &img_opts).await?,
-                "grok" => upstream.generate_grok(&image_prompt, ps_enabled, &img_opts).await?,
-                _ => continue,
-            };
-            phase_timings.insert(
-                "sse_stream_ms".into(),
-                serde_json::json!(generate_start.elapsed().as_millis() as u64),
-            );
-
-            publish_event(redis, job_id, JobStatus::Uploading, 85, None, None).await?;
-            set_status(pool, job_id, JobStatus::Uploading, None).await?;
-
-            let upload_start = Instant::now();
-
-            let result_label = if director_model_ids.len() > 1 || image_providers.len() > 1 {
-                format!("{model_id}:{img_provider}")
+    let director_start = Instant::now();
+    let ps_enabled_job = job.ps_enabled;
+    let ps_params = ps_factors.ps_params();
+    let director_futs = director_model_ids.iter().map(|model_id| {
+        let ps_params = ps_params.clone();
+        let model_id = model_id.clone();
+        let system = system.clone();
+        let input = job.input_prompt.clone();
+        let upstream = upstream.clone();
+        let count = actor_count_for(&job.actor_image_counts, &model_id);
+        async move {
+            let api_model = if model_id == "gpt" {
+                upstream.director_model.as_str()
             } else {
-                model_id.clone()
+                api_model_name(&model_id)
             };
-
-            for (vi, generated) in generated_list.iter().enumerate() {
-                let bytes = if let Some(b) = &generated.bytes {
-                    b.clone()
-                } else if let Some(url) = &generated.source_url {
-                    let resp = upstream
-                        .http
-                        .get(url.as_str())
-                        .send()
-                        .await
-                        .with_context(|| format!("download image {url}"))?;
-                    let status = resp.status();
-                    let body = resp.bytes().await.context("read downloaded image")?;
-                    if !status.is_success() {
-                        anyhow::bail!("download image HTTP {status}");
-                    }
-                    body.to_vec()
-                } else {
-                    return Err(anyhow::anyhow!("image payload missing bytes and url"));
-                };
-
-                let (orig, prev, thumb) = if let Some(storage) = storage {
-                    let asset = storage
-                        .store_image_variants(job.user_id, job_id, &bytes)
-                        .await?;
-                    (
-                        Some(asset.original_key),
-                        Some(asset.preview_key),
-                        Some(asset.thumb_key),
-                    )
-                } else {
-                    (None, None, None)
-                };
-
-                let inline_preview = if storage.is_none() {
-                    Some(STANDARD.encode(&bytes))
-                } else {
-                    None
-                };
-
-                sqlx::query(
-                    r#"INSERT INTO job_results (job_id, provider, variant_index, r2_key_original, r2_key_preview, r2_key_thumb, agent_prompt, revised_prompt, keywords, inline_preview_b64)
-                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"#,
-                )
-                .bind(job_id)
-                .bind(&result_label)
-                .bind(vi as i32)
-                .bind(orig)
-                .bind(prev)
-                .bind(thumb)
-                .bind(&agent_prompt)
-                .bind(&generated.revised_prompt)
-                .bind(keywords_json(&director_out))
-                .bind(inline_preview)
-                .execute(pool)
-                .await?;
-            }
-            phase_timings.insert(
-                "download_ms".into(),
-                serde_json::json!(upload_start.elapsed().as_millis() as u64),
-            );
-            record_usage_event("studio@local", "default", "images_api", true);
+            let raw = match upstream
+                .director_chat(api_model, &system, &input)
+                .await
+            {
+                Ok(s) if !s.trim().is_empty() => s,
+                Ok(_) | Err(_) => {
+                    tracing::warn!(model_id, "director chat empty/failed; using input prompt fallback");
+                    serde_json::json!({ "prompt": input }).to_string()
+                }
+            };
+            let director_out =
+                parse_director_response_with_fallback(workflow, &raw, &input).map_err(|e| anyhow::anyhow!("{e}"))?;
+            let (image_prompt, ps_enabled) =
+                build_image_prompt(workflow, &director_out, &ps_params, ps_enabled_job);
+            Ok::<ActorPlan, anyhow::Error>(ActorPlan {
+                model_id,
+                image_prompt,
+                ps_enabled,
+                agent_prompt: agent_prompt_text(&director_out),
+                keywords: keywords_json(&director_out),
+                count,
+            })
         }
+    });
+    let actors: Vec<ActorPlan> = try_join_all(director_futs).await?;
+    phase_timings.insert(
+        "ps_ms".into(),
+        serde_json::json!(director_start.elapsed().as_millis() as u64),
+    );
 
-        if mi + 1 < director_model_ids.len() {
-            publish_event(redis, job_id, JobStatus::Directing, 35, None, None).await?;
+    let mut gen_tasks = Vec::new();
+    let mut persist_plan: Vec<(String, i32, String, Option<serde_json::Value>)> = Vec::new();
+    let mut variant_index = 0i32;
+    for actor in &actors {
+        for img_provider in &image_providers {
+            let result_label = if actors.len() > 1 || image_providers.len() > 1 {
+                format!("{}:{img_provider}", actor.model_id)
+            } else {
+                actor.model_id.clone()
+            };
+            for _ in 0..actor.count {
+                gen_tasks.push(SlotGenerateTask {
+                    img_provider: img_provider.clone(),
+                    prompt: actor.image_prompt.clone(),
+                    ps_enabled: actor.ps_enabled,
+                    opts: img_opts_base.clone(),
+                });
+                persist_plan.push((
+                    result_label.clone(),
+                    variant_index,
+                    actor.agent_prompt.clone(),
+                    actor.keywords.clone(),
+                ));
+                variant_index += 1;
+            }
         }
     }
+
+    publish_event(redis, job_id, JobStatus::Generating, 55, None, None).await?;
+    set_status(pool, job_id, JobStatus::Generating, None).await?;
+
+    let generate_start = Instant::now();
+    let generated_list = upstream.generate_slots_parallel(gen_tasks).await?;
+    phase_timings.insert(
+        "sse_stream_ms".into(),
+        serde_json::json!(generate_start.elapsed().as_millis() as u64),
+    );
+
+    if generated_list.len() != persist_plan.len() {
+        anyhow::bail!(
+            "generated {} images but expected {}",
+            generated_list.len(),
+            persist_plan.len()
+        );
+    }
+
+    publish_event(redis, job_id, JobStatus::Uploading, 85, None, None).await?;
+    set_status(pool, job_id, JobStatus::Uploading, None).await?;
+
+    let upload_start = Instant::now();
+    let persist_tasks: Vec<SlotPersistTask> = persist_plan
+        .into_iter()
+        .zip(generated_list)
+        .map(
+            |(plan, generated)| {
+                let (result_label, variant_index, agent_prompt, keywords) = plan;
+                SlotPersistTask {
+                    result_label,
+                    variant_index,
+                    agent_prompt,
+                    keywords,
+                    generated,
+                }
+            },
+        )
+        .collect();
+
+    let persist_futs = persist_tasks.into_iter().map(|task| {
+        persist_slot(pool, storage, job.user_id, job_id, task)
+    });
+    try_join_all(persist_futs).await?;
+    phase_timings.insert(
+        "download_ms".into(),
+        serde_json::json!(upload_start.elapsed().as_millis() as u64),
+    );
+    record_usage_event("studio@local", "default", "images_api", true);
 
     phase_timings.insert(
         "wall_clock_ms".into(),
@@ -275,6 +302,86 @@ async fn process_job(
     save_phase_timings(pool, job_id, &phase_timings).await?;
     set_status(pool, job_id, JobStatus::Done, None).await?;
     publish_event(redis, job_id, JobStatus::Done, 100, None, None).await?;
+    Ok(())
+}
+
+async fn persist_slot(
+    pool: &PgPool,
+    storage: Option<&AssetStorage>,
+    user_id: Uuid,
+    job_id: Uuid,
+    task: SlotPersistTask,
+) -> Result<()> {
+    let SlotPersistTask {
+        result_label,
+        variant_index,
+        agent_prompt,
+        keywords,
+        generated,
+    } = task;
+
+    let source_url = generated.source_url.clone();
+    let bytes = if let Some(b) = generated.bytes {
+        Some(b)
+    } else if let Some(url) = &source_url {
+        if storage.is_some() {
+            let http = reqwest::Client::builder()
+                .timeout(Duration::from_secs(120))
+                .build()?;
+            let resp = http
+                .get(url.as_str())
+                .send()
+                .await
+                .with_context(|| format!("download image {url}"))?;
+            let status = resp.status();
+            let body = resp.bytes().await.context("read downloaded image")?;
+            if !status.is_success() {
+                anyhow::bail!("download image HTTP {status}");
+            }
+            Some(body.to_vec())
+        } else {
+            None
+        }
+    } else {
+        return Err(anyhow::anyhow!("image payload missing bytes and url"));
+    };
+
+    let (orig, prev, thumb) = if let (Some(storage), Some(bytes)) = (storage, bytes.as_ref()) {
+        let asset = storage
+            .store_image_variants(user_id, job_id, bytes)
+            .await?;
+        (
+            Some(asset.original_key),
+            Some(asset.preview_key),
+            Some(asset.thumb_key),
+        )
+    } else {
+        (None, None, None)
+    };
+
+    let inline_preview = if storage.is_none() {
+        bytes.as_ref().map(|b| STANDARD.encode(b))
+    } else {
+        None
+    };
+
+    sqlx::query(
+        r#"INSERT INTO job_results (job_id, provider, variant_index, r2_key_original, r2_key_preview, r2_key_thumb, agent_prompt, revised_prompt, keywords, inline_preview_b64, source_url)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"#,
+    )
+    .bind(job_id)
+    .bind(&result_label)
+    .bind(variant_index)
+    .bind(orig)
+    .bind(prev)
+    .bind(thumb)
+    .bind(&agent_prompt)
+    .bind(&generated.revised_prompt)
+    .bind(keywords)
+    .bind(inline_preview)
+    .bind(source_url)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -427,6 +534,10 @@ fn load_config() -> Result<WorkerConfig> {
     } else {
         None
     };
+    let image_parallel_concurrency = std::env::var("IMAGE_PARALLEL_CONCURRENCY")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(0);
     Ok(WorkerConfig {
         database_url: std::env::var("DATABASE_URL")?,
         redis_url: std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".into()),
@@ -442,6 +553,9 @@ fn load_config() -> Result<WorkerConfig> {
         grok_image_model: std::env::var("GROK_IMAGE_MODEL")
             .unwrap_or_else(|_| "grok-imagine-image".into()),
         upstream_api_key: std::env::var("UPSTREAM_API_KEY").ok(),
+        image_response_format: std::env::var("IMAGE_RESPONSE_FORMAT")
+            .unwrap_or_else(|_| "url".into()),
+        image_parallel_concurrency,
         r2,
     })
 }

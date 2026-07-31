@@ -12,6 +12,8 @@ services:
       SCHEDULING_STATE_FILE: /data/pool/scheduling_state.json
       GATEWAY_LISTEN: 0.0.0.0:8014
       IMAGE_ENABLED: "1"
+      IMAGE_GLOBAL_CONCURRENCY: "0"
+      IMAGE_ACCOUNT_INFLIGHT_MAX: "0"
       DATA_PLANE: upstream
     volumes:
       - /opt/tnexus/data/pool:/data/pool:rw

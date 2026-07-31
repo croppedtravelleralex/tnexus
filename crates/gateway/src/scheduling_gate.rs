@@ -19,6 +19,8 @@ struct SchedulingStateFile {
 pub struct SchedulingGate {
     scheduling_path: PathBuf,
     db: AccountsDb,
+    /// 0 = unlimited concurrent inflight per account
+    account_inflight_max: i64,
 }
 
 impl SchedulingGate {
@@ -26,11 +28,16 @@ impl SchedulingGate {
         let db = AccountsDb::from_env().unwrap_or_else(|e| {
             panic!("ACCOUNTS_DB required for scheduling gate: {e}");
         });
+        let account_inflight_max = std::env::var("IMAGE_ACCOUNT_INFLIGHT_MAX")
+            .ok()
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(0);
         Self {
             scheduling_path: std::env::var("SCHEDULING_STATE_FILE")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from("data/scheduling_state.json")),
             db,
+            account_inflight_max,
         }
     }
 
@@ -109,7 +116,7 @@ impl SchedulingGate {
             .get("image_inflight")
             .and_then(|v| v.as_i64())
             .unwrap_or(0);
-        if inflight > 0 {
+        if self.account_inflight_max > 0 && inflight >= self.account_inflight_max {
             return false;
         }
         let quota = row.get("quota").and_then(|v| v.as_i64()).unwrap_or(0);

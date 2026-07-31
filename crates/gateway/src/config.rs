@@ -75,8 +75,12 @@ pub fn load() -> Result<Config> {
     let image_global_concurrency = env::var("IMAGE_GLOBAL_CONCURRENCY")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(3)
-        .max(1);
+        .unwrap_or(0);
+    let sem_permits = if image_global_concurrency == 0 {
+        usize::MAX / 4
+    } else {
+        image_global_concurrency.max(1)
+    };
     let image_enabled = env::var("IMAGE_ENABLED")
         .ok()
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -103,7 +107,7 @@ pub fn load() -> Result<Config> {
     }
 
     let account_email_log = account.email.clone();
-    let image_sem = Arc::new(Semaphore::new(image_global_concurrency));
+    let image_sem = Arc::new(Semaphore::new(sem_permits));
     let public_base_url = env::var("GATEWAY_PUBLIC_BASE_URL")
         .unwrap_or_default()
         .trim()

@@ -7,6 +7,7 @@ use gateway_auth::AuthService;
 use helper_client::{HelperClient, PinAccount};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use tokio::sync::{Mutex, Semaphore};
 
@@ -25,4 +26,5 @@ pub struct AppState {
     pub image_assets: Arc<ImageAssetStore>,
     pub public_base_url: String,
     pub scheduling_gate: SchedulingGate,
+    pub image_account_rr: AtomicUsize,
 }
