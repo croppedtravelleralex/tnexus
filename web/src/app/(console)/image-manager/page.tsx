@@ -10,6 +10,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { imagesApi, type ManagedImage } from "@/lib/api";
 import { fetchWithCache, invalidateCache } from "@/lib/api-cache";
+import { formatImageDateTime } from "@/lib/account-display";
+import { formatDuration } from "@/lib/format-duration";
 
 const PAGE_SIZE = 12;
 
@@ -310,6 +312,10 @@ export default function ImageManagerPage() {
                   <p className="truncate text-sm font-medium text-[var(--neo-ink)]">{img.prompt || img.name}</p>
                   <p className="text-xs text-[var(--neo-muted)]">
                     {img.date}
+                    {formatImageDateTime(img.created_at) ? ` · ${formatImageDateTime(img.created_at)}` : ""}
+                    {img.duration_ms != null && img.duration_ms > 0 ? (
+                      <span className="text-stone-400"> · 耗时 {formatDuration(img.duration_ms)}</span>
+                    ) : null}
                     {img.width && img.height ? ` · ${img.width}×${img.height}` : ""}
                   </p>
                   {(img.tags ?? []).length > 0 ? (

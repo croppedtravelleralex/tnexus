@@ -16,15 +16,33 @@ export type Account = {
   quota: number;
   image_schedulable?: boolean;
   image_quota_unknown?: boolean;
+  image_quota_state?: string | null;
+  available_image_quota?: number;
   panda_receive_state?: string | null;
   proxy?: string | null;
   proxy_egress_ip?: string | null;
   proxy_provider?: string | null;
+  proxy_binding_hash?: string | null;
+  source_type?: string | null;
   cf_daily?: Array<{ date?: string; ok?: number; cf?: number; image_fail?: number }>;
   egress_daily?: Array<{ date?: string; status?: string; ip?: string }>;
   success?: number;
   fail?: number;
   created_at?: string | null;
+  restore_at?: string | null;
+  image_inflight?: number;
+  last_quota_refresh_at?: string | null;
+  last_quota_refresh_error?: string | null;
+  last_refresh_error?: string | null;
+  panda_probe_last_error?: string | null;
+  panda_verify_last_error?: string | null;
+  lazy_refresh_in_sec?: number | null;
+  lazy_refresh_eligible_at?: string | null;
+  text_next_ok_in_sec?: number | null;
+  text_next_ok_at?: string | null;
+  quota_window_prime_state?: string | null;
+  quota_window_primed_at?: string | null;
+  quota_window_prime_last_error?: string | null;
 };
 
 export type AccountListStats = {
@@ -378,7 +396,10 @@ export type BindingSlotsResponse = {
   week_start?: string;
   week_end?: string;
   week_label?: string;
+  weekday_labels?: string[];
+  day_labels?: string[];
   timezone?: string;
+  timezone_label?: string;
   by_binding?: Record<string, Record<string, number[][]>>;
 };
 
@@ -404,6 +425,7 @@ export type ManagedImage = {
   url: string;
   thumbnail_url?: string;
   created_at: string;
+  duration_ms?: number;
   width?: number;
   height?: number;
   tags?: string[];

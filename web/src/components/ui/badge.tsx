@@ -6,7 +6,7 @@ export function Badge({
   children,
 }: {
   className?: string;
-  variant?: "default" | "success" | "warning" | "muted";
+  variant?: "default" | "success" | "warning" | "muted" | "info" | "secondary" | "danger";
   children: React.ReactNode;
 }) {
   return (
@@ -17,6 +17,9 @@ export function Badge({
         variant === "success" && "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200/60",
         variant === "warning" && "bg-amber-50 text-amber-700 ring-1 ring-amber-200/60",
         variant === "muted" && "bg-zinc-100 text-zinc-600",
+        variant === "info" && "bg-sky-50 text-sky-700 ring-1 ring-sky-200/60",
+        variant === "secondary" && "bg-stone-100 text-stone-700 ring-1 ring-stone-200/60",
+        variant === "danger" && "bg-rose-50 text-rose-700 ring-1 ring-rose-200/60",
         className,
       )}
     >

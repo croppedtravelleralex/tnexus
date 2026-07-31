@@ -1,23 +1,17 @@
 "use client";
 
 import { CloudUpload, Download, LoaderCircle, LogIn, Pause, Play, RefreshCw, Search } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MockLineChart } from "@/components/admin/mock-chart";
 import { AccountImportDialog } from "@/components/accounts/account-import-dialog";
-import { AccountUsageHeatstrip } from "@/components/accounts/account-usage-heatstrip";
-import {
-  activityMatrixToWeights,
-  BindingSgHeatmap,
-  bindingMatrixPeak,
-} from "@/components/accounts/BindingSgHeatmap";
-import { CfStatusLight, cfDaysForAccount } from "@/components/accounts/CfStatusLight";
+import { AccountsDataTable, type AccountViewMode } from "@/components/accounts/accounts-data-table";
+import type { HeatmapTimezone } from "@/components/accounts/BindingActivityHeatmapToolbar";
 import { ElevatedCard, PageShell } from "@/components/admin/page-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { accountsApi, type Account, type AccountListStats } from "@/lib/api";
+import { accountsApi, type Account, type AccountListStats, type BindingSlotsResponse } from "@/lib/api";
 import { fetchWithCache, invalidateCache } from "@/lib/api-cache";
-import { cn } from "@/lib/utils";
 
 const PAGE_SIZE = 50;
 const MAX_REFRESH = 50;
@@ -27,19 +21,6 @@ function isManualSchedulingEnabled(account: Account) {
   const receive = String(account.panda_receive_state ?? "").trim().toLowerCase();
   if (!receive) return true;
   return receive === "verified_ready" || receive === "verified" || receive === "local_verified";
-}
-
-function proxyEndpoint(account: Account) {
-  const egress = String(account.proxy_egress_ip ?? "").trim();
-  if (egress) return egress;
-  const raw = String(account.proxy ?? "").trim();
-  if (!raw) return "默认出口";
-  try {
-    const parsed = new URL(raw);
-    return parsed.port ? `${parsed.hostname}:${parsed.port}` : parsed.hostname;
-  } catch {
-    return raw.replace(/^[a-z]+:\/\//i, "").split("/")[0] || "账号代理";
-  }
 }
 
 function statCards(stats: AccountListStats | undefined) {
@@ -109,9 +90,53 @@ export default function AccountsPage() {
   const [usageDates, setUsageDates] = useState<string[]>([]);
   const [usageByEmail, setUsageByEmail] = useState<Record<string, Array<{ date: string; images: number; dialogues: number }>>>({});
   const [schedBreakdown, setSchedBreakdown] = useState<Record<string, number>>({});
-  const [bindingSlots, setBindingSlots] = useState<Record<string, Record<string, number[][]>>>({});
+  const [viewMode, setViewMode] = useState<AccountViewMode>("flat");
+  const [bindingUsageSlots, setBindingUsageSlots] = useState<BindingSlotsResponse["by_binding"]>({});
+  const [bindingUsageLoading, setBindingUsageLoading] = useState(false);
+  const [heatmapWeekOffset, setHeatmapWeekOffset] = useState(0);
+  const [heatmapWeekLabel, setHeatmapWeekLabel] = useState("");
+  const [heatmapWeekdayLabels, setHeatmapWeekdayLabels] = useState(["一", "二", "三", "四", "五", "六", "日"]);
+  const [heatmapDayLabels, setHeatmapDayLabels] = useState<string[]>([]);
+  const [heatmapTimezone, setHeatmapTimezone] = useState<HeatmapTimezone>("Asia/Shanghai");
+  const [heatmapTimezoneLabel, setHeatmapTimezoneLabel] = useState("");
+  const [refreshingTokens, setRefreshingTokens] = useState<Set<string>>(new Set());
+  const bindingUsageCacheRef = useRef(new Map<string, BindingSlotsResponse>());
 
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+
+  const applyBindingUsageResponse = (res: BindingSlotsResponse) => {
+    setBindingUsageSlots(res.by_binding ?? {});
+    setHeatmapWeekLabel(String(res.week_label || ""));
+    setHeatmapWeekdayLabels(res.weekday_labels ?? ["一", "二", "三", "四", "五", "六", "日"]);
+    setHeatmapDayLabels(res.day_labels ?? []);
+    setHeatmapTimezoneLabel(String(res.timezone_label || ""));
+    if (res.timezone === "Asia/Shanghai" || res.timezone === "Asia/Singapore") {
+      setHeatmapTimezone(res.timezone);
+    }
+    setHeatmapWeekOffset(Number(res.week_offset ?? 0));
+  };
+
+  const loadBindingUsageSlots = useCallback(
+    async (weekOffset = heatmapWeekOffset, timezone: HeatmapTimezone = heatmapTimezone, options?: { force?: boolean }) => {
+      const cacheKey = `${weekOffset}:${timezone}`;
+      const cached = bindingUsageCacheRef.current.get(cacheKey);
+      if (cached && !options?.force) {
+        applyBindingUsageResponse(cached);
+        return;
+      }
+      setBindingUsageLoading(true);
+      try {
+        const res = await accountsApi.bindingSlots({ week_offset: weekOffset, timezone });
+        bindingUsageCacheRef.current.set(cacheKey, res);
+        applyBindingUsageResponse(res);
+      } catch {
+        setBindingUsageSlots({});
+      } finally {
+        setBindingUsageLoading(false);
+      }
+    },
+    [heatmapWeekOffset, heatmapTimezone],
+  );
 
   const loadUsage = useCallback(async () => {
     try {
@@ -127,13 +152,13 @@ export default function AccountsPage() {
     } catch {
       // optional
     }
-    try {
-      const slots = await accountsApi.bindingSlots({ week_offset: 0 });
-      setBindingSlots(slots.by_binding ?? {});
-    } catch {
-      // optional
-    }
   }, []);
+
+  useEffect(() => {
+    if (viewMode === "grouped") {
+      void loadBindingUsageSlots(heatmapWeekOffset, heatmapTimezone);
+    }
+  }, [viewMode, heatmapWeekOffset, heatmapTimezone, loadBindingUsageSlots]);
 
   const load = useCallback(
     async (options?: { force?: boolean; background?: boolean; page?: number }) => {
@@ -181,32 +206,8 @@ export default function AccountsPage() {
   }, [items, search]);
 
   const selectedOnPage = filtered.filter((r) => selected.has(r.access_token));
-  const allPageSelected = filtered.length > 0 && filtered.every((r) => selected.has(r.access_token));
-
-  const bindingGroups = useMemo(() => {
-    const map = new Map<string, Account[]>();
-    for (const row of items) {
-      const key = proxyEndpoint(row);
-      const list = map.get(key) ?? [];
-      list.push(row);
-      map.set(key, list);
-    }
-    return Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0]));
-  }, [items]);
 
   const cards = statCards(stats);
-
-  const toggleSelectAllPage = () => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (allPageSelected) {
-        for (const row of filtered) next.delete(row.access_token);
-      } else {
-        for (const row of filtered) next.add(row.access_token);
-      }
-      return next;
-    });
-  };
 
   const onRefresh = () => {
     invalidateCache("accounts:");
@@ -307,6 +308,40 @@ export default function AccountsPage() {
     }
   };
 
+  const onRefreshSingleAccount = async (token: string) => {
+    setRefreshingTokens((prev) => new Set(prev).add(token));
+    setError("");
+    try {
+      const { progress_id } = await accountsApi.refresh([token]);
+      await pollProgress(accountsApi.refreshProgress, progress_id);
+      invalidateCache("accounts:");
+      await load({ force: true, page });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "刷新失败");
+    } finally {
+      setRefreshingTokens((prev) => {
+        const next = new Set(prev);
+        next.delete(token);
+        return next;
+      });
+    }
+  };
+
+  const onReloginSingleAccount = async (token: string) => {
+    setRelogging(true);
+    setError("");
+    try {
+      const { progress_id } = await accountsApi.reLogin([token]);
+      await pollProgress(accountsApi.reLoginProgress, progress_id);
+      invalidateCache("accounts:");
+      await load({ force: true, page });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "重登失败");
+    } finally {
+      setRelogging(false);
+    }
+  };
+
   const onExport = async () => {
     const tokens = tokensForAction();
     if (tokens.length === 0) {
@@ -392,38 +427,6 @@ export default function AccountsPage() {
         </ElevatedCard>
       </div>
 
-      {Object.keys(bindingSlots).length > 0 ? (
-        <ElevatedCard className="mt-4 p-4">
-          <p className="mb-3 text-sm font-medium text-[var(--neo-ink)]">按 IP 绑定组活动热力图</p>
-          <div className="flex flex-wrap gap-6">
-            {Object.entries(bindingSlots).map(([binding, metrics]) => {
-              const matrix = metrics.images_api ?? metrics.images_chat;
-              const peak = bindingMatrixPeak(matrix);
-              return (
-                <BindingSgHeatmap
-                  key={binding}
-                  label={`${binding} · 峰值 ${peak}`}
-                  weights={activityMatrixToWeights(matrix)}
-                />
-              );
-            })}
-          </div>
-        </ElevatedCard>
-      ) : null}
-
-      {bindingGroups.length > 0 ? (
-        <ElevatedCard className="mt-4 p-4">
-          <p className="mb-2 text-sm font-medium text-[var(--neo-ink)]">当前页按出口分组</p>
-          <div className="flex flex-wrap gap-2">
-            {bindingGroups.map(([endpoint, rows]) => (
-              <Badge key={endpoint} variant="muted">
-                {endpoint}: {rows.length}
-              </Badge>
-            ))}
-          </div>
-        </ElevatedCard>
-      ) : null}
-
       {Object.keys(schedBreakdown).length > 0 ? (
         <ElevatedCard className="mt-4 p-4">
           <p className="mb-2 text-sm font-medium text-[var(--neo-ink)]">可调度分布</p>
@@ -463,89 +466,40 @@ export default function AccountsPage() {
             </Button>
           </div>
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[960px] text-left text-sm">
-            <thead className="neo-table-head">
-              <tr>
-                <th className="px-3 py-2.5">
-                  <input type="checkbox" checked={allPageSelected} onChange={toggleSelectAllPage} aria-label="全选本页" />
-                </th>
-                <th className="px-4 py-2.5 font-medium">邮箱</th>
-                <th className="px-4 py-2.5 font-medium">状态</th>
-                <th className="px-4 py-2.5 font-medium">CF</th>
-                <th className="px-4 py-2.5 font-medium">调度</th>
-                <th className="px-4 py-2.5 font-medium">记录</th>
-                <th className="px-4 py-2.5 font-medium">出口</th>
-                <th className="px-4 py-2.5 font-medium">额度</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((row) => (
-                <tr key={row.email ?? row.access_token} className="border-t border-[var(--neo-border)] neo-row-hover">
-                  <td className="px-3 py-3">
-                    <input
-                      type="checkbox"
-                      checked={selected.has(row.access_token)}
-                      onChange={() =>
-                        setSelected((prev) => {
-                          const next = new Set(prev);
-                          if (next.has(row.access_token)) next.delete(row.access_token);
-                          else next.add(row.access_token);
-                          return next;
-                        })
-                      }
-                      aria-label={`选择 ${row.email ?? "账号"}`}
-                    />
-                  </td>
-                  <td className="px-4 py-3 font-medium text-[var(--neo-ink)]">{row.email ?? "—"}</td>
-                  <td className="px-4 py-3">
-                    <Badge variant={row.status === "正常" ? "success" : "warning"}>{row.status}</Badge>
-                  </td>
-                  <td className="px-4 py-3">
-                    <CfStatusLight days={cfDaysForAccount(row)} />
-                  </td>
-                  <td className="px-4 py-3">
-                    {(() => {
-                      const inSchedule = isManualSchedulingEnabled(row);
-                      const busy = schedulingBusy.has(row.access_token) || bulkScheduling;
-                      return (
-                        <button
-                          type="button"
-                          className={cn(
-                            "inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium transition",
-                            inSchedule ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700",
-                          )}
-                          onClick={() => void onToggleScheduling(row)}
-                          disabled={busy}
-                        >
-                          {busy ? <LoaderCircle className="size-3.5 animate-spin" /> : inSchedule ? <Play className="size-3.5" /> : <Pause className="size-3.5" />}
-                          {inSchedule ? "调度中" : "已隔离"}
-                        </button>
-                      );
-                    })()}
-                  </td>
-                  <td className="px-4 py-3">
-                    <AccountUsageHeatstrip
-                      days={
-                        usageByEmail[String(row.email ?? "").trim().toLowerCase()] ??
-                        usageDates.map((date) => ({ date, images: 0, dialogues: 0 }))
-                      }
-                    />
-                  </td>
-                  <td className="px-4 py-3 text-xs text-[var(--neo-muted)]">{proxyEndpoint(row)}</td>
-                  <td className="px-4 py-3 font-medium">{row.quota}</td>
-                </tr>
-              ))}
-              {!loading && filtered.length === 0 ? (
-                <tr>
-                  <td colSpan={8} className="px-4 py-8 text-center text-[var(--neo-muted)]">
-                    暂无账户
-                  </td>
-                </tr>
-              ) : null}
-            </tbody>
-          </table>
-        </div>
+        <AccountsDataTable
+          rows={filtered}
+          allRows={items}
+          startIndex={(page - 1) * PAGE_SIZE}
+          viewMode={viewMode}
+          onViewModeChange={setViewMode}
+          selected={selected}
+          onSelectedChange={setSelected}
+          usageDates={usageDates}
+          usageByEmail={usageByEmail}
+          bindingUsageSlots={bindingUsageSlots ?? {}}
+          heatmapWeekOffset={heatmapWeekOffset}
+          heatmapWeekLabel={heatmapWeekLabel}
+          heatmapWeekdayLabels={heatmapWeekdayLabels}
+          heatmapDayLabels={heatmapDayLabels}
+          heatmapTimezone={heatmapTimezone}
+          heatmapTimezoneLabel={heatmapTimezoneLabel}
+          bindingUsageLoading={bindingUsageLoading}
+          onHeatmapWeekOffsetChange={(offset) => {
+            setHeatmapWeekOffset(offset);
+            void loadBindingUsageSlots(offset, heatmapTimezone, { force: true });
+          }}
+          onHeatmapTimezoneChange={(tz) => {
+            setHeatmapTimezone(tz);
+            void loadBindingUsageSlots(heatmapWeekOffset, tz, { force: true });
+          }}
+          schedulingBusy={schedulingBusy}
+          bulkScheduling={bulkScheduling}
+          refreshingTokens={refreshingTokens}
+          isRefreshing={refreshing}
+          onToggleScheduling={(account) => void onToggleScheduling(account)}
+          onRefreshAccount={(token) => void onRefreshSingleAccount(token)}
+          onReloginAccount={(token) => void onReloginSingleAccount(token)}
+        />
       </ElevatedCard>
     </PageShell>
   );

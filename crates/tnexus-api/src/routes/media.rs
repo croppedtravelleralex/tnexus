@@ -225,7 +225,7 @@ async fn list_images(
     let rows = sqlx::query(
         r#"SELECT jr.id, jr.job_id, jr.provider, jr.r2_key_original, jr.r2_key_preview,
                   jr.r2_key_thumb, jr.agent_prompt, jr.revised_prompt, jr.keywords, jr.inline_preview_b64,
-                  jr.source_url, jr.created_at, j.input_prompt
+                  jr.source_url, jr.created_at, j.input_prompt, j.updated_at, j.phase_timings_ms, j.status
            FROM job_results jr
            JOIN jobs j ON j.id = jr.job_id
            WHERE ($1::date IS NULL OR jr.created_at::date >= $1)
@@ -257,6 +257,12 @@ async fn list_images(
         };
         let prompt: String = row.get("input_prompt");
         let created_at: DateTime<Utc> = row.get("created_at");
+        let updated_at: DateTime<Utc> = row.get("updated_at");
+        let phase_timings: serde_json::Value = row.get("phase_timings_ms");
+        let wall_ms = phase_timings
+            .get("wall_clock_ms")
+            .and_then(|v| v.as_u64())
+            .unwrap_or_else(|| (updated_at - created_at).num_milliseconds().max(0) as u64);
         let view = result_to_view(&state, record)
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -277,6 +283,7 @@ async fn list_images(
             "url": url,
             "thumbnail_url": view.thumb_url.or(Some(url.clone())),
             "created_at": created_at.to_rfc3339(),
+            "duration_ms": wall_ms,
             "prompt": prompt,
             "tags": tags,
         }));

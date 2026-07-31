@@ -4,7 +4,7 @@ import { useMemo } from "react";
 import { cn } from "@/lib/utils";
 
 const DAY_LABELS = ["一", "二", "三", "四", "五", "六", "日"] as const;
-const SLOT_LABELS = [
+export const SLOT_LABELS = [
   "00-02",
   "02-04",
   "04-06",

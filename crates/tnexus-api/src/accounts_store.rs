@@ -12,35 +12,81 @@ use tokio::sync::RwLock;
 const STATE_VERIFIED: &str = "verified_ready";
 const STATE_ISOLATED: &str = "identity_isolated";
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone)]
 struct AccountFile {
     email: String,
-    #[serde(default)]
     access_token: String,
-    #[serde(default)]
-    proxy: Option<String>,
-    #[serde(default)]
-    proxy_egress_ip: Option<String>,
-    #[serde(default)]
-    proxy_provider: Option<String>,
-    #[serde(default)]
-    cf_daily: Vec<Value>,
-    #[serde(default)]
-    egress_daily: Vec<Value>,
-    #[serde(default)]
-    refresh_token: Option<String>,
-    #[serde(default)]
-    id_token: Option<String>,
-    #[serde(default)]
-    password: Option<String>,
-    #[serde(default)]
-    quota: Option<i64>,
-    #[serde(default)]
-    stored_status: Option<String>,
-    #[serde(default)]
-    device_id: Option<String>,
-    #[serde(default)]
-    user_agent: Option<String>,
+    fields: serde_json::Map<String, Value>,
+}
+
+impl AccountFile {
+    fn from_value(value: &Value) -> Option<Self> {
+        let obj = value.as_object()?;
+        let token = obj
+            .get("access_token")
+            .or_else(|| obj.get("accessToken"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())?;
+        let email = obj
+            .get("email")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                let suffix = token.chars().take(8).collect::<String>();
+                format!("import-{suffix}@local")
+            });
+        let mut fields = obj.clone();
+        fields.remove("email");
+        fields.remove("access_token");
+        fields.remove("accessToken");
+        Some(Self {
+            email,
+            access_token: token.to_string(),
+            fields,
+        })
+    }
+
+    fn to_value(&self) -> Value {
+        let mut obj = self.fields.clone();
+        obj.insert("email".to_string(), json!(self.email));
+        obj.insert("access_token".to_string(), json!(self.access_token));
+        Value::Object(obj)
+    }
+
+    fn merge_value(&mut self, patch: &Value) {
+        let Some(obj) = patch.as_object() else {
+            return;
+        };
+        for (key, value) in obj {
+            match key.as_str() {
+                "email" => {
+                    if let Some(email) = value.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+                        self.email = email.to_string();
+                    }
+                }
+                "access_token" | "accessToken" => {
+                    if let Some(token) = value.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+                        self.access_token = token.to_string();
+                    }
+                }
+                _ => {
+                    self.fields.insert(key.clone(), value.clone());
+                }
+            }
+        }
+    }
+
+    fn field_str(&self, key: &str) -> Option<String> {
+        self.fields
+            .get(key)
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -139,12 +185,15 @@ impl AccountsStore {
     }
 
     fn row_to_json(row: &AccountFile, scheduling: &HashMap<String, String>) -> Value {
+        let mut out = row.to_value();
         let receive_state = Self::receive_state_for(&row.email, scheduling);
         let has_token = !row.access_token.is_empty();
-        let status = row
-            .stored_status
-            .clone()
-            .filter(|s| !s.trim().is_empty())
+        let status = out
+            .get("status")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
             .unwrap_or_else(|| {
                 if has_token {
                     "正常".to_string()
@@ -156,58 +205,61 @@ impl AccountsStore {
         let image_schedulable = has_token && status == "正常" && manual_on;
         let obs = crate::usage_metrics::load_observability_by_email();
         let extra = obs.get(&row.email.to_lowercase());
-        let cf_daily = if !row.cf_daily.is_empty() {
-            Value::Array(row.cf_daily.clone())
-        } else {
-            extra
-                .and_then(|v| v.get("cf_daily"))
-                .cloned()
-                .unwrap_or_else(|| Value::Array(vec![]))
-        };
-        let egress_daily = if !row.egress_daily.is_empty() {
-            Value::Array(row.egress_daily.clone())
-        } else {
-            extra
-                .and_then(|v| v.get("egress_daily"))
-                .cloned()
-                .unwrap_or_else(|| Value::Array(vec![]))
-        };
-        let proxy_egress_ip = row
-            .proxy_egress_ip
-            .clone()
+        let cf_daily: Value = out
+            .get("cf_daily")
+            .filter(|v| v.as_array().map(|a| !a.is_empty()).unwrap_or(false))
+            .cloned()
+            .or_else(|| extra.and_then(|v| v.get("cf_daily")).cloned())
+            .unwrap_or_else(|| Value::Array(vec![]));
+        let egress_daily: Value = out
+            .get("egress_daily")
+            .filter(|v| v.as_array().map(|a| !a.is_empty()).unwrap_or(false))
+            .cloned()
+            .or_else(|| extra.and_then(|v| v.get("egress_daily")).cloned())
+            .unwrap_or_else(|| Value::Array(vec![]));
+        let proxy_egress_ip = out
+            .get("proxy_egress_ip")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
             .or_else(|| {
                 extra
                     .and_then(|v| v.get("proxy_egress_ip"))
                     .and_then(|v| v.as_str())
                     .map(str::to_string)
             });
-        let proxy_provider = row
-            .proxy_provider
-            .clone()
+        let proxy_provider = out
+            .get("proxy_provider")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
             .or_else(|| {
                 extra
                     .and_then(|v| v.get("proxy_provider"))
                     .and_then(|v| v.as_str())
                     .map(str::to_string)
             });
-        json!({
-            "access_token": row.access_token,
-            "email": row.email,
-            "type": "openai",
-            "status": status,
-            "quota": row.quota.unwrap_or(0),
-            "image_quota_unknown": true,
-            "image_schedulable": image_schedulable,
-            "panda_receive_state": if receive_state.is_empty() { Value::Null } else { json!(receive_state) },
-            "proxy": row.proxy,
-            "proxy_egress_ip": proxy_egress_ip,
-            "proxy_provider": proxy_provider,
-            "cf_daily": cf_daily,
-            "egress_daily": egress_daily,
-            "success": 0,
-            "fail": 0,
-            "created_at": null,
-        })
+        if let Some(obj) = out.as_object_mut() {
+            obj.insert("access_token".to_string(), json!(row.access_token));
+            obj.insert("email".to_string(), json!(row.email));
+            obj.insert("status".to_string(), json!(status));
+            obj.insert("image_schedulable".to_string(), json!(image_schedulable));
+            obj.insert(
+                "panda_receive_state".to_string(),
+                if receive_state.is_empty() {
+                    Value::Null
+                } else {
+                    json!(receive_state)
+                },
+            );
+            obj.insert("cf_daily".to_string(), cf_daily);
+            obj.insert("egress_daily".to_string(), egress_daily);
+            if let Some(ip) = proxy_egress_ip {
+                obj.insert("proxy_egress_ip".to_string(), json!(ip));
+            }
+            if let Some(provider) = proxy_provider {
+                obj.insert("proxy_provider".to_string(), json!(provider));
+            }
+        }
+        out
     }
 
     pub async fn list(&self, offset: usize, limit: usize) -> Value {
@@ -337,20 +389,22 @@ impl AccountsStore {
         {
             let mut guard = self.inner.write().await;
             for value in payloads {
-                let Some(row) = parse_import_item(&value) else {
+                let Some(row) = AccountFile::from_value(&value) else {
                     continue;
                 };
                 let key = row.email.to_lowercase();
-                if let Some(existing) = guard.get(&key) {
+                if let Some(existing) = guard.get_mut(&key) {
                     if existing.access_token == row.access_token {
+                        existing.merge_value(&value);
                         summary.skipped += 1;
                         continue;
                     }
+                    existing.merge_value(&value);
                     summary.updated += 1;
                 } else {
+                    guard.insert(key, row);
                     summary.added += 1;
                 }
-                guard.insert(key, row);
             }
             save_accounts_file(&self.pool_path, &guard)?;
         }
@@ -372,14 +426,7 @@ impl AccountsStore {
                     .map(|set| set.contains(row.access_token.as_str()))
                     .unwrap_or(true)
             })
-            .map(|row| {
-                json!({
-                    "email": row.email,
-                    "access_token": row.access_token,
-                    "proxy": row.proxy,
-                    "type": "openai",
-                })
-            })
+            .map(|row| row.to_value())
             .collect();
         rows.sort_by(|a, b| {
             let ea = a.get("email").and_then(|v| v.as_str()).unwrap_or("");
@@ -459,8 +506,8 @@ impl AccountsStore {
             .map(|row| {
                 let email = row.email.to_lowercase();
                 let binding = crate::usage_metrics::binding_key_for_proxy(
-                    row.proxy.as_deref(),
-                    row.proxy_egress_ip.as_deref(),
+                    row.field_str("proxy").as_deref(),
+                    row.field_str("proxy_egress_ip").as_deref(),
                 );
                 (email, binding)
             })
@@ -478,23 +525,7 @@ impl AccountsStore {
     }
 
     fn account_file_to_export(&self, row: &AccountFile) -> Value {
-        json!({
-            "email": row.email,
-            "access_token": row.access_token,
-            "proxy": row.proxy,
-            "proxy_egress_ip": row.proxy_egress_ip,
-            "proxy_provider": row.proxy_provider,
-            "cf_daily": row.cf_daily,
-            "egress_daily": row.egress_daily,
-            "refresh_token": row.refresh_token,
-            "id_token": row.id_token,
-            "password": row.password,
-            "quota": row.quota,
-            "status": row.stored_status,
-            "device_id": row.device_id,
-            "user_agent": row.user_agent,
-            "type": "openai",
-        })
+        row.to_value()
     }
 }
 
@@ -563,113 +594,17 @@ fn pool_file_path() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("data/accounts_pool.json"))
 }
 
-fn parse_import_item(value: &Value) -> Option<AccountFile> {
-    let token = value
-        .get("access_token")
-        .or_else(|| value.get("accessToken"))
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())?;
-    let email = value
-        .get("email")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| {
-            let suffix = token.chars().take(8).collect::<String>();
-            format!("import-{suffix}@local")
-        });
-    let proxy = value
-        .get("proxy")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
-    let proxy_egress_ip = value
-        .get("proxy_egress_ip")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
-    let proxy_provider = value
-        .get("proxy_provider")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
-    let cf_daily = value
-        .get("cf_daily")
-        .and_then(|v| v.as_array())
-        .map(|a| a.clone())
-        .unwrap_or_default();
-    let egress_daily = value
-        .get("egress_daily")
-        .and_then(|v| v.as_array())
-        .map(|a| a.clone())
-        .unwrap_or_default();
-    let refresh_token = value
-        .get("refresh_token")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
-    let id_token = value
-        .get("id_token")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
-    let password = value
-        .get("password")
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
-        .filter(|s| !s.is_empty());
-    let quota = value.get("quota").and_then(|v| v.as_i64());
-    let stored_status = value
-        .get("status")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
-    let device_id = value
-        .get("device_id")
-        .or_else(|| value.get("oai-device-id"))
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
-        .filter(|s| !s.is_empty());
-    let user_agent = value
-        .get("user_agent")
-        .or_else(|| value.get("user-agent"))
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
-        .filter(|s| !s.is_empty());
-    Some(AccountFile {
-        email,
-        access_token: token.to_string(),
-        proxy,
-        proxy_egress_ip,
-        proxy_provider,
-        cf_daily,
-        egress_daily,
-        refresh_token,
-        id_token,
-        password,
-        quota,
-        stored_status,
-        device_id,
-        user_agent,
-    })
-}
-
 fn save_accounts_file(path: &Path, map: &HashMap<String, AccountFile>) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("create dir {:?}", parent))?;
     }
-    let mut rows: Vec<&AccountFile> = map.values().collect();
-    rows.sort_by(|a, b| a.email.cmp(&b.email));
-    let owned: Vec<AccountFile> = rows.into_iter().cloned().collect();
-    let raw = serde_json::to_string_pretty(&owned).context("serialize accounts pool")?;
+    let mut rows: Vec<Value> = map.values().map(|row| row.to_value()).collect();
+    rows.sort_by(|a, b| {
+        let ea = a.get("email").and_then(|v| v.as_str()).unwrap_or("");
+        let eb = b.get("email").and_then(|v| v.as_str()).unwrap_or("");
+        ea.cmp(eb)
+    });
+    let raw = serde_json::to_string_pretty(&rows).context("serialize accounts pool")?;
     fs::write(path, raw).with_context(|| format!("write accounts pool {:?}", path))?;
     Ok(())
 }
@@ -706,10 +641,15 @@ fn save_scheduling_state(path: &Path, map: &HashMap<String, String>) -> Result<(
 
 fn load_single(path: PathBuf) -> Result<AccountFile> {
     let raw = fs::read_to_string(&path).with_context(|| format!("read {:?}", path))?;
-    serde_json::from_str(&raw).context("parse PIN_ACCOUNT_FILE")
+    let value: Value = serde_json::from_str(&raw).context("parse PIN_ACCOUNT_FILE")?;
+    AccountFile::from_value(&value).context("parse PIN_ACCOUNT_FILE account")
 }
 
 fn load_accounts_file(path: PathBuf) -> Result<Vec<AccountFile>> {
     let raw = fs::read_to_string(&path).with_context(|| format!("read {:?}", path))?;
-    serde_json::from_str(&raw).context("parse ACCOUNTS_FILE")
+    let items: Vec<Value> = serde_json::from_str(&raw).context("parse ACCOUNTS_FILE")?;
+    Ok(items
+        .into_iter()
+        .filter_map(|value| AccountFile::from_value(&value))
+        .collect())
 }
