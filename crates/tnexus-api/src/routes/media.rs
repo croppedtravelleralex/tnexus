@@ -277,9 +277,6 @@ async fn list_images(
         let thumb = view.thumb_url.clone();
         let download = view.download_url.clone();
         let url = preview.or(thumb.clone()).or(download).unwrap_or_default();
-        if url.is_empty() {
-            continue;
-        }
         let has_inline = view
             .preview_b64
             .as_ref()
@@ -290,6 +287,9 @@ async fn list_images(
         } else {
             None
         };
+        if url.is_empty() && thumb_api_url.is_none() {
+            continue;
+        }
         let keywords: Option<serde_json::Value> = row.get("keywords");
         let tags = parse_tags(keywords);
         items.push(json!({

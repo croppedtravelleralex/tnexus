@@ -17,11 +17,12 @@ import { formatDuration } from "@/lib/format-duration";
 const PAGE_SIZE = 24;
 
 function thumbSrc(item: ManagedImage) {
-  const hasInline = Boolean(item.preview_b64 || item.b64_json);
-  if (hasInline && item.thumb_api_url) return item.thumb_api_url;
+  if (item.thumb_api_url) return item.thumb_api_url;
+  const inline = b64Fallback(item);
+  if (inline) return inline;
   if (item.thumbnail_url) return item.thumbnail_url;
   if (item.url) return item.url;
-  return item.thumb_api_url;
+  return undefined;
 }
 
 function thumbFallback(item: ManagedImage) {

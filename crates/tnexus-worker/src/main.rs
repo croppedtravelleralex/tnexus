@@ -201,31 +201,28 @@ async fn process_job(
             };
 
             for (vi, generated) in generated_list.iter().enumerate() {
-                if let Some(url) = &generated.source_url {
-                    sqlx::query(
-                        r#"INSERT INTO job_results (job_id, provider, variant_index, source_url, agent_prompt, revised_prompt, keywords)
-                           VALUES ($1, $2, $3, $4, $5, $6, $7)"#,
-                    )
-                    .bind(job_id)
-                    .bind(&result_label)
-                    .bind(vi as i32)
-                    .bind(url)
-                    .bind(&agent_prompt)
-                    .bind(&generated.revised_prompt)
-                    .bind(keywords_json(&director_out))
-                    .execute(pool)
-                    .await?;
-                    continue;
-                }
-
-                let bytes = generated
-                    .bytes
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("image payload missing bytes and url"))?;
+                let bytes = if let Some(b) = &generated.bytes {
+                    b.clone()
+                } else if let Some(url) = &generated.source_url {
+                    let resp = upstream
+                        .http
+                        .get(url.as_str())
+                        .send()
+                        .await
+                        .with_context(|| format!("download image {url}"))?;
+                    let status = resp.status();
+                    let body = resp.bytes().await.context("read downloaded image")?;
+                    if !status.is_success() {
+                        anyhow::bail!("download image HTTP {status}");
+                    }
+                    body.to_vec()
+                } else {
+                    return Err(anyhow::anyhow!("image payload missing bytes and url"));
+                };
 
                 let (orig, prev, thumb) = if let Some(storage) = storage {
                     let asset = storage
-                        .store_image_variants(job.user_id, job_id, bytes)
+                        .store_image_variants(job.user_id, job_id, &bytes)
                         .await?;
                     (
                         Some(asset.original_key),
@@ -237,7 +234,7 @@ async fn process_job(
                 };
 
                 let inline_preview = if storage.is_none() {
-                    Some(STANDARD.encode(bytes))
+                    Some(STANDARD.encode(&bytes))
                 } else {
                     None
                 };

@@ -178,26 +178,49 @@ pub async fn get_job_detail(state: &AppState, job_id: Uuid, user_id: Uuid) -> Re
 
 pub async fn result_to_view(state: &AppState, r: JobResultRecord) -> Result<JobResultView> {
     let storage = state.storage.as_ref();
+    let has_persisted = r
+        .inline_preview_b64
+        .as_ref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+        || r
+            .r2_key_thumb
+            .as_ref()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false)
+        || r
+            .r2_key_preview
+            .as_ref()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false)
+        || r
+            .r2_key_original
+            .as_ref()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
     if let Some(url) = r
         .source_url
         .as_ref()
         .filter(|s| !s.is_empty())
         .cloned()
     {
-        let keywords = r.keywords.and_then(|v| serde_json::from_value(v).ok());
-        let b64 = r.inline_preview_b64.clone();
-        return Ok(JobResultView {
-            id: r.id,
-            provider: r.provider,
-            preview_url: Some(url.clone()),
-            download_url: Some(url.clone()),
-            thumb_url: Some(url),
-            preview_b64: b64.clone(),
-            b64_json: b64,
-            agent_prompt: r.agent_prompt,
-            revised_prompt: r.revised_prompt,
-            keywords,
-        });
+        let ephemeral_gateway = url.contains("/v1/images/assets/");
+        if has_persisted || !ephemeral_gateway {
+            let keywords = r.keywords.and_then(|v| serde_json::from_value(v).ok());
+            let b64 = r.inline_preview_b64.clone();
+            return Ok(JobResultView {
+                id: r.id,
+                provider: r.provider,
+                preview_url: Some(url.clone()),
+                download_url: Some(url.clone()),
+                thumb_url: Some(url),
+                preview_b64: b64.clone(),
+                b64_json: b64,
+                agent_prompt: r.agent_prompt,
+                revised_prompt: r.revised_prompt,
+                keywords,
+            });
+        }
     }
     let preview_url = if let (Some(s), Some(key)) = (storage, &r.r2_key_preview) {
         Some(s.presign_get(key, state.config.presign_ttl_secs, false).await?)

@@ -120,7 +120,7 @@ impl UpstreamClient {
             prompt_enhance,
             "prompt_enhance",
             opts,
-            "url",
+            "b64_json",
         )
         .await
     }
@@ -198,9 +198,26 @@ impl UpstreamClient {
                 .map(|s| s.trim())
                 .filter(|s| !s.is_empty())
             {
+                let resp = self
+                    .http
+                    .get(url)
+                    .send()
+                    .await
+                    .with_context(|| format!("fetch image url {url}"))?;
+                let status = resp.status();
+                let bytes = resp
+                    .bytes()
+                    .await
+                    .with_context(|| format!("read image body from {url}"))?;
+                if !status.is_success() {
+                    return Err(anyhow::anyhow!(
+                        "fetch image url HTTP {status}: {}",
+                        String::from_utf8_lossy(&bytes)
+                    ));
+                }
                 out.push(GeneratedImage {
-                    bytes: None,
-                    source_url: Some(url.to_string()),
+                    bytes: Some(bytes.to_vec()),
+                    source_url: None,
                     revised_prompt: item.revised_prompt.clone(),
                 });
                 continue;
