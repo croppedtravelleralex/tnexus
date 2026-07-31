@@ -1,6 +1,6 @@
 # HANDOFF — TNexus（含 gateway-rs 合并）
 
-最后更新：**2026-07-31（去代理化 + 执行面 + 文档同步）**
+最后更新：**2026-07-31（号池失效根因澄清 + 图片持久化 + 文档同步）**
 
 ## 读什么（按顺序）
 
@@ -32,6 +32,9 @@
 | 去生产 HTTP 代理（`gptimage_proxy` 删除） | ✅ |
 | 号池全列排序、慢刷/软封/编辑、流水图、养号日历 UI | ✅ |
 | 图片管理：小图/WebP thumb/灯箱缩放拖拽 | ✅ |
+| 生图结果持久化 `inline_preview_b64`（非 gateway 内存 URL） | ✅ `a54d057` |
+| 顶栏原生 `<a>` 导航（静态导出） | ✅ `863fe28` |
+| gateway `:8014` → `tnexus-gateway` 镜像 | ✅ `panda-gateway-1` |
 | account-ops：养号/Outlook/窗口预热执行面 | ✅ 需 `GPTIMAGE_ROOT` |
 | tnexus-api 委托 account-ops + gateway 预热回退 | ✅ |
 | gateway `scheduling_gate`（需单独更新 :8014 进程） | ✅ 代码已合入 `crates/gateway` |
@@ -52,8 +55,11 @@
 
 | 项 | 状态 |
 |----|------|
-| GHCR 拉取最新镜像（api + account-ops + 静态 UI） | ✅ 2026-07-31 15:25 `dd4b758` 已 deploy |
-| gateway `:8014` 二进制与 TNexus 镜像**不同步** | ⚠️ 仍为 `gptimage-gateway-rs` 镜像（07-30）；`scheduling_gate` 未上线 |
+| GHCR 拉取最新镜像（api + worker + account-ops + 静态 UI） | ✅ 2026-07-31 18:03 `9dcb82a` |
+| gateway `:8014` `tnexus-gateway` | ✅ 与 TNexus `crates/gateway` 同步 |
+| `UPSTREAM_API_KEY` 定期刷新（cron） | ⚠️ 需运维；TTL ≈24h，过期报 `invalid session` |
+| 号池 JSON 与 sqlite 实时同步 | ⚠️ 仅 `deploy.sh` 时 `export_pool.sh`；非实时 |
+| `pin_account.json` 与 pool/sqlite 同步 | ⚠️ 曾过期；刷新后需与 pool 对齐 |
 | Outlook 恢复 UI、养号结果 merge 回 JSON | 📋 下一迭代 |
 | gateway-rs 物理归档 | 已迁入 `crates/gateway`，待删独立仓 |
 
@@ -75,14 +81,14 @@ Gateway 登录拿 JWT 仍在 Panda 本机：`http://127.0.0.1:8014/api/auth/logi
 
 ```text
 tnexus.relai.asia (nginx)
-  ├─ /v1/*              → 127.0.0.1:8014  (gptimage-gateway-rs)
+  ├─ /v1/*              → 127.0.0.1:8014  (tnexus-gateway, DATA_PLANE=upstream)
   ├─ /api/backend/*     → 127.0.0.1:8014
   └─ /*                 → 127.0.0.1:9000  (tnexus-api + 静态 UI)
 
-/opt/tnexus/.env              — secrets + compose env
-/opt/tnexus/data/pool/        — accounts_pool.json（api 挂载 /data/pool）
-/root/TNexus/                 — git 仓（deploy 脚本，不在此编译）
-/root/gptimage/               — refresh/relogin Python 库（account-ops 只读挂载）
+chatgpt2api-local :8012       — 生产 gpt-image（live accounts.db，禁止替换）
+/opt/tnexus/.env              — secrets + UPSTREAM_API_KEY（gateway JWT）
+/opt/tnexus/data/pool/        — accounts_pool.json 快照（gateway/api 只读）
+/root/gptimage/data/accounts.db — 号池真源（8012 直读；TNexus 经 export 同步）
 
 account-ops :9011             — OAuth / refresh / relogin / nurture / outlook / quota-prime
 ```
@@ -101,11 +107,22 @@ bash deploy/panda/deploy.sh               # pull + up api worker account-ops
 
 `.env` 必含：`ACCOUNTS_FILE`、`SCHEDULING_STATE_FILE`、`ACCOUNT_OPS_*`、`TNEXUS_ACCOUNT_OPS_IMAGE`；可选 `GATEWAY_BASE`/`GATEWAY_AUTH_KEY`（预热回退）。**勿配** `GPTIMAGE_ADMIN_TOKEN`。
 
-### 刷新 worker 上游 token
+### 刷新 worker → gateway JWT（`UPSTREAM_API_KEY`）
+
+Worker 调 `:8014/v1/*` 需 Bearer JWT（`AUTH_MODE=jwt`）。**不是号池 ChatGPT token**；约 24h 过期，过期时报 `401 invalid session`。
 
 ```bash
 python3 /root/gptimage-gateway-rs/scripts/panda_setup_tnexus_env.py
-cd /root/TNexus && bash deploy/panda/deploy.sh
+cd /root/TNexus && bash deploy/panda/deploy.sh   # 必须 force-recreate worker
+```
+
+建议 cron 每日执行上述脚本（或改 gateway `AUTH_MODE=apikey` + 固定 `GATEWAY_AUTH_KEY`）。
+
+### 同步号池快照（sqlite → TNexus JSON）
+
+```bash
+bash /root/TNexus/deploy/panda/export_pool.sh
+# gateway 读 /opt/tnexus/data/pool/accounts_pool.json，不读 8012 容器内 live db
 ```
 
 ### 验收
@@ -134,7 +151,10 @@ curl -fsS -b /tmp/cj https://tnexus.relai.asia/api/accounts?offset=0&limit=1
 |------|------|------|
 | `/accounts` 404 | 旧 GHCR 镜像无静态页 | `deploy.sh` 拉最新 |
 | `/api/accounts` 404 | 同上 | 同上 |
-| worker 401 生图 | `docker restart` 不刷新 env | `deploy.sh` force-recreate |
+| worker 401 `invalid session` | **`UPSTREAM_API_KEY`（gateway JWT）过期**，非号池 OAuth | `panda_setup_tnexus_env.py` + `deploy.sh` |
+| 8012 通、8014/TNexus 不通 | 不同进程/数据源/鉴权（见 doc 35 §号池为何不同步） | 刷新 JWT + `export_pool.sh` |
+| 图片管理灰块（旧图） | 历史记录仅存 gateway 内存 URL | 新图已写 `inline_preview_b64`；旧图不可恢复 |
+| worker env 未生效 | `docker restart` 不刷新 env | `deploy.sh` force-recreate |
 | 公网 `:8014` 超时 | 仅云安全组、未开 UFW | `ufw allow 8014/tcp` |
 | `helper_ok: false` | helper 未跑 | `DATA_PLANE=upstream` 时可忽略 |
 | `phase_timings_ms` 空 | job 详情 API 未透出 | 见 `routes/media.rs` logs API |

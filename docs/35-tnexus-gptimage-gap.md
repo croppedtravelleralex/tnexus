@@ -1,6 +1,6 @@
 # 35 — TNexus 距离彻底替代 Python gptimage 还差多少
 
-最后更新：**2026-07-31（去代理化 + 执行面接线）**
+最后更新：**2026-07-31（号池失效根因 + 图片持久化 + 部署记录）**
 
 ## 结论（一句话）
 
@@ -14,13 +14,12 @@
 
 | 维度 | 完成度 | 说明 |
 |------|--------|------|
-| **号池管理台 UI** | **~92%** | 全列排序、慢刷/软封/编辑、流水图、养号日历、图片管理优化 |
-| **管理 API（tnexus-api）** | **~78%** | 去代理；本地 stats/breakdown/流水；account-ops 委托 |
-| **运维执行面（养号/Outlook/预热）** | **~70%** | account-ops 已接线；需 `GPTIMAGE_ROOT` + 凭据；结果回写 JSON 待加强 |
-| **Gateway OpenAI 兼容** | **~55%** | chat + image n=1 + b64/url；调度门已加；edits/n>1/背压未全 |
-| **Gateway 调度门 / dispatch** | **~45%** | scheduling 文件门控 + inflight；无 dispatch_gate/interval/ticket_pool |
-| **数据面（替代 Python 核心）** | **~35%** | upstream 主链通；humanlike/ACI/全队列背压未齐 |
-| **彻底替代 Python gptimage（加权）** | **~38%** | 管理面可交付缺口缩小；数据面仍是大头 |
+| **号池管理台 UI** | **~94%** | 导航修复、图片管理 b64 预览 |
+| **管理 API（tnexus-api）** | **~82%** | 图片持久化视图、thumb API |
+| **运维执行面（养号/Outlook/预热）** | **~78%** | Webshare 代理托管 |
+| **Gateway OpenAI 兼容** | **~60%** | `tnexus-gateway` 已部署；upstream 主链可生图 |
+| **Gateway 调度门 / dispatch** | **~55%** | scheduling_gate 上线；无 dispatch_gate |
+| **彻底替代 Python gptimage（加权）** | **~42%** | 数据面仍缺 humanlike/背压/edits |
 
 > 百分比为功能加权估算，对照 `docs/24-gap-inventory.md` 与 Panda 生产 `:8012` 行为，**不含**明确不做项（注册机、settings 七卡片、完整 ops-dashboard 壳等）。
 
@@ -47,7 +46,8 @@
 | 全量慢刷 refresh-all | ✅ 本地 `refresh_all.rs` |
 | 软封 / 删除 / 更新账号 | ✅ 本地 JSON |
 | 养号日历预设/绑定 | ✅ 本地 JSON + `ip-nurture` API |
-| 生图 b64 回传 | ✅ jobs + 图片列表 |
+| 生图 b64 持久化（worker 写 `inline_preview_b64`） | ✅ `a54d057` |
+| 图片管理优先内联 b64 缩略图 | ✅ `9dcb82a` |
 
 ### 运维执行面（account-ops → gptimage 库）
 
@@ -68,6 +68,54 @@
 | `scheduling_bulk` 写调度状态 | ✅ |
 | 生图 inflight 计数 | ✅ |
 | 429 `Retry-After: 30` | ✅ |
+
+---
+
+## 号池「相同账号、8012 通 TNexus 不通」—— 根因（2026-07-31 复核）
+
+**结论：不是「号池 OAuth session 集体过期」。** 生产 `chatgpt2api-local :8012` 与 TNexus `:8014` 是**两套运行时**，即便账号 email 相同，数据与鉴权链路也不同。
+
+### 对照表
+
+| 维度 | 生产 gpt-image `:8012` | TNexus `:8014` + worker |
+|------|------------------------|-------------------------|
+| 进程 | `chatgpt2api-local` | `panda-gateway-1`（`tnexus-gateway`） |
+| 号池数据源 | **live** `/root/gptimage/data/accounts.db` | **快照** `/opt/tnexus/data/pool/accounts_pool.json` |
+| 同步时机 | 实时读写 sqlite | 仅 `export_pool.sh`（多在 deploy 时） |
+| 调度/额度 | Python `humanlike_scheduler`、预检、背压 | Rust `scheduling_gate` + `DATA_PLANE=upstream` |
+| 调用方鉴权 | API Key（`Authorization: Bearer`） | Worker 用 **`UPSTREAM_API_KEY`（Gateway JWT，≈24h TTL）** |
+| 生图实现 | Python `image_task_service` 全链路 | Rust `upstream` SSE（能力子集） |
+
+### 本次 TNexus 401 的真实原因（已复现并修复）
+
+1. **`UPSTREAM_API_KEY` 过期**（`exp` 早于 `now`）→ Gateway 返回 `{"ok":false,"error":"invalid session"}`。  
+   这是 **Worker→Gateway 的 JWT**，与号池里 ChatGPT `access_token` 无关。
+2. **号池 JSON 滞后**：复核时 **3/40** 账号 `access_token` 与 sqlite 不一致（JSON 早于 db 数小时）。8012 始终读最新 db。
+3. **`pin_account.json` 过期**：`alexnnnmmm@proton.me` 的 pin token 与 db/pool **均不一致**（gateway 部分路径仍读 pin）。
+4. **历史误判**：将 `invalid session` 写成「号池 session 过期」是错误的。
+
+### 修复后验证（2026-07-31 19:44 CST）
+
+```bash
+python3 /root/gptimage-gateway-rs/scripts/panda_setup_tnexus_env.py  # 刷新 JWT
+bash deploy/panda/export_pool.sh && bash deploy/panda/deploy.sh      # 同步 pool + 重建 worker
+```
+
+| 检查 | 结果 |
+|------|------|
+| `UPSTREAM_API_KEY` 未过期 | ✅ |
+| pool vs sqlite token 不一致数 | **0/40** |
+| 全链路 job `status=done` | ✅（preview 为 `data:image/png;base64,...`） |
+| `job_results.inline_preview_b64` | ✅ 有值（≈1.5MB），`source_url` 空 |
+
+### 运维建议（P1）
+
+| 项 | 建议 |
+|----|------|
+| JWT 续期 | cron 每日 `panda_setup_tnexus_env.py` + `deploy.sh`，或 gateway 改 `apikey` 模式 |
+| 号池快照 | refresh/relogin 后跑 `export_pool.sh`；或定时（如每小时） |
+| pin 同步 | refresh 后更新 `/root/gptimage-gateway-rs/secrets/pin_account.json` |
+| 冒烟脚本 | `prod_url_chain_test.py` 需接受 `data:` preview（持久化后不再强制 gateway URL） |
 
 ---
 
@@ -173,13 +221,15 @@ python3 /root/TNexus/scripts/prod_url_chain_test.py
 ```text
 浏览器 → tnexus.relai.asia (nginx)
            ├─ /api/*     → tnexus-api :9000  (JSON 号池 + 委托 account-ops)
-           ├─ /v1/*      → gateway :8014     (生图/对话 + scheduling_gate)
+           ├─ /v1/*      → tnexus-gateway :8014  (生图/对话 + scheduling_gate)
            └─ /*         → 静态 UI
 
-account-ops :9011 → GPTIMAGE_ROOT Python 库（sqlite accounts.db）
-                  → text_nurture / outlook_recovery / quota_window_prime
+chatgpt2api-local :8012 → live accounts.db（生产 gpt-image，TNexus 不 HTTP 依赖）
 
-禁止 → gptimage 生产 :8012 HTTP
+account-ops :9011 → GPTIMAGE_ROOT Python 库
+export_pool.sh  → sqlite → /opt/tnexus/data/pool/accounts_pool.json（TNexus/gateway 快照）
+
+禁止 → TNexus 运行时 HTTP 调生产 :8012 管理 API
 ```
 
 ---
@@ -188,22 +238,20 @@ account-ops :9011 → GPTIMAGE_ROOT Python 库（sqlite accounts.db）
 
 | 时间 | commit | 结果 |
 |------|--------|------|
-| 2026-07-31 15:25 CST | `dd4b758` | TNexus api/worker/account-ops 已 `deploy.sh` 拉取最新 GHCR 并 force-recreate |
+| 2026-07-31 15:25 CST | `dd4b758` | 去代理化 + account-ops 桥接 |
+| 2026-07-31 17:35 CST | `863fe28` | 顶栏原生导航 |
+| 2026-07-31 17:35 CST | `a54d057` | 生图持久化 `inline_preview_b64` |
+| 2026-07-31 18:03 CST | `9dcb82a` | 图片管理优先内联 b64 |
+| 2026-07-31 19:44 CST | — | 刷新 `UPSTREAM_API_KEY` + `export_pool.sh`；全链路生图 ✅ |
 
-**探测（Panda 回环）**
+**探测（Panda 回环，2026-07-31 19:44）**
 
 | 检查项 | 结果 |
 |--------|------|
 | `GET :9000/health` | `{"status":"ok","static_ui":true}` |
-| `GET :9011/health` | `{"ok":true,"ops_bridge":true}` |
-| `GET https://tnexus.relai.asia/accounts` | 302（未登录，正常） |
-| `GET https://tnexus.relai.asia/image-manager` | 302（未登录，正常） |
-| 号池导出 | 40 账号 → `/opt/tnexus/data/pool/accounts_pool.json` |
+| `GET :8014/health` | `tnexus-gateway`，40 accounts，`DATA_PLANE=upstream` |
+| `GET :8012/health?format=json` | 40 账号可调度（生产，独立进程） |
+| pool token vs sqlite | **0** 不一致（export 后） |
+| TNexus job 生图 | `done` + `inline_preview_b64` |
 
-**未随本次 deploy 更新**
-
-| 组件 | 现网镜像 | 说明 |
-|------|----------|------|
-| gateway `:8014` | `ghcr.io/.../gptimage-gateway-rs:latest`（2026-07-30） | `scheduling_gate` 在 TNexus `crates/gateway`，需单独发布 gateway 镜像/进程后调度门才生效 |
-
-**全链路冒烟**：`prod_url_chain_test.py` 登录与 job 创建 ✅；生图腿 `401 invalid session`（号池 session 过期，非部署故障）。
+**历史误判（已更正）**：`401 invalid session` 曾为 **Gateway JWT 过期**，非号池 ChatGPT token 过期。
