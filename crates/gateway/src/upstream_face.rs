@@ -39,6 +39,19 @@ pub async fn run_image(
     runtime.run_image_with_metrics(&prompt, &model).await
 }
 
+pub async fn run_image_edit(
+    account: &HelperPinAccount,
+    prompt: String,
+    model: String,
+    image_bytes: Vec<u8>,
+    file_name: String,
+) -> Result<(Vec<u8>, upstream::ImageRunMetrics)> {
+    let mut runtime = UpstreamRuntime::new(to_upstream(account))?;
+    runtime
+        .run_image_edit_with_metrics(&prompt, &model, &image_bytes, &file_name)
+        .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

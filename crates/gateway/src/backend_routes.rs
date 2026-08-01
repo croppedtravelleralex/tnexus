@@ -9,7 +9,11 @@ use std::sync::Arc;
 pub async fn capabilities(State(st): State<Arc<AppState>>) -> Json<Value> {
     let helper_ok = st.helper.health().await.is_ok();
     let upstream_mode = st.data_plane == DataPlane::Upstream;
-    let mut deferred = vec!["image_edits"];
+    let image_edits_enabled = st.image_enabled && upstream_mode;
+    let mut deferred = Vec::new();
+    if !image_edits_enabled {
+        deferred.push("image_edits");
+    }
     if !upstream_mode {
         deferred.push("estuary_download");
     }
@@ -33,7 +37,7 @@ pub async fn capabilities(State(st): State<Arc<AppState>>) -> Json<Value> {
             "quota_probe": !upstream_mode,
             "account_candidates": !upstream_mode,
             "image_generations": st.image_enabled,
-            "image_edits": false,
+            "image_edits": image_edits_enabled,
             "estuary_download": upstream_mode,
             "static_ui": st.static_dir.is_some(),
         },

@@ -16,6 +16,7 @@ pub mod sentinel;
 pub mod sse;
 pub mod tls;
 pub mod turnstile;
+pub mod upload;
 
 pub use image_metrics::ImageRunMetrics;
 pub use account::PinAccount;

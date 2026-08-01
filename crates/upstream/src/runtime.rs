@@ -4,13 +4,14 @@ use anyhow::{bail, Context, Result};
 use tracing::info;
 
 use crate::account::PinAccount;
-use crate::conversation::{build_text_chat_body, DEFAULT_TIMEZONE};
+use crate::conversation::{build_text_chat_body, ImageReference, DEFAULT_TIMEZONE};
 use crate::estuary::{download_image_bytes, get_attachment_download_url, get_file_download_url};
 use crate::image_metrics::ImageRunMetrics;
 use crate::poll::{poll_image_ready_from_tasks, query_tasks};
 use crate::requirements::{RequirementsClient, BASE_URL};
 use crate::sentinel::build_chat_headers;
 use crate::sse::{consume_sse_until, ImageSseReady, SseConsumeMode};
+use crate::upload::{upload_image_bytes, uploaded_to_reference};
 
 const DEFAULT_TEXT_SSE_TIMEOUT_SECS: u64 = 120;
 const DEFAULT_IMAGE_SSE_TIMEOUT_SECS: u64 = 300;
@@ -95,6 +96,28 @@ impl UpstreamRuntime {
         prompt: &str,
         model: &str,
     ) -> Result<(Vec<u8>, ImageRunMetrics)> {
+        self.run_image_with_references(prompt, model, &[]).await
+    }
+
+    pub async fn run_image_edit_with_metrics(
+        &mut self,
+        prompt: &str,
+        model: &str,
+        image_bytes: &[u8],
+        file_name: &str,
+    ) -> Result<(Vec<u8>, ImageRunMetrics)> {
+        let uploaded = upload_image_bytes(self.client(), image_bytes, file_name).await?;
+        let reference = uploaded_to_reference(&uploaded);
+        self.run_image_with_references(prompt, model, &[reference])
+            .await
+    }
+
+    async fn run_image_with_references(
+        &mut self,
+        prompt: &str,
+        model: &str,
+        references: &[ImageReference],
+    ) -> Result<(Vec<u8>, ImageRunMetrics)> {
         let wall_start = Instant::now();
         let mut metrics = ImageRunMetrics::default();
 
@@ -117,7 +140,7 @@ impl UpstreamRuntime {
         let t0 = Instant::now();
         let resp = self
             .client
-            .start_image_conversation(prompt, model, &requirements, &conduit)
+            .start_image_conversation(prompt, model, &requirements, &conduit, references)
             .await?;
 
         let consumed =

@@ -438,10 +438,11 @@ impl RequirementsClient {
         model: &str,
         requirements: &ChatRequirements,
         _conduit_token: &str,
+        references: &[crate::conversation::ImageReference],
     ) -> Result<wreq::Response> {
         let path = "/backend-api/f/conversation";
         let slug = image_model_slug(model);
-        let body = build_image_start_body(prompt, slug, DEFAULT_TIMEZONE, &[], true);
+        let body = build_image_start_body(prompt, slug, DEFAULT_TIMEZONE, references, true);
         let headers =
             self.image_spa_headers(path, "text/event-stream", Some(requirements), "", false);
         let body_str = serde_json::to_string(&body)?;

@@ -369,24 +369,20 @@ async fn persist_slot(
     let bytes = if let Some(b) = generated.bytes {
         Some(b)
     } else if let Some(url) = &source_url {
-        if storage.is_some() {
-            let http = reqwest::Client::builder()
-                .timeout(Duration::from_secs(120))
-                .build()?;
-            let resp = http
-                .get(url.as_str())
-                .send()
-                .await
-                .with_context(|| format!("download image {url}"))?;
-            let status = resp.status();
-            let body = resp.bytes().await.context("read downloaded image")?;
-            if !status.is_success() {
-                anyhow::bail!("download image HTTP {status}");
-            }
-            Some(body.to_vec())
-        } else {
-            None
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(120))
+            .build()?;
+        let resp = http
+            .get(url.as_str())
+            .send()
+            .await
+            .with_context(|| format!("download image {url}"))?;
+        let status = resp.status();
+        let body = resp.bytes().await.context("read downloaded image")?;
+        if !status.is_success() {
+            anyhow::bail!("download image HTTP {status}");
         }
+        Some(body.to_vec())
     } else {
         return Err(anyhow::anyhow!("image payload missing bytes and url"));
     };
