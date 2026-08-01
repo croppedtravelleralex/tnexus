@@ -17,7 +17,7 @@ def resolve_preview(preview: str) -> str:
     return preview
 
 
-def preview_bytes(preview: str) -> int:
+def preview_bytes(preview: str, opener: urllib.request.OpenerDirector | None = None) -> int:
     if preview.startswith("data:"):
         comma = preview.find(",")
         if comma < 0:
@@ -26,7 +26,8 @@ def preview_bytes(preview: str) -> int:
         if ";base64" in preview[:comma]:
             return len(base64.b64decode(payload))
         return len(payload.encode())
-    with urllib.request.urlopen(preview, timeout=120) as resp:
+    fetch = opener.open if opener else urllib.request.urlopen
+    with fetch(preview, timeout=120) as resp:
         return len(resp.read())
 
 
@@ -82,18 +83,26 @@ def main() -> int:
         print(f"poll {i} status={status}")
         if status == "done":
             preview = (detail.get("results") or [{}])[0].get("preview_url")
-            kind = "inline_b64" if preview and preview.startswith("data:") else "https"
+            kind = (
+                "inline_b64"
+                if preview and preview.startswith("data:")
+                else "thumb"
+                if preview and preview.startswith("/api/images/thumb/")
+                else "https"
+            )
             print(f"preview_kind={kind}")
             if preview and len(preview) > 120:
                 print(f"preview_url={preview[:80]}...({len(preview)} chars)")
             else:
                 print(f"preview_url={preview}")
             if not preview or not (
-                preview.startswith(HTTPS_PREFIX) or preview.startswith("data:image/")
+                preview.startswith(HTTPS_PREFIX)
+                or preview.startswith("data:image/")
+                or preview.startswith("/api/images/thumb/")
             ):
                 print(json.dumps(detail, indent=2)[:3000])
                 return 1
-            nbytes = preview_bytes(preview)
+            nbytes = preview_bytes(resolve_preview(preview), opener)
             print(f"preview_bytes={nbytes}")
             print("TNEXUS_URL_CHAIN_OK")
             return 0

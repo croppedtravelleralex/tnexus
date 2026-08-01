@@ -11,7 +11,7 @@ API = "https://tnexus.relai.asia"
 PROMPT = "a blue sphere on gray background, minimal product photo"
 
 
-def preview_ok(preview: str | None) -> tuple[bool, int]:
+def preview_ok(preview: str | None, opener: urllib.request.OpenerDirector | None = None) -> tuple[bool, int]:
     if not preview:
         return False, 0
     if preview.startswith("/"):
@@ -25,7 +25,8 @@ def preview_ok(preview: str | None) -> tuple[bool, int]:
             return True, len(base64.b64decode(payload))
         return True, len(payload.encode())
     if preview.startswith("https://"):
-        with urllib.request.urlopen(preview, timeout=120) as resp:
+        fetch = opener.open if opener else urllib.request.urlopen
+        with fetch(preview, timeout=120) as resp:
             data = resp.read()
         return len(data) > 0, len(data)
     return False, 0
@@ -133,8 +134,14 @@ def main() -> int:
 
         for ri, row in enumerate(results):
             preview = row.get("preview_url")
-            good, nbytes = preview_ok(preview)
-            kind = "b64" if preview and preview.startswith("data:") else "url"
+            good, nbytes = preview_ok(preview, opener)
+            kind = (
+                "b64"
+                if preview and preview.startswith("data:")
+                else "thumb"
+                if preview and preview.startswith("/api/")
+                else "url"
+            )
             print(f"  result[{ri}] provider={row.get('provider')} preview={kind} bytes={nbytes}")
             if not good or nbytes < 10_000:
                 ok_all = False

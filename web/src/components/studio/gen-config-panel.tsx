@@ -17,6 +17,8 @@ import {
 import { IMAGE_ENGINES, TEXT_MODELS, textModelLabel, type TextModelId } from "@/lib/models";
 import { STYLE_PRESETS } from "@/lib/presets";
 
+const MAX_ACTOR_IMAGE_COUNT = 40;
+
 type Props = {
   prompt: string;
   onPromptChange: (v: string) => void;
@@ -136,7 +138,7 @@ export function GenConfigPanel(props: Props) {
               <div key={actorId} className="flex items-center gap-2 rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2">
                 <span className="w-16 shrink-0 text-xs font-medium text-zinc-700">{textModelLabel(actorId)}</span>
                 <div className="flex flex-wrap gap-1">
-                  {Array.from({ length: 10 }, (_, i) => i + 1).map((n) => (
+                  {Array.from({ length: MAX_ACTOR_IMAGE_COUNT }, (_, i) => i + 1).map((n) => (
                     <ChoiceButton
                       key={n}
                       variant="pill"

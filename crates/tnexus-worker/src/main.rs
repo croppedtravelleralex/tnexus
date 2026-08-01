@@ -514,12 +514,14 @@ fn image_providers_for(provider: &str) -> Vec<String> {
     }
 }
 
+const MAX_ACTOR_IMAGE_COUNT: u32 = 40;
+
 fn actor_count_for(counts: &serde_json::Value, model_id: &str) -> u32 {
     counts
         .get(model_id)
         .and_then(|v| v.as_u64())
         .unwrap_or(1)
-        .clamp(1, 10) as u32
+        .clamp(1, MAX_ACTOR_IMAGE_COUNT as u64) as u32
 }
 
 fn load_config() -> Result<WorkerConfig> {
