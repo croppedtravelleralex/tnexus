@@ -328,28 +328,6 @@ async fn process_job(
         "download_ms".into(),
         serde_json::json!(upload_start.elapsed().as_millis() as u64),
     );
-    for (idx, generated) in generated_list.iter().enumerate() {
-        if let Some(pipeline) = &generated.pipeline {
-            let email = pipeline
-                .get("account_email")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
-            record_usage_event(email, "default", "images_api", true);
-            pipeline_telemetry::append_event(&pipeline_telemetry::PipelineEvent {
-                ts: pipeline_telemetry::now_rfc3339(),
-                kind: "worker_slot".into(),
-                email: email.to_string(),
-                job_id: Some(job_id.to_string()),
-                slot_index: Some(idx as i32),
-                ok: true,
-                quota_before: pipeline.get("quota_before").and_then(|v| v.as_i64()),
-                quota_after: pipeline.get("quota_after").and_then(|v| v.as_i64()),
-                timings_ms: pipeline.get("timings_ms").cloned(),
-                bytes: pipeline.get("bytes").cloned(),
-                extra: None,
-            });
-        }
-    }
 
     phase_timings.insert(
         "wall_clock_ms".into(),
