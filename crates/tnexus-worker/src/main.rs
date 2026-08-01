@@ -4,6 +4,7 @@ mod upstream;
 use anyhow::{Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use futures::future::try_join_all;
+use image::GenericImageView;
 use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
 use sqlx::{PgPool, Row};
