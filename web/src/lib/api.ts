@@ -216,6 +216,9 @@ export type JobResult = {
   b64_json?: string | null;
   agent_prompt?: string | null;
   revised_prompt?: string | null;
+  width?: number | null;
+  height?: number | null;
+  size_bytes?: number | null;
 };
 
 export type JobDetail = JobRecord & { results: JobResult[] };

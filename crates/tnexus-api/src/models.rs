@@ -50,6 +50,9 @@ pub struct JobResultRecord {
     pub keywords: Option<serde_json::Value>,
     pub inline_preview_b64: Option<String>,
     pub source_url: Option<String>,
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+    pub size_bytes: Option<i64>,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -75,6 +78,12 @@ pub struct JobResultView {
     pub agent_prompt: Option<String>,
     pub revised_prompt: Option<String>,
     pub keywords: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<i64>,
 }
 
 pub fn parse_mode(s: &str) -> Option<JobMode> {

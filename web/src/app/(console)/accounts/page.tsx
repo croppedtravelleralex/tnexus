@@ -76,6 +76,17 @@ async function pollProgress(
   throw new Error("刷新超时");
 }
 
+async function pollRefreshAllUntilDone() {
+  for (let i = 0; i < 3600; i += 1) {
+    const status = await accountsApi.refreshAllStatus();
+    if (!["running", "paused", "stopping"].includes(String(status.state))) {
+      return status;
+    }
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+  throw new Error("全量同步超时");
+}
+
 export default function AccountsPage() {
   const [items, setItems] = useState<Account[]>([]);
   const [stats, setStats] = useState<AccountListStats>();
@@ -89,6 +100,7 @@ export default function AccountsPage() {
   const [bulkScheduling, setBulkScheduling] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [syncingAll, setSyncingAll] = useState(false);
   const [relogging, setRelogging] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -282,8 +294,33 @@ export default function AccountsPage() {
     return filtered.map((r) => r.access_token).filter(Boolean);
   };
 
+  const onSyncAllQuotas = async () => {
+    setSyncingAll(true);
+    setError("");
+    try {
+      await accountsApi.refreshAllStart({
+        concurrency: 4,
+        delay_sec: 0.2,
+      });
+      const finalStatus = await pollRefreshAllUntilDone();
+      if (finalStatus.total === 0) {
+        alert(`没有需要刷新的账号，已跳过 ${finalStatus.skipped ?? 0} 个近期刷新账号`);
+      }
+      invalidateCache("accounts:");
+      await load({ force: true, page });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "全量同步额度失败");
+    } finally {
+      setSyncingAll(false);
+    }
+  };
+
   const onRefreshAccounts = async () => {
-    const tokens = tokensForAction();
+    if (selected.size === 0) {
+      await onSyncAllQuotas();
+      return;
+    }
+    const tokens = Array.from(selected);
     if (tokens.length === 0) return;
     if (tokens.length > MAX_REFRESH) {
       setError(`单次最多刷新 ${MAX_REFRESH} 个账号`);
@@ -519,11 +556,11 @@ export default function AccountsPage() {
             size="sm"
             variant="toolbar"
             className="h-8 gap-1.5"
-            disabled={refreshing}
+            disabled={refreshing || syncingAll}
             onClick={() => void onRefreshAccounts()}
           >
-            {refreshing ? <LoaderCircle className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
-            刷新账号
+            {refreshing || syncingAll ? <LoaderCircle className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
+            {selected.size > 0 ? "刷新账号" : "同步全部额度"}
           </Button>
           <Button
             size="sm"

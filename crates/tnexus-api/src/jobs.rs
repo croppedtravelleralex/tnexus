@@ -159,7 +159,7 @@ pub async fn update_job_status(
 
 pub async fn list_results(state: &AppState, job_id: Uuid) -> Result<Vec<JobResultRecord>> {
     let rows = sqlx::query(
-        "SELECT id, job_id, provider, variant_index, r2_key_original, r2_key_preview, r2_key_thumb, agent_prompt, revised_prompt, keywords, inline_preview_b64, source_url, created_at FROM job_results WHERE job_id = $1 ORDER BY provider, variant_index",
+        "SELECT id, job_id, provider, variant_index, r2_key_original, r2_key_preview, r2_key_thumb, agent_prompt, revised_prompt, keywords, inline_preview_b64, source_url, width, height, size_bytes, created_at FROM job_results WHERE job_id = $1 ORDER BY provider, variant_index",
     )
     .bind(job_id)
     .fetch_all(&state.pool)
@@ -199,6 +199,10 @@ fn thumb_api_url(result_id: Uuid, width: u32) -> String {
     format!("/api/images/thumb/{result_id}?w={width}")
 }
 
+fn result_image_meta(r: &JobResultRecord) -> (Option<i32>, Option<i32>, Option<i64>) {
+    (r.width, r.height, r.size_bytes)
+}
+
 pub async fn result_to_view(state: &AppState, r: JobResultRecord) -> Result<JobResultView> {
     let storage = state.storage.as_ref();
     let has_persisted = r
@@ -229,6 +233,7 @@ pub async fn result_to_view(state: &AppState, r: JobResultRecord) -> Result<JobR
     {
         let keywords = r.keywords.and_then(|v| serde_json::from_value(v).ok());
         if url.contains("/v1/images/assets/") {
+            let (width, height, size_bytes) = result_image_meta(&r);
             return Ok(JobResultView {
                 id: r.id,
                 provider: r.provider,
@@ -240,10 +245,14 @@ pub async fn result_to_view(state: &AppState, r: JobResultRecord) -> Result<JobR
                 agent_prompt: r.agent_prompt,
                 revised_prompt: r.revised_prompt,
                 keywords,
+                width,
+                height,
+                size_bytes,
             });
         }
         if has_persisted {
             let thumb = thumb_api_url(r.id, 512);
+            let (width, height, size_bytes) = result_image_meta(&r);
             return Ok(JobResultView {
                 id: r.id,
                 provider: r.provider,
@@ -255,8 +264,12 @@ pub async fn result_to_view(state: &AppState, r: JobResultRecord) -> Result<JobR
                 agent_prompt: r.agent_prompt,
                 revised_prompt: r.revised_prompt,
                 keywords,
+                width,
+                height,
+                size_bytes,
             });
         }
+        let (width, height, size_bytes) = result_image_meta(&r);
         return Ok(JobResultView {
             id: r.id,
             provider: r.provider,
@@ -268,6 +281,9 @@ pub async fn result_to_view(state: &AppState, r: JobResultRecord) -> Result<JobR
             agent_prompt: r.agent_prompt,
             revised_prompt: r.revised_prompt,
             keywords,
+            width,
+            height,
+            size_bytes,
         });
     }
     let preview_url = if let (Some(s), Some(key)) = (storage, &r.r2_key_preview) {
@@ -300,6 +316,7 @@ pub async fn result_to_view(state: &AppState, r: JobResultRecord) -> Result<JobR
         None
     };
     let keywords = r.keywords.and_then(|v| serde_json::from_value(v).ok());
+    let (width, height, size_bytes) = result_image_meta(&r);
     Ok(JobResultView {
         id: r.id,
         provider: r.provider,
@@ -311,6 +328,9 @@ pub async fn result_to_view(state: &AppState, r: JobResultRecord) -> Result<JobR
         agent_prompt: r.agent_prompt,
         revised_prompt: r.revised_prompt,
         keywords,
+        width,
+        height,
+        size_bytes,
     })
 }
 
@@ -352,6 +372,9 @@ fn row_to_result(row: sqlx::postgres::PgRow) -> Result<JobResultRecord> {
         keywords: row.get("keywords"),
         inline_preview_b64: row.get("inline_preview_b64"),
         source_url: row.get("source_url"),
+        width: row.get("width"),
+        height: row.get("height"),
+        size_bytes: row.get("size_bytes"),
         created_at: row.get("created_at"),
     })
 }

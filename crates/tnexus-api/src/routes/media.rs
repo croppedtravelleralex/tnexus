@@ -228,7 +228,7 @@ async fn list_images(
     let rows = sqlx::query(
         r#"SELECT jr.id, jr.job_id, jr.provider, jr.r2_key_original, jr.r2_key_preview,
                   jr.r2_key_thumb, jr.agent_prompt, jr.revised_prompt, jr.keywords, jr.inline_preview_b64,
-                  jr.source_url, jr.created_at, j.input_prompt, j.updated_at, j.phase_timings_ms, j.status
+                  jr.source_url, jr.width, jr.height, jr.size_bytes, jr.created_at, j.input_prompt, j.updated_at, j.phase_timings_ms, j.status
            FROM job_results jr
            JOIN jobs j ON j.id = jr.job_id
            WHERE ($1::date IS NULL OR jr.created_at::date >= $1)
@@ -256,6 +256,9 @@ async fn list_images(
             keywords: row.get("keywords"),
             inline_preview_b64: row.get("inline_preview_b64"),
             source_url: row.get("source_url"),
+            width: row.get("width"),
+            height: row.get("height"),
+            size_bytes: row.get("size_bytes"),
             created_at: row.get("created_at"),
         };
         let prompt: String = row.get("input_prompt");

@@ -439,6 +439,8 @@ export default function StudioPage() {
           jobStatus={jobStatus}
           error={error}
           onRetry={() => void onGenerate()}
+          expectedWidth={genConfig.width}
+          expectedHeight={genConfig.height}
         />
       </ResizableStudioLayout>
     </div>

@@ -408,9 +408,21 @@ async fn persist_slot(
         None
     };
 
+    let (width, height, size_bytes) = bytes
+        .as_ref()
+        .map(|b| {
+            let dims = image::image_dimensions_from_memory(b).ok();
+            (
+                dims.map(|(w, _)| w as i32),
+                dims.map(|(_, h)| h as i32),
+                Some(b.len() as i64),
+            )
+        })
+        .unwrap_or((None, None, None));
+
     sqlx::query(
-        r#"INSERT INTO job_results (job_id, provider, variant_index, r2_key_original, r2_key_preview, r2_key_thumb, agent_prompt, revised_prompt, keywords, inline_preview_b64, source_url)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"#,
+        r#"INSERT INTO job_results (job_id, provider, variant_index, r2_key_original, r2_key_preview, r2_key_thumb, agent_prompt, revised_prompt, keywords, inline_preview_b64, source_url, width, height, size_bytes)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)"#,
     )
     .bind(job_id)
     .bind(&result_label)
@@ -423,6 +435,9 @@ async fn persist_slot(
     .bind(keywords)
     .bind(inline_preview)
     .bind(source_url)
+    .bind(width)
+    .bind(height)
+    .bind(size_bytes)
     .execute(pool)
     .await?;
     Ok(())

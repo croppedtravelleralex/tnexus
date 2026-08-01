@@ -1,8 +1,9 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { JobResult } from "@/lib/api";
 import { apiAssetUrl } from "@/lib/api";
+import { formatBytes, formatResolution } from "@/lib/format-bytes";
 import { formatDuration } from "@/lib/format-duration";
 import { Download, Loader2, RotateCcw, ZoomIn } from "lucide-react";
 import { downloadImage, ImagePreviewDialog } from "@/components/studio/image-preview-dialog";
@@ -16,19 +17,106 @@ export type OutputSlot = {
   label?: string;
 };
 
+function ImageMetaBadge({
+  image,
+  expectedWidth,
+  expectedHeight,
+  className,
+}: {
+  image?: JobResult;
+  expectedWidth?: number;
+  expectedHeight?: number;
+  className?: string;
+}) {
+  const [probed, setProbed] = useState<{ width?: number; height?: number; sizeBytes?: number }>({});
+
+  const width = image?.width ?? probed.width ?? expectedWidth;
+  const height = image?.height ?? probed.height ?? expectedHeight;
+  const sizeBytes = image?.size_bytes ?? probed.sizeBytes;
+
+  useEffect(() => {
+    if (!image) return;
+    if (image.width && image.height && image.size_bytes) return;
+
+    const url = apiAssetUrl(image.download_url || image.preview_url);
+    if (!url) return;
+
+    let cancelled = false;
+
+    if (!image.size_bytes && !url.startsWith("data:")) {
+      void fetch(url, { method: "HEAD", credentials: "include" })
+        .then((res) => {
+          const cl = res.headers.get("content-length");
+          if (!cancelled && cl) {
+            const parsed = Number.parseInt(cl, 10);
+            if (Number.isFinite(parsed) && parsed > 0) {
+              setProbed((prev) => ({ ...prev, sizeBytes: parsed }));
+            }
+          }
+        })
+        .catch(() => undefined);
+    }
+
+    if (!image.width || !image.height) {
+      const img = new window.Image();
+      img.onload = () => {
+        if (!cancelled) {
+          setProbed((prev) => ({
+            ...prev,
+            width: img.naturalWidth,
+            height: img.naturalHeight,
+          }));
+        }
+      };
+      img.src = url;
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [image]);
+
+  const resolution = formatResolution(width, height);
+  const sizeLabel = sizeBytes ? formatBytes(sizeBytes) : null;
+  const label = [resolution, sizeLabel].filter(Boolean).join(" · ");
+  if (!label) return null;
+
+  return (
+    <div
+      className={cn(
+        "rounded bg-black/55 px-1.5 py-0.5 text-[10px] font-medium leading-tight text-white backdrop-blur-sm",
+        className,
+      )}
+    >
+      {label}
+    </div>
+  );
+}
+
 function PendingTile({
   stageLabel,
   elapsedMs,
   progress,
   index,
+  expectedWidth,
+  expectedHeight,
 }: {
   stageLabel: string;
   elapsedMs: number;
   progress: number;
   index: number;
+  expectedWidth?: number;
+  expectedHeight?: number;
 }) {
   return (
     <div className="relative h-44 w-44 shrink-0 overflow-hidden rounded-lg border-2 border-dashed border-zinc-300 bg-zinc-50">
+      {(expectedWidth || expectedHeight) && (
+        <ImageMetaBadge
+          expectedWidth={expectedWidth}
+          expectedHeight={expectedHeight}
+          className="absolute left-1.5 top-1.5 z-10"
+        />
+      )}
       <div
         className="absolute inset-0 opacity-50"
         style={{
@@ -86,6 +174,7 @@ function SuccessTile({
 
   return (
     <div className="group relative h-44 w-44 shrink-0 overflow-hidden rounded-lg border border-zinc-200 bg-zinc-100 shadow-sm">
+      <ImageMetaBadge image={image} className="absolute left-1.5 top-1.5 z-10" />
       {preview ? (
         <button
           type="button"
@@ -155,6 +244,8 @@ type Props = {
   jobStatus: "idle" | "running" | "done" | "failed";
   error?: string;
   onRetry?: () => void;
+  expectedWidth?: number;
+  expectedHeight?: number;
 };
 
 export function OutputPanel({
@@ -167,6 +258,8 @@ export function OutputPanel({
   jobStatus,
   error,
   onRetry,
+  expectedWidth,
+  expectedHeight,
 }: Props) {
   const [preview, setPreview] = useState<{ url: string; downloadUrl?: string | null } | null>(null);
 
@@ -243,6 +336,8 @@ export function OutputPanel({
                         stageLabel={stageLabel}
                         elapsedMs={elapsedMs}
                         progress={progress}
+                        expectedWidth={expectedWidth}
+                        expectedHeight={expectedHeight}
                       />
                     );
                   }
@@ -267,6 +362,8 @@ export function OutputPanel({
                       stageLabel={stageLabel}
                       elapsedMs={elapsedMs}
                       progress={progress}
+                      expectedWidth={expectedWidth}
+                      expectedHeight={expectedHeight}
                     />
                   );
                 })}
