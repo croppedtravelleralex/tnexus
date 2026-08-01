@@ -24,7 +24,7 @@ pub async fn create_job(
     let row = sqlx::query(
         r#"INSERT INTO jobs (user_id, mode, workflow_path, ps_enabled, provider, director_models, gen_config, director_factors, ps_factors, input_prompt, conversation_id, actor_image_counts, status)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'queued')
-           RETURNING id, user_id, mode, workflow_path, ps_enabled, provider, director_models, gen_config, director_factors, ps_factors, input_prompt, status, error_message, created_at, updated_at"#,
+           RETURNING id, user_id, mode, workflow_path, ps_enabled, provider, director_models, gen_config, director_factors, ps_factors, input_prompt, status, error_message, phase_timings_ms, created_at, updated_at"#,
     )
     .bind(user_id)
     .bind(mode)
