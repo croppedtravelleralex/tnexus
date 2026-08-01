@@ -12,7 +12,7 @@ import {
   EMPTY_CONVERSATION_STATE,
   type ConversationState,
 } from "@/lib/conversations";
-import { DEFAULT_GEN_CONFIG, type GenConfig } from "@/lib/gen-config";
+import { DEFAULT_GEN_CONFIG, snappedGenConfig, type GenConfig } from "@/lib/gen-config";
 import { saveColumnRatios } from "@/lib/studio-layout";
 import type { TextModelId } from "@/lib/models";
 import { Loader2 } from "lucide-react";
@@ -46,6 +46,8 @@ export default function StudioPage() {
   const [mode, setMode] = useState<"director" | "casting">("director");
   const [workflow, setWorkflow] = useState<"full_agent" | "keyword_ps">("full_agent");
   const [enhanceEnabled, setEnhanceEnabled] = useState(false);
+  const [activeStyleHint, setActiveStyleHint] = useState("");
+  const [queueHint, setQueueHint] = useState("");
   const [textModel, setTextModel] = useState<TextModelId>("gpt");
   const [castingModels, setCastingModels] = useState<TextModelId[]>(["gpt", "grok"]);
   const [actorImageCounts, setActorImageCounts] = useState<Record<TextModelId, number>>(
@@ -56,6 +58,7 @@ export default function StudioPage() {
   const [renderFactors, setRenderFactors] = useState<FactorPoint>({ x: 0.5, y: 0.5 });
   const [genConfig, setGenConfig] = useState<GenConfig>(DEFAULT_GEN_CONFIG);
   const [activeAspect, setActiveAspect] = useState("1:1");
+  const [activeStylePreset, setActiveStylePreset] = useState("");
   const [columnWidths, setColumnWidths] = useState<[number, number, number] | null>(null);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -121,7 +124,7 @@ export default function StudioPage() {
     setImageEngine(s.imageEngine ?? "chatgpt");
     setDirectorFactors(s.directorFactors ?? { x: 0.5, y: 0.5 });
     setRenderFactors(s.renderFactors ?? { x: 0.5, y: 0.5 });
-    setGenConfig(s.genConfig ?? DEFAULT_GEN_CONFIG);
+    setGenConfig({ ...DEFAULT_GEN_CONFIG, ...(s.genConfig ?? {}) });
     setActiveAspect(s.activeAspect ?? "1:1");
     if (s.lastJobId) {
       void jobsApi.get(s.lastJobId).then(setResult).catch(() => setResult(null));
@@ -218,6 +221,13 @@ export default function StudioPage() {
     setGenConfig((c) => ({ ...c, width: w, height: h }));
   };
 
+  const onStylePresetChange = (name: string, director: FactorPoint, render: FactorPoint, promptHint: string) => {
+    setActiveStylePreset(name);
+    setActiveStyleHint(promptHint);
+    setDirectorFactors(director);
+    setRenderFactors(render);
+  };
+
   const onGenerate = async () => {
     if (!prompt.trim() || !conversationId) return;
     const directorModels = mode === "casting" ? castingModels : [textModel];
@@ -227,6 +237,7 @@ export default function StudioPage() {
 
     setBusy(true);
     setError("");
+    setQueueHint("");
     setResult(null);
     setProgress(5);
     setStage("queued");
@@ -244,6 +255,13 @@ export default function StudioPage() {
     let pollTimer: ReturnType<typeof setInterval> | null = null;
     let queuedTimer: ReturnType<typeof setTimeout> | null = null;
     let es: EventSource | null = null;
+    let jobStarted = false;
+
+    const markStarted = () => {
+      if (jobStarted) return;
+      jobStarted = true;
+      setQueueHint("");
+    };
 
     const cleanup = () => {
       if (pollTimer) clearInterval(pollTimer);
@@ -294,22 +312,30 @@ export default function StudioPage() {
     };
 
     try {
+      const styleParts = [
+        activeStylePreset ? `[风格预设: ${activeStylePreset}]` : "",
+        activeStyleHint ? `Style reference: ${activeStyleHint}.` : "",
+      ].filter(Boolean);
+      const stylePrefix = styleParts.length ? `${styleParts.join(" ")} ` : "";
+      const polishFactor = enhanceLocked ? 1 : genConfig.polish_factor;
       const { job_id } = await jobsApi.create({
         mode,
         workflow_path: workflow,
-        ps_enabled: enhanceLocked ? true : enhanceEnabled,
+        ps_enabled: enhanceLocked || polishFactor >= 0.35,
         provider: imageEngine,
         director_models: directorModels,
         director_factors: directorFactors,
         ps_factors: renderFactors,
-        input_prompt: prompt.trim(),
-        gen_config: genConfig,
+        input_prompt: `${stylePrefix}${prompt.trim()}`,
+        gen_config: { ...snappedGenConfig(genConfig), polish_factor: polishFactor },
         conversation_id: conversationId,
         actor_image_counts: counts,
       });
 
       queuedTimer = setTimeout(() => {
-        setError("任务仍在排队，请稍候…（若超过 30 秒仍未开始，请联系管理员检查 worker 服务）");
+        if (!jobStarted) {
+          setQueueHint("任务仍在排队，请稍候…（若超过 30 秒仍未开始，请联系管理员检查 worker 服务）");
+        }
       }, 30000);
 
       pollTimer = setInterval(() => {
@@ -318,6 +344,7 @@ export default function StudioPage() {
           .then((d) => {
             setStage(d.status);
             setProgress(d.progress);
+            if (d.status !== "queued") markStarted();
             if (d.status === "done" || d.status === "failed") {
               void finishJob(job_id, d.error_message ?? undefined);
             }
@@ -330,6 +357,7 @@ export default function StudioPage() {
         const data = JSON.parse(ev.data) as { stage: string; progress: number; error?: string };
         setStage(data.stage);
         setProgress(data.progress);
+        if (data.stage !== "queued") markStarted();
         if (data.stage === "done" || data.stage === "failed") {
           void finishJob(job_id, data.error);
         }
@@ -383,9 +411,7 @@ export default function StudioPage() {
           onActorImageCountChange={(id, count) => setActorImageCounts((prev) => ({ ...prev, [id]: count }))}
           imageEngine={imageEngine}
           onImageEngineChange={setImageEngine}
-          enhanceEnabled={enhanceEnabled}
-          enhanceLocked={enhanceLocked}
-          onEnhanceChange={setEnhanceEnabled}
+          polishLocked={enhanceLocked}
           directorFactors={directorFactors}
           onDirectorFactorsChange={setDirectorFactors}
           renderFactors={renderFactors}
@@ -394,6 +420,9 @@ export default function StudioPage() {
           onGenConfigChange={setGenConfig}
           activeAspect={activeAspect}
           onAspectChange={onAspectChange}
+          activeStylePreset={activeStylePreset}
+          onStylePresetChange={onStylePresetChange}
+          queueHint={queueHint}
           busy={busy}
           stageLabel={stageLabel}
           progress={progress}

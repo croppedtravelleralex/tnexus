@@ -60,6 +60,7 @@ fn build_router(state: Arc<AppState>) -> Router {
     let api = Router::new()
         .route("/health", get(health))
         .nest("/api/auth", routes::auth::routes())
+        .nest("/api/chat", routes::chat::routes())
         .nest("/api/conversations", routes::conversations::routes())
         .nest("/api/jobs", routes::jobs::routes())
         .nest("/api/accounts", routes::accounts::routes())

@@ -1,3 +1,4 @@
+pub mod chat;
 pub mod auth;
 pub mod accounts;
 pub mod accounts_extended;

@@ -1,13 +1,16 @@
 # HANDOFF — TNexus（含 gateway-rs 合并）
 
-最后更新：**2026-07-31（Studio 轮询减负 + 共享 accounts.db）**
+最后更新：**2026-08-01（图片交付/带宽策略文档 + 监控埋点）**
 
 ## 读什么（按顺序）
 
 1. **[plan.md](plan.md)** — 合并施工总控与详细待办
-2. **[docs/34-tnexus-rollout-oauth-panda.md](docs/34-tnexus-rollout-oauth-panda.md)** — 号池/OAuth 三阶段上线
-3. **[docs/SOURCE.md](docs/SOURCE.md)** — UI/API 对照源（gptimage Python 仓）
-4. **[README.md](README.md)** — 本地开发与仓库结构
+2. **[docs/38-tnexus-production-cutover.md](docs/38-tnexus-production-cutover.md)** — **1:1 替代 gptimage 生产切流路线图**
+3. **[docs/36-image-delivery-bandwidth-strategy.md](docs/36-image-delivery-bandwidth-strategy.md)** — AVIF/WebP 显示、R2/Edge 302、带宽分层
+3. **[docs/37-gptimage-tnexus-comparison.md](docs/37-gptimage-tnexus-comparison.md)** — 与 Python `:8012` 横向对比
+4. **[docs/34-tnexus-rollout-oauth-panda.md](docs/34-tnexus-rollout-oauth-panda.md)** — 号池/OAuth 三阶段上线
+5. **[docs/SOURCE.md](docs/SOURCE.md)** — UI/API 对照源（gptimage Python 仓）
+6. **[README.md](README.md)** — 本地开发与仓库结构
 
 ---
 
@@ -159,7 +162,9 @@ curl -fsS -b /tmp/cj https://tnexus.relai.asia/api/accounts?offset=0&limit=1
 | worker env 未生效 | `docker restart` 不刷新 env | `deploy.sh` force-recreate |
 | 公网 `:8014` 超时 | 仅云安全组、未开 UFW | `ufw allow 8014/tcp` |
 | `helper_ok: false` | helper 未跑 | `DATA_PLANE=upstream` 时可忽略 |
-| `phase_timings_ms` 空 | job 详情 API 未透出 | 见 `routes/media.rs` logs API |
+| `phase_timings_ms` 空 | job 详情 API 未透出 | 已合入 `GET /api/jobs/{id}`；见 pipeline_events |
+| thumb 展示流量大 | `/api/images/thumb` 302 到全 PNG | 见 [docs/36](docs/36-image-delivery-bandwidth-strategy.md) §2 |
+| Panda 出口带宽 | 用户看图经 asset | R2 + WebP/AVIF；见 [docs/36](docs/36-image-delivery-bandwidth-strategy.md) |
 | 养号/Outlook 503 | account-ops 未配或 GPTIMAGE_ROOT 不可用 | 查 `9011/health` 与容器日志 |
 | 窗口预热仅 queued | account-ops 未启用 prime 服务 | 配 GATEWAY_BASE 回退或修 GPTIMAGE_ROOT |
 | 调度门不生效 | gateway :8014 未更新 | 单独发布 `crates/gateway` 并重启 |

@@ -119,9 +119,16 @@ fn slot_index_for_week(
     Some((day, hour_slot))
 }
 
-pub fn binding_key_for_proxy(proxy: Option<&str>, egress_ip: Option<&str>) -> String {
+pub fn binding_key_for_account_fields(
+    proxy_binding_hash: Option<&str>,
+    proxy: Option<&str>,
+    egress_ip: Option<&str>,
+) -> String {
+    if let Some(hash) = proxy_binding_hash.map(str::trim).filter(|s| !s.is_empty()) {
+        return hash.to_string();
+    }
     if let Some(ip) = egress_ip.map(str::trim).filter(|s| !s.is_empty()) {
-        return ip.to_string();
+        return format!("egress:{ip}");
     }
     let raw = proxy.map(str::trim).filter(|s| !s.is_empty()).unwrap_or("");
     if raw.is_empty() {
@@ -136,8 +143,12 @@ pub fn binding_key_for_proxy(proxy: Option<&str>, egress_ip: Option<&str>) -> St
     if host_part.is_empty() {
         "default".to_string()
     } else {
-        host_part.to_string()
+        format!("proxy:{host_part}")
     }
+}
+
+pub fn binding_key_for_proxy(proxy: Option<&str>, egress_ip: Option<&str>) -> String {
+    binding_key_for_account_fields(None, proxy, egress_ip)
 }
 
 pub fn get_binding_usage_slots(

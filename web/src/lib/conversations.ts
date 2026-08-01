@@ -44,6 +44,7 @@ export const EMPTY_CONVERSATION_STATE: ConversationState = {
     count: 1,
     transparent_bg: false,
     align_16: true,
+    polish_factor: 0,
   },
   activeAspect: "1:1",
   lastJobId: null,

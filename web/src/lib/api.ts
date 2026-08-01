@@ -673,53 +673,75 @@ export const proxyApi = {
 const GATEWAY_BASE = (process.env.NEXT_PUBLIC_GATEWAY_BASE ?? "http://localhost:8014").replace(/\/$/, "");
 const GATEWAY_KEY = process.env.NEXT_PUBLIC_GATEWAY_KEY ?? "";
 
+async function readChatStream(res: Response, onDelta: (text: string) => void) {
+  const reader = res.body?.getReader();
+  if (!reader) throw new Error("无响应流");
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data:")) continue;
+      const payload = trimmed.slice(5).trim();
+      if (payload === "[DONE]") return;
+      try {
+        const json = JSON.parse(payload) as {
+          choices?: Array<{ delta?: { content?: string } }>;
+        };
+        const delta = json.choices?.[0]?.delta?.content;
+        if (delta) onDelta(delta);
+      } catch {
+        // skip malformed chunk
+      }
+    }
+  }
+}
+
 export const chatApi = {
   streamCompletion: async (
-    body: { model: string; messages: Array<{ role: string; content: string }> },
+    body: { model: string; messages: Array<{ role: string; content: string }>; stream?: boolean },
     onDelta: (text: string) => void,
   ) => {
+    const stream = body.stream !== false;
     let res: Response;
     try {
-      res = await fetch(`${GATEWAY_BASE}/v1/chat/completions`, {
+      res = await fetch(`${API_BASE}/api/chat/completions`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(GATEWAY_KEY ? { Authorization: `Bearer ${GATEWAY_KEY}` } : {}),
-        },
-        body: JSON.stringify({ ...body, stream: true }),
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...body, stream }),
       });
     } catch {
-      throw new Error(`无法连接 Gateway（${GATEWAY_BASE}）`);
+      if (GATEWAY_BASE) {
+        res = await fetch(`${GATEWAY_BASE}/v1/chat/completions`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(GATEWAY_KEY ? { Authorization: `Bearer ${GATEWAY_KEY}` } : {}),
+          },
+          body: JSON.stringify({ ...body, stream }),
+        });
+      } else {
+        throw new Error("无法连接对话服务");
+      }
     }
     if (!res.ok) {
       const text = await res.text();
       throw new Error(text || res.statusText);
     }
-    const reader = res.body?.getReader();
-    if (!reader) throw new Error("无响应流");
-    const decoder = new TextDecoder();
-    let buffer = "";
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith("data:")) continue;
-        const payload = trimmed.slice(5).trim();
-        if (payload === "[DONE]") return;
-        try {
-          const json = JSON.parse(payload) as {
-            choices?: Array<{ delta?: { content?: string } }>;
-          };
-          const delta = json.choices?.[0]?.delta?.content;
-          if (delta) onDelta(delta);
-        } catch {
-          // skip malformed chunk
-        }
-      }
+    if (stream) {
+      await readChatStream(res, onDelta);
+      return;
     }
+    const data = (await res.json()) as {
+      choices?: Array<{ message?: { content?: string } }>;
+    };
+    const content = data.choices?.[0]?.message?.content ?? "";
+    if (content) onDelta(content);
   },
 };

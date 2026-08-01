@@ -11,7 +11,8 @@ type Message = { role: "user" | "assistant"; content: string };
 export function ChatWorkbench() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
-  const [model, setModel] = useState("gpt-4o");
+  const [model, setModel] = useState("gpt-4o-mini");
+  const [stream, setStream] = useState(true);
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
@@ -30,38 +31,50 @@ export function ChatWorkbench() {
     setMessages(nextMessages);
     setInput("");
     setStreaming(true);
-    setMessages((prev) => [...prev, { role: "assistant", content: "" }]);
+    if (stream) {
+      setMessages((prev) => [...prev, { role: "assistant", content: "" }]);
+    }
     scrollToBottom();
 
     try {
+      let assistantText = "";
       await chatApi.streamCompletion(
         {
           model,
+          stream,
           messages: nextMessages.map((m) => ({ role: m.role, content: m.content })),
         },
         (delta) => {
-          setMessages((prev) => {
-            const copy = [...prev];
-            const last = copy[copy.length - 1];
-            if (last?.role === "assistant") {
-              copy[copy.length - 1] = { ...last, content: last.content + delta };
-            }
-            return copy;
-          });
+          assistantText += delta;
+          if (stream) {
+            setMessages((prev) => {
+              const copy = [...prev];
+              const last = copy[copy.length - 1];
+              if (last?.role === "assistant") {
+                copy[copy.length - 1] = { ...last, content: last.content + delta };
+              }
+              return copy;
+            });
+          }
           scrollToBottom();
         },
       );
+      if (!stream) {
+        setMessages((prev) => [...prev, { role: "assistant", content: assistantText || "（空响应）" }]);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "对话失败");
-      setMessages((prev) => prev.slice(0, -1));
+      if (stream) {
+        setMessages((prev) => (prev[prev.length - 1]?.role === "assistant" ? prev.slice(0, -1) : prev));
+      }
     } finally {
       setStreaming(false);
     }
-  }, [input, streaming, messages, model]);
+  }, [input, streaming, messages, model, stream]);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex flex-wrap items-center gap-2 border-b border-[var(--neo-border)] px-4 py-2">
+      <div className="flex flex-wrap items-center gap-3 border-b border-[var(--neo-border)] px-4 py-2">
         <label className="text-xs text-[var(--neo-muted)]">模型</label>
         <select
           value={model}
@@ -72,10 +85,16 @@ export function ChatWorkbench() {
           <option value="gpt-4o-mini">gpt-4o-mini</option>
           <option value="o4-mini">o4-mini</option>
         </select>
+        <label className="ml-auto flex items-center gap-1.5 text-xs text-[var(--neo-muted)]">
+          <input type="checkbox" checked={stream} onChange={(e) => setStream(e.target.checked)} />
+          流式 SSE
+        </label>
       </div>
       <div ref={listRef} className="flex-1 space-y-3 overflow-y-auto p-4">
         {messages.length === 0 ? (
-          <p className="py-8 text-center text-sm text-[var(--neo-muted)]">发送消息测试 Gateway 对话接口</p>
+          <p className="py-8 text-center text-sm text-[var(--neo-muted)]">
+            发送消息开始对话。经 TNexus API 代理至 Gateway 数据面，并写入对话用量统计。
+          </p>
         ) : null}
         {messages.map((m, i) => (
           <div
@@ -86,6 +105,7 @@ export function ChatWorkbench() {
                 : "mr-auto max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-bl-md border border-[var(--neo-border)] bg-[var(--neo-surface-muted)] px-4 py-2.5 text-sm text-[var(--neo-ink)]"
             }
           >
+            <div className="mb-1 text-[10px] font-medium opacity-70">{m.role === "user" ? "你" : "助手"}</div>
             {m.content || (streaming && i === messages.length - 1 ? "…" : "")}
           </div>
         ))}

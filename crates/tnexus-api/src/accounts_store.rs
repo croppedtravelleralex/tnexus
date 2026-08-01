@@ -169,6 +169,11 @@ impl AccountsStore {
             .unwrap_or_default()
     }
 
+    fn is_unlimited_type(account_type: Option<&str>) -> bool {
+        let t = account_type.unwrap_or("").trim().to_lowercase();
+        t == "pro" || t == "prolite"
+    }
+
     fn manual_scheduling_enabled(receive_state: &str) -> bool {
         let receive = receive_state.trim().to_lowercase();
         if receive.is_empty() {
@@ -199,6 +204,24 @@ impl AccountsStore {
             });
         let manual_on = Self::manual_scheduling_enabled(&receive_state);
         let image_schedulable = has_token && status == "正常" && manual_on;
+        let quota = out.get("quota").and_then(|v| v.as_i64()).unwrap_or(0);
+        let image_quota_unknown = out
+            .get("image_quota_unknown")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let image_quota_state = if is_unlimited_type(out.get("type").and_then(|v| v.as_str())) {
+            "unlimited"
+        } else if image_quota_unknown {
+            "unknown"
+        } else if image_schedulable && quota > 0 {
+            "ready"
+        } else if quota > 0 {
+            "blocked"
+        } else if quota == 0 && out.get("restore_at").and_then(|v| v.as_str()).is_some() {
+            "refresh_pending"
+        } else {
+            "exhausted"
+        };
         let obs = crate::usage_metrics::load_observability_by_email();
         let extra = obs.get(&row.email.to_lowercase());
         let cf_daily: Value = out
@@ -238,6 +261,15 @@ impl AccountsStore {
             obj.insert("email".to_string(), json!(row.email));
             obj.insert("status".to_string(), json!(status));
             obj.insert("image_schedulable".to_string(), json!(image_schedulable));
+            obj.insert("image_quota_state".to_string(), json!(image_quota_state));
+            obj.insert(
+                "available_image_quota".to_string(),
+                json!(if image_schedulable && quota > 0 {
+                    quota
+                } else {
+                    0
+                }),
+            );
             obj.insert(
                 "panda_receive_state".to_string(),
                 if receive_state.is_empty() {
@@ -545,7 +577,8 @@ impl AccountsStore {
             .values()
             .map(|row| {
                 let email = row.email.to_lowercase();
-                let binding = crate::usage_metrics::binding_key_for_proxy(
+                let binding = crate::usage_metrics::binding_key_for_account_fields(
+                    row.field_str("proxy_binding_hash").as_deref(),
                     row.field_str("proxy").as_deref(),
                     row.field_str("proxy_egress_ip").as_deref(),
                 );

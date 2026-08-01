@@ -65,8 +65,21 @@ pub struct ImageGenerationRequest {
     pub n: u32,
     #[serde(default = "default_size")]
     pub size: String,
+    #[serde(default)]
+    pub quality: Option<String>,
+    #[serde(default)]
+    pub background: Option<String>,
     #[serde(default = "default_response_format")]
     pub response_format: String,
+}
+
+impl ImageGenerationRequest {
+    pub fn transparent_bg(&self) -> bool {
+        self.background
+            .as_deref()
+            .map(|b| b.eq_ignore_ascii_case("transparent"))
+            .unwrap_or(false)
+    }
 }
 
 fn default_image_model() -> String {

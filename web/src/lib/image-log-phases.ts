@@ -97,8 +97,11 @@ export function buildCallLogPhases(detail: Record<string, unknown> | undefined):
 export function getInlinePhases(detail: Record<string, unknown> | undefined): PhaseTiming[] {
   const all = buildCallLogPhases(detail);
   if (!all.length) return [];
+
+  const totalMs = readTotalMs(detail);
   const prefer = [
     "task_queue_ms",
+    "ps_ms",
     "account_queue_ms",
     "ss_queue_ms",
     "sse_stream_ms",
@@ -108,7 +111,36 @@ export function getInlinePhases(detail: Record<string, unknown> | undefined): Ph
   const picked = prefer
     .map((key) => all.find((p) => p.key === key))
     .filter((p): p is PhaseTiming => Boolean(p));
+
+  if (totalMs > 0) {
+    const covered = picked.reduce((sum, phase) => sum + phase.ms, 0);
+    const gap = totalMs - covered;
+    if (gap >= 500) {
+      picked.push({
+        key: "other_ms",
+        label: "其他",
+        hint: "未单独埋点的阶段（如 gateway 开销、轮询间隙）",
+        ms: gap,
+        derived: true,
+      });
+    }
+  }
+
   return picked.length ? picked : all.slice(0, 6);
+}
+
+function readTotalMs(detail: Record<string, unknown> | undefined): number {
+  const wallFromPhase = readMs(detail, "wall_clock_ms");
+  const ms =
+    (typeof detail?.total_wall_ms === "number" && detail.total_wall_ms > 0
+      ? detail.total_wall_ms
+      : undefined) ??
+    (wallFromPhase > 0 ? wallFromPhase : undefined) ??
+    (typeof detail?.worker_duration_ms === "number" && detail.worker_duration_ms > 0
+      ? detail.worker_duration_ms
+      : undefined) ??
+    (typeof detail?.duration_ms === "number" && detail.duration_ms > 0 ? detail.duration_ms : undefined);
+  return typeof ms === "number" ? ms : 0;
 }
 
 export function formatDurationMs(detail: Record<string, unknown> | undefined): string {

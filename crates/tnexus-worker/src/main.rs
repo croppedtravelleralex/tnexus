@@ -175,6 +175,8 @@ async fn process_job(
 
     let director_start = Instant::now();
     let ps_enabled_job = job.ps_enabled;
+    let polish_factor = job.gen_config.polish_factor.clamp(0.0, 1.0);
+    let upstream_enhance = ps_enabled_job || polish_factor >= 0.35;
     let ps_params = ps_factors.ps_params();
     let director_futs = director_model_ids.iter().map(|model_id| {
         let ps_params = ps_params.clone();
@@ -201,12 +203,13 @@ async fn process_job(
             };
             let director_out =
                 parse_director_response_with_fallback(workflow, &raw, &input).map_err(|e| anyhow::anyhow!("{e}"))?;
-            let (image_prompt, ps_enabled) =
-                build_image_prompt(workflow, &director_out, &ps_params, ps_enabled_job);
+            let (mut image_prompt, _) =
+                build_image_prompt(workflow, &director_out, &ps_params, upstream_enhance);
+            image_prompt = tnexus_domain::append_polish_intensity(&image_prompt, polish_factor);
             Ok::<ActorPlan, anyhow::Error>(ActorPlan {
                 model_id,
                 image_prompt,
-                ps_enabled,
+                ps_enabled: upstream_enhance,
                 agent_prompt: agent_prompt_text(&director_out),
                 keywords: keywords_json(&director_out),
                 count,
@@ -230,9 +233,15 @@ async fn process_job(
                 actor.model_id.clone()
             };
             for _ in 0..actor.count {
+                let hinted_prompt = tnexus_domain::append_image_generation_hints(
+                    &actor.image_prompt,
+                    &img_opts_base.size,
+                    img_opts_base.quality.as_deref().unwrap_or("auto"),
+                    img_opts_base.transparent_bg,
+                );
                 gen_tasks.push(SlotGenerateTask {
                     img_provider: img_provider.clone(),
-                    prompt: actor.image_prompt.clone(),
+                    prompt: hinted_prompt,
                     ps_enabled: actor.ps_enabled,
                     opts: img_opts_base.clone(),
                 });
@@ -282,7 +291,7 @@ async fn process_job(
                 .get("account_email")
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown");
-            record_usage_event(email, "default", "images_api", true);
+            record_usage_event(email, "", "images_api", true);
             pipeline_telemetry::append_event(&pipeline_telemetry::PipelineEvent {
                 ts: pipeline_telemetry::now_rfc3339(),
                 kind: "worker_slot".into(),

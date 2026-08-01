@@ -29,24 +29,56 @@ pub fn build_director_system_prompt(
         WorkflowPath::FullAgent => "full_agent",
         WorkflowPath::KeywordPs => "keyword_ps",
     };
+    let creative = describe_director_params(params);
     format!(
         r#"You are a visual director for AI image generation.
 User input: {user_input}
-Creative factors (0.0-1.0):
-- divergence (exploratory vs concrete): {divergence:.2}
-- specificity: {specificity:.2}
-- mood (emotional atmosphere): {mood:.2}
-- technical (technical detail): {technical:.2}
+
+Creative direction (MUST strongly influence the final English image prompt):
+{creative}
 
 Mode: {mode}
 If full_agent: respond ONLY with JSON {{"prompt":"english image prompt","style_notes":"brief notes"}}
 If keyword_ps: respond ONLY with JSON {{"keywords":["kw1","kw2","kw3"],"user_intent":"short intent"}}
-Use 2-4 keywords for keyword_ps. Prompts must be in English."#,
+Use 2-4 keywords for keyword_ps. Prompts must be in English. Reflect the creative direction above explicitly in the prompt."#,
         user_input = user_input.trim(),
-        divergence = params.divergence,
-        specificity = params.specificity,
-        mood = params.mood,
-        technical = params.technical,
+        creative = creative,
+        mode = mode,
+    )
+}
+
+fn describe_director_params(params: &DirectorParams) -> String {
+    let divergence = if params.divergence < 0.35 {
+        "concrete, literal interpretation"
+    } else if params.divergence > 0.65 {
+        "exploratory, imaginative, metaphorical interpretation"
+    } else {
+        "balanced concrete vs exploratory"
+    };
+    let mood = if params.mood < 0.35 {
+        "technical, neutral emotional tone"
+    } else if params.mood > 0.65 {
+        "strong emotional atmosphere and mood"
+    } else {
+        "moderate emotional atmosphere"
+    };
+    let specificity = if params.specificity < 0.35 {
+        "loose, open-ended scene description"
+    } else if params.specificity > 0.65 {
+        "highly specific scene and subject details"
+    } else {
+        "moderately specific details"
+    };
+    let technical = if params.technical < 0.35 {
+        "prioritize artistic mood over technical specs"
+    } else if params.technical > 0.65 {
+        "include camera, lens, and technical photography details"
+    } else {
+        "some technical detail"
+    };
+    format!(
+        "- interpretation: {divergence}\n- emotional mood: {mood}\n- specificity: {specificity}\n- technical detail: {technical}\n(raw factors: divergence={:.2}, mood={:.2}, specificity={:.2}, technical={:.2})",
+        params.divergence, params.mood, params.specificity, params.technical
     )
 }
 
@@ -54,15 +86,16 @@ pub fn build_image_prompt(
     workflow: WorkflowPath,
     director: &DirectorOutput,
     ps: &PsParams,
-    ps_enabled: bool,
+    prompt_enhance: bool,
 ) -> (String, bool) {
     match (workflow, director) {
         (WorkflowPath::FullAgent, DirectorOutput::FullAgent(out)) => {
             let mut prompt = out.prompt.clone();
-            if ps_enabled {
-                prompt.push_str(&format_ps_suffix(ps));
+            if let Some(notes) = out.style_notes.as_deref().filter(|s| !s.trim().is_empty()) {
+                prompt.push_str(&format!(" Style notes: {notes}."));
             }
-            (prompt, ps_enabled)
+            prompt.push_str(&format_render_suffix(ps));
+            (prompt, prompt_enhance)
         }
         (WorkflowPath::KeywordPs, DirectorOutput::KeywordPs(out)) => {
             let keywords = out.keywords.join(", ");
@@ -71,20 +104,40 @@ pub fn build_image_prompt(
                 out.user_intent.trim(),
                 keywords
             );
-            prompt.push_str(&format_ps_suffix(ps));
+            prompt.push_str(&format_render_suffix(ps));
             (prompt, true)
         }
         _ => (
-            "A beautiful cinematic scene".to_string(),
-            ps_enabled,
+            format!("A beautiful cinematic scene{}", format_render_suffix(ps)),
+            prompt_enhance,
         ),
     }
 }
 
-fn format_ps_suffix(ps: &PsParams) -> String {
+fn format_render_suffix(ps: &PsParams) -> String {
+    let composition = if ps.detail_level < 0.35 {
+        "minimalist composition, abundant negative space, uncluttered scene, avoid plain empty white backdrop unless product shot explicitly requires it"
+    } else if ps.detail_level > 0.65 {
+        "rich intricate details, dense textures, complex visual elements"
+    } else {
+        "balanced detail density"
+    };
+    let lighting = if ps.lighting_drama < 0.35 {
+        "soft even natural lighting, low contrast"
+    } else if ps.lighting_drama > 0.65 {
+        "dramatic cinematic lighting, strong contrast, chiaroscuro, directional key light"
+    } else {
+        "moderate contrast lighting"
+    };
+    format!(" Visual style: {composition}. Lighting: {lighting}.")
+}
+
+pub fn append_polish_intensity(prompt: &str, factor: f32) -> String {
+    if factor <= 0.01 {
+        return prompt.to_string();
+    }
     format!(
-        " [style modifiers: detail={:.2}, lighting={:.2}]",
-        ps.detail_level, ps.lighting_drama
+        "{prompt}\n[Prompt polish intensity: {factor:.2} — higher values request stronger model-side refinement]"
     )
 }
 
@@ -191,6 +244,25 @@ fn parse_director_json(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn full_agent_always_applies_render_suffix() {
+        let out = DirectorOutput::FullAgent(DirectorFullAgentOutput {
+            prompt: "a red apple".into(),
+            style_notes: None,
+        });
+        let (prompt, _) = build_image_prompt(
+            WorkflowPath::FullAgent,
+            &out,
+            &PsParams {
+                detail_level: 0.11,
+                lighting_drama: 0.89,
+            },
+            false,
+        );
+        assert!(prompt.contains("dramatic cinematic lighting"));
+        assert!(prompt.contains("minimalist composition"));
+    }
 
     #[test]
     fn keyword_ps_forces_enhance() {

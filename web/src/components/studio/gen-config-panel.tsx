@@ -1,5 +1,7 @@
 "use client";
 
+import { ActorCountPicker } from "@/components/studio/actor-count-picker";
+import { StylePresetPicker } from "@/components/studio/style-preset-picker";
 import { Loader2, Sparkles } from "lucide-react";
 import { FactorPlane } from "@/components/factor-plane";
 import { Button } from "@/components/ui/button";
@@ -15,9 +17,6 @@ import {
   type ImageQuality,
 } from "@/lib/gen-config";
 import { IMAGE_ENGINES, TEXT_MODELS, textModelLabel, type TextModelId } from "@/lib/models";
-import { STYLE_PRESETS } from "@/lib/presets";
-
-const MAX_ACTOR_IMAGE_COUNT = 40;
 
 type Props = {
   prompt: string;
@@ -34,9 +33,7 @@ type Props = {
   onActorImageCountChange: (id: TextModelId, count: number) => void;
   imageEngine: "chatgpt" | "grok";
   onImageEngineChange: (v: "chatgpt" | "grok") => void;
-  enhanceEnabled: boolean;
-  enhanceLocked: boolean;
-  onEnhanceChange: (v: boolean) => void;
+  polishLocked: boolean;
   directorFactors: FactorPoint;
   onDirectorFactorsChange: (v: FactorPoint) => void;
   renderFactors: FactorPoint;
@@ -45,6 +42,9 @@ type Props = {
   onGenConfigChange: (v: GenConfig) => void;
   activeAspect: string;
   onAspectChange: (id: string, w: number, h: number) => void;
+  activeStylePreset: string;
+  onStylePresetChange: (name: string, director: FactorPoint, render: FactorPoint, promptHint: string) => void;
+  queueHint: string;
   busy: boolean;
   stageLabel: string;
   progress: number;
@@ -68,9 +68,7 @@ export function GenConfigPanel(props: Props) {
     onActorImageCountChange,
     imageEngine,
     onImageEngineChange,
-    enhanceEnabled,
-    enhanceLocked,
-    onEnhanceChange,
+    polishLocked,
     directorFactors,
     onDirectorFactorsChange,
     renderFactors,
@@ -79,6 +77,9 @@ export function GenConfigPanel(props: Props) {
     onGenConfigChange,
     activeAspect,
     onAspectChange,
+    activeStylePreset,
+    onStylePresetChange,
+    queueHint,
     busy,
     stageLabel,
     progress,
@@ -137,18 +138,10 @@ export function GenConfigPanel(props: Props) {
             {activeActors.map((actorId) => (
               <div key={actorId} className="flex items-center gap-2 rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2">
                 <span className="w-16 shrink-0 text-xs font-medium text-zinc-700">{textModelLabel(actorId)}</span>
-                <div className="flex flex-wrap gap-1">
-                  {Array.from({ length: MAX_ACTOR_IMAGE_COUNT }, (_, i) => i + 1).map((n) => (
-                    <ChoiceButton
-                      key={n}
-                      variant="pill"
-                      active={(actorImageCounts[actorId] ?? 1) === n}
-                      onClick={() => onActorImageCountChange(actorId, n)}
-                    >
-                      {n}
-                    </ChoiceButton>
-                  ))}
-                </div>
+                <ActorCountPicker
+                  value={actorImageCounts[actorId] ?? 1}
+                  onChange={(n) => onActorImageCountChange(actorId, n)}
+                />
               </div>
             ))}
           </div>
@@ -156,10 +149,31 @@ export function GenConfigPanel(props: Props) {
 
         <Segment label="绘图引擎" value={imageEngine} options={IMAGE_ENGINES.map((e) => ({ value: e.id, label: e.label }))} onChange={(v) => onImageEngineChange(v as typeof imageEngine)} />
 
-        <label className="flex items-center gap-2 text-sm text-zinc-600">
-          <input type="checkbox" checked={enhanceLocked ? true : enhanceEnabled} disabled={enhanceLocked} onChange={(e) => onEnhanceChange(e.target.checked)} />
-          智能润色{enhanceLocked ? "（风格锚点自动开启）" : ""}
-        </label>
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <Label>润色因子</Label>
+            <span className="text-xs tabular-nums text-zinc-500">
+              {(polishLocked ? 1 : genConfig.polish_factor).toFixed(2)}
+            </span>
+          </div>
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.01}
+            disabled={polishLocked}
+            value={polishLocked ? 1 : genConfig.polish_factor}
+            onChange={(e) =>
+              onGenConfigChange({ ...genConfig, polish_factor: Number(e.target.value) })
+            }
+            className="w-full accent-violet-600"
+          />
+          <div className="flex justify-between text-[10px] text-zinc-400">
+            <span>原样</span>
+            <span>强润色</span>
+          </div>
+          {polishLocked ? <p className="text-[10px] text-zinc-500">风格锚点工作流自动拉满润色</p> : null}
+        </div>
 
         <div className="space-y-2">
           <Label>质量</Label>
@@ -244,23 +258,11 @@ export function GenConfigPanel(props: Props) {
           />
         </label>
 
-        <div className="space-y-2">
-          <Label>风格预设</Label>
-          <div className="flex flex-wrap gap-1.5">
-            {STYLE_PRESETS.map((p) => (
-              <ChoiceButton
-                key={p.name}
-                variant="chip"
-                onClick={() => {
-                  onDirectorFactorsChange(p.director);
-                  onRenderFactorsChange(p.render);
-                }}
-              >
-                {p.name}
-              </ChoiceButton>
-            ))}
-          </div>
-        </div>
+        <StylePresetPicker
+          activeStylePreset={activeStylePreset}
+          defaultExpanded={false}
+          onSelect={onStylePresetChange}
+        />
 
         <div className="grid gap-4 sm:grid-cols-2">
           <FactorPlane
@@ -277,7 +279,8 @@ export function GenConfigPanel(props: Props) {
           />
         </div>
 
-        {error && <p className="text-sm text-red-600">{error}</p>}
+        {queueHint ? <p className="text-sm text-amber-700">{queueHint}</p> : null}
+        {error ? <p className="text-sm text-red-600">{error}</p> : null}
       </div>
 
       <div className="border-t border-zinc-200 p-4">

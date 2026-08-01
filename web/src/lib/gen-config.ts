@@ -7,6 +7,7 @@ export type GenConfig = {
   count: number;
   transparent_bg: boolean;
   align_16: boolean;
+  polish_factor: number;
 };
 
 export const DEFAULT_GEN_CONFIG: GenConfig = {
@@ -16,6 +17,7 @@ export const DEFAULT_GEN_CONFIG: GenConfig = {
   count: 1,
   transparent_bg: false,
   align_16: true,
+  polish_factor: 0,
 };
 
 export type AspectPreset = {
@@ -55,4 +57,9 @@ export function sizeString(cfg: GenConfig): string {
   const w = cfg.align_16 ? snap16(cfg.width) : cfg.width;
   const h = cfg.align_16 ? snap16(cfg.height) : cfg.height;
   return `${w}x${h}`;
+}
+
+export function snappedGenConfig(cfg: GenConfig): GenConfig {
+  const [w, h] = sizeString(cfg).split("x").map(Number);
+  return { ...cfg, width: w, height: h };
 }

@@ -26,6 +26,17 @@ export function isUnlimitedImageQuotaAccount(account: Pick<Account, "type">) {
   return type === "pro" || type === "prolite";
 }
 
+export function isManualSchedulingEnabled(account: Pick<Account, "panda_receive_state">) {
+  const receive = String(account.panda_receive_state ?? "").trim().toLowerCase();
+  if (receive === "rejected" || receive === "identity_isolated") return false;
+  return (
+    !receive ||
+    receive === "verified_ready" ||
+    receive === "verified" ||
+    receive === "local_verified"
+  );
+}
+
 export function accountImageQuotaState(account: Account): ImageQuotaState {
   const state = String(account.image_quota_state || "").trim().toLowerCase();
   if (state in QUOTA_STATE_LABEL) return state as ImageQuotaState;
@@ -43,10 +54,11 @@ export function formatAccountQuotaValue(account: Account) {
 }
 
 export function accountQuotaBadgeVariant(account: Account): "success" | "info" | "warning" | "secondary" | "danger" {
+  const inSchedule = isManualSchedulingEnabled(account) && account.status === "正常";
+  if (inSchedule) return "success";
   const state = accountImageQuotaState(account);
-  if (state === "ready") return "success";
-  if (state === "unverified" || state === "refresh_pending") return "warning";
   if (state === "unlimited") return "info";
+  if (state === "unverified" || state === "refresh_pending") return "warning";
   return "secondary";
 }
 

@@ -30,6 +30,7 @@ tower-http = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tnexus-accounts-db = { workspace = true }
+tnexus-domain = { path = "../tnexus-domain" }
 uuid = { workspace = true }
 hex = { workspace = true }
 hmac = "0.12"

@@ -425,7 +425,16 @@ async fn run_upstream_image(
     account: &PinAccount,
     prompt: String,
     model: String,
+    size: String,
+    quality: Option<String>,
+    transparent_bg: bool,
 ) -> Result<(helper_client::BridgeOk, upstream::ImageRunMetrics), anyhow::Error> {
+    let prompt = tnexus_domain::append_image_generation_hints(
+        &prompt,
+        &size,
+        quality.as_deref().unwrap_or("auto"),
+        transparent_bg,
+    );
     upstream_face::run_image(account, prompt, model)
         .await
         .map(|(bytes, metrics)| {
@@ -829,8 +838,15 @@ async fn image_generations(
         used_account = cand.clone();
         if st.data_plane == DataPlane::Upstream {
             info!(email=%cand.email, attempt=try_no + 1, max_attempts, "upstream image attempt");
-            let attempt_result =
-                run_upstream_image(cand, req.prompt.clone(), req.model.clone()).await;
+            let attempt_result = run_upstream_image(
+                cand,
+                req.prompt.clone(),
+                req.model.clone(),
+                req.size.clone(),
+                req.quality.clone(),
+                req.transparent_bg(),
+            )
+            .await;
             match attempt_result {
                 Ok((bridge, metrics)) if bridge.ok => {
                     upstream_metrics = Some(metrics);
