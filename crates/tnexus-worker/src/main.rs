@@ -276,6 +276,29 @@ async fn process_job(
         );
     }
 
+    for (idx, generated) in generated_list.iter().enumerate() {
+        if let Some(pipeline) = &generated.pipeline {
+            let email = pipeline
+                .get("account_email")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            record_usage_event(email, "default", "images_api", true);
+            pipeline_telemetry::append_event(&pipeline_telemetry::PipelineEvent {
+                ts: pipeline_telemetry::now_rfc3339(),
+                kind: "worker_slot".into(),
+                email: email.to_string(),
+                job_id: Some(job_id.to_string()),
+                slot_index: Some(idx as i32),
+                ok: true,
+                quota_before: pipeline.get("quota_before").and_then(|v| v.as_i64()),
+                quota_after: pipeline.get("quota_after").and_then(|v| v.as_i64()),
+                timings_ms: pipeline.get("timings_ms").cloned(),
+                bytes: pipeline.get("bytes").cloned(),
+                extra: None,
+            });
+        }
+    }
+
     publish_event(redis, job_id, JobStatus::Uploading, 85, None, None).await?;
     set_status(pool, job_id, JobStatus::Uploading, None).await?;
 
