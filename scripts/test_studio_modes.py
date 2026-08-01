@@ -14,6 +14,8 @@ PROMPT = "a blue sphere on gray background, minimal product photo"
 def preview_ok(preview: str | None) -> tuple[bool, int]:
     if not preview:
         return False, 0
+    if preview.startswith("/"):
+        preview = f"{API}{preview}"
     if preview.startswith("data:image/"):
         comma = preview.find(",")
         if comma < 0:

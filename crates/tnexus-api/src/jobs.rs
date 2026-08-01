@@ -227,9 +227,22 @@ pub async fn result_to_view(state: &AppState, r: JobResultRecord) -> Result<JobR
         .filter(|s| !s.is_empty())
         .cloned()
     {
-        let ephemeral_gateway = url.contains("/v1/images/assets/");
-        if has_persisted || !ephemeral_gateway {
-            let keywords = r.keywords.and_then(|v| serde_json::from_value(v).ok());
+        let keywords = r.keywords.and_then(|v| serde_json::from_value(v).ok());
+        if url.contains("/v1/images/assets/") {
+            return Ok(JobResultView {
+                id: r.id,
+                provider: r.provider,
+                preview_url: Some(thumb_api_url(r.id, 512)),
+                download_url: Some(url),
+                thumb_url: Some(thumb_api_url(r.id, 240)),
+                preview_b64: None,
+                b64_json: None,
+                agent_prompt: r.agent_prompt,
+                revised_prompt: r.revised_prompt,
+                keywords,
+            });
+        }
+        if has_persisted {
             let thumb = thumb_api_url(r.id, 512);
             return Ok(JobResultView {
                 id: r.id,
@@ -244,6 +257,18 @@ pub async fn result_to_view(state: &AppState, r: JobResultRecord) -> Result<JobR
                 keywords,
             });
         }
+        return Ok(JobResultView {
+            id: r.id,
+            provider: r.provider,
+            preview_url: Some(url.clone()),
+            download_url: Some(url.clone()),
+            thumb_url: Some(url),
+            preview_b64: None,
+            b64_json: None,
+            agent_prompt: r.agent_prompt,
+            revised_prompt: r.revised_prompt,
+            keywords,
+        });
     }
     let preview_url = if let (Some(s), Some(key)) = (storage, &r.r2_key_preview) {
         Some(s.presign_get(key, state.config.presign_ttl_secs, false).await?)

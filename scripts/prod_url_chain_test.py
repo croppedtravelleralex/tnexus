@@ -11,6 +11,12 @@ API = "https://tnexus.relai.asia"
 HTTPS_PREFIX = "https://tnexus.relai.asia/"
 
 
+def resolve_preview(preview: str) -> str:
+    if preview.startswith("/"):
+        return f"{API}{preview}"
+    return preview
+
+
 def preview_bytes(preview: str) -> int:
     if preview.startswith("data:"):
         comma = preview.find(",")
