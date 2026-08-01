@@ -142,6 +142,29 @@ pub fn image_generation_url_response(url: &str) -> Value {
     })
 }
 
+/// OpenAI-compatible image response with TNexus pipeline telemetry extension.
+pub fn image_generation_response_with_pipeline(data: Value, pipeline: Value) -> Value {
+    json!({
+        "created": chrono_secs(),
+        "data": data,
+        "_tnexus_pipeline": pipeline,
+    })
+}
+
+pub fn image_generation_url_response_with_pipeline(url: &str, pipeline: Value) -> Value {
+    image_generation_response_with_pipeline(
+        json!([{ "url": url }]),
+        pipeline,
+    )
+}
+
+pub fn image_generation_b64_response_with_pipeline(b64: &str, pipeline: Value) -> Value {
+    image_generation_response_with_pipeline(
+        json!([{ "b64_json": b64 }]),
+        pipeline,
+    )
+}
+
 fn chrono_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

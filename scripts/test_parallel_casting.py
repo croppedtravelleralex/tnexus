@@ -76,6 +76,14 @@ def run_case(slots: int, opener) -> int:
 
     results = detail.get("results") or []
     timings = detail.get("job", {}).get("phase_timings_ms") or detail.get("phase_timings_ms") or {}
+    if timings:
+        print(f"phase_timings keys={list(timings.keys())}")
+        bw = timings.get("bandwidth")
+        lat = timings.get("latency_percentiles_ms")
+        if bw:
+            print(f"  bandwidth={bw}")
+        if lat:
+            print(f"  latency_percentiles_ms={lat}")
     per_slot = wall / max(len(results), 1)
     print(f"wall_clock={wall:.1f}s per_slot_avg={per_slot:.1f}s phase_timings={timings}")
     print(f"results={len(results)}")

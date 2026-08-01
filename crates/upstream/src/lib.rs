@@ -3,6 +3,7 @@
 //!
 //! Phase 1 scope: TLS client, PoW, Turnstile VM, SSE parsing, chat-requirements.
 
+pub mod image_metrics;
 pub mod account;
 pub mod conversation;
 pub mod estuary;
@@ -16,6 +17,7 @@ pub mod sse;
 pub mod tls;
 pub mod turnstile;
 
+pub use image_metrics::ImageRunMetrics;
 pub use account::PinAccount;
 pub use requirements::{ChatRequirements, RequirementsClient};
 pub use openai_stream::OpenAiSseStream;

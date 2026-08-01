@@ -1,3 +1,4 @@
+mod pipeline_telemetry;
 mod upstream;
 
 use anyhow::{Context, Result};
@@ -256,6 +257,17 @@ async fn process_job(
         serde_json::json!(generate_start.elapsed().as_millis() as u64),
     );
 
+    let slot_metrics = collect_slot_pipeline_metrics(&generated_list, job_id);
+    if !slot_metrics.is_empty() {
+        phase_timings.insert("slots".into(), serde_json::Value::Array(slot_metrics.clone()));
+    }
+    if let Some(bw) = aggregate_bandwidth(&slot_metrics) {
+        phase_timings.insert("bandwidth".into(), bw);
+    }
+    if let Some(lat) = aggregate_latency_percentiles(&slot_metrics) {
+        phase_timings.insert("latency_percentiles_ms".into(), lat);
+    }
+
     if generated_list.len() != persist_plan.len() {
         anyhow::bail!(
             "generated {} images but expected {}",
@@ -293,7 +305,28 @@ async fn process_job(
         "download_ms".into(),
         serde_json::json!(upload_start.elapsed().as_millis() as u64),
     );
-    record_usage_event("studio@local", "default", "images_api", true);
+    for (idx, generated) in generated_list.iter().enumerate() {
+        if let Some(pipeline) = &generated.pipeline {
+            let email = pipeline
+                .get("account_email")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            record_usage_event(email, "default", "images_api", true);
+            pipeline_telemetry::append_event(&pipeline_telemetry::PipelineEvent {
+                ts: pipeline_telemetry::now_rfc3339(),
+                kind: "worker_slot".into(),
+                email: email.to_string(),
+                job_id: Some(job_id.to_string()),
+                slot_index: Some(idx as i32),
+                ok: true,
+                quota_before: pipeline.get("quota_before").and_then(|v| v.as_i64()),
+                quota_after: pipeline.get("quota_after").and_then(|v| v.as_i64()),
+                timings_ms: pipeline.get("timings_ms").cloned(),
+                bytes: pipeline.get("bytes").cloned(),
+                extra: None,
+            });
+        }
+    }
 
     phase_timings.insert(
         "wall_clock_ms".into(),
@@ -438,6 +471,89 @@ async fn save_phase_timings(
         .execute(pool)
         .await?;
     Ok(())
+}
+
+fn collect_slot_pipeline_metrics(
+    generated_list: &[upstream::GeneratedImage],
+    job_id: Uuid,
+) -> Vec<serde_json::Value> {
+    generated_list
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, g)| {
+            g.pipeline.as_ref().map(|p| {
+                let mut slot = p.clone();
+                if let Some(obj) = slot.as_object_mut() {
+                    obj.insert("slot_index".into(), serde_json::json!(idx));
+                    obj.insert("job_id".into(), serde_json::json!(job_id.to_string()));
+                }
+                slot
+            })
+        })
+        .collect()
+}
+
+fn aggregate_bandwidth(slots: &[serde_json::Value]) -> Option<serde_json::Value> {
+    let mut sse_in: u64 = 0;
+    let mut image_download: u64 = 0;
+    let mut response_out: u64 = 0;
+    for slot in slots {
+        if let Some(bytes) = slot.get("bytes") {
+            sse_in += bytes.get("sse_in").and_then(|v| v.as_u64()).unwrap_or(0);
+            image_download += bytes
+                .get("image_download")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            response_out += bytes
+                .get("response_out")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+        }
+    }
+    if sse_in == 0 && image_download == 0 && response_out == 0 {
+        return None;
+    }
+    Some(serde_json::json!({
+        "sse_in": sse_in,
+        "image_download": image_download,
+        "response_out": response_out,
+        "total": sse_in + image_download + response_out,
+    }))
+}
+
+fn aggregate_latency_percentiles(slots: &[serde_json::Value]) -> Option<serde_json::Value> {
+    let mut walls: Vec<u64> = slots
+        .iter()
+        .filter_map(|s| {
+            s.get("timings_ms")
+                .and_then(|t| t.get("gateway_wall_ms"))
+                .or_else(|| s.get("timings_ms").and_then(|t| t.get("upstream_wall_ms")))
+                .and_then(|v| v.as_u64())
+        })
+        .collect();
+    if walls.is_empty() {
+        return None;
+    }
+    walls.sort_unstable();
+    let n = walls.len();
+    let p = |pct: f64| -> u64 {
+        if n == 1 {
+            return walls[0];
+        }
+        let idx = pct * (n as f64 - 1.0);
+        let lo = idx.floor() as usize;
+        let hi = idx.ceil() as usize;
+        let frac = idx - lo as f64;
+        (walls[lo] as f64 + frac * (walls[hi] as f64 - walls[lo] as f64)).round() as u64
+    };
+    Some(serde_json::json!({
+        "p50": p(0.50),
+        "p95": p(0.95),
+        "p99": p(0.99),
+        "min": walls[0],
+        "max": walls[n - 1],
+        "samples": n,
+    }))
 }
 
 fn record_usage_event(email: &str, binding: &str, metric: &str, ok: bool) {

@@ -34,9 +34,9 @@ pub async fn run_image(
     account: &HelperPinAccount,
     prompt: String,
     model: String,
-) -> Result<Vec<u8>> {
+) -> Result<(Vec<u8>, upstream::ImageRunMetrics)> {
     let mut runtime = UpstreamRuntime::new(to_upstream(account))?;
-    runtime.run_image(&prompt, &model).await
+    runtime.run_image_with_metrics(&prompt, &model).await
 }
 
 #[cfg(test)]

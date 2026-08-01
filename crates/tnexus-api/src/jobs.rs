@@ -46,7 +46,7 @@ pub async fn create_job(
 pub async fn get_job(state: &AppState, job_id: Uuid, user_id: Option<Uuid>) -> Result<Option<JobRecord>> {
     let row = if let Some(uid) = user_id {
         sqlx::query(
-            "SELECT id, user_id, mode, workflow_path, ps_enabled, provider, director_models, gen_config, director_factors, ps_factors, input_prompt, status, error_message, created_at, updated_at FROM jobs WHERE id = $1 AND user_id = $2",
+            "SELECT id, user_id, mode, workflow_path, ps_enabled, provider, director_models, gen_config, director_factors, ps_factors, input_prompt, status, error_message, phase_timings_ms, created_at, updated_at FROM jobs WHERE id = $1 AND user_id = $2",
         )
         .bind(job_id)
         .bind(uid)
@@ -54,7 +54,7 @@ pub async fn get_job(state: &AppState, job_id: Uuid, user_id: Option<Uuid>) -> R
         .await?
     } else {
         sqlx::query(
-            "SELECT id, user_id, mode, workflow_path, ps_enabled, provider, director_models, gen_config, director_factors, ps_factors, input_prompt, status, error_message, created_at, updated_at FROM jobs WHERE id = $1",
+            "SELECT id, user_id, mode, workflow_path, ps_enabled, provider, director_models, gen_config, director_factors, ps_factors, input_prompt, status, error_message, phase_timings_ms, created_at, updated_at FROM jobs WHERE id = $1",
         )
         .bind(job_id)
         .fetch_optional(&state.pool)
@@ -65,7 +65,7 @@ pub async fn get_job(state: &AppState, job_id: Uuid, user_id: Option<Uuid>) -> R
 
 pub async fn list_jobs(state: &AppState, user_id: Uuid, limit: i64) -> Result<Vec<JobRecord>> {
     let rows = sqlx::query(
-        "SELECT id, user_id, mode, workflow_path, ps_enabled, provider, director_models, gen_config, director_factors, ps_factors, input_prompt, status, error_message, created_at, updated_at FROM jobs WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2",
+        "SELECT id, user_id, mode, workflow_path, ps_enabled, provider, director_models, gen_config, director_factors, ps_factors, input_prompt, status, error_message, phase_timings_ms, created_at, updated_at FROM jobs WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2",
     )
     .bind(user_id)
     .bind(limit)
@@ -333,6 +333,7 @@ fn row_to_job(row: sqlx::postgres::PgRow) -> Result<JobRecord> {
         input_prompt: row.get("input_prompt"),
         status: row.get("status"),
         error_message: row.get("error_message"),
+        phase_timings_ms: row.get("phase_timings_ms"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     })

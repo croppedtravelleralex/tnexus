@@ -47,6 +47,8 @@ services:
     restart: unless-stopped
     env_file: /opt/tnexus/.env
     network_mode: host
+    volumes:
+      - /opt/tnexus/data/pool:/data/pool:rw
     depends_on:
       - postgres
       - redis

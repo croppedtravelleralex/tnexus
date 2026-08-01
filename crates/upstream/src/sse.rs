@@ -484,6 +484,8 @@ pub enum SseConsumeMode {
 #[derive(Debug)]
 pub struct ConsumedSse {
     pub parser: SseParser,
+    /// Raw SSE body bytes read from the wire.
+    pub bytes_in: u64,
 }
 
 /// Consume an upstream SSE response until `text_ready` or `image_ready` (`upstream-probe`).
@@ -494,6 +496,7 @@ pub async fn consume_sse_until(
 ) -> Result<ConsumedSse> {
     let mut parser = SseParser::new();
     let mut pending = Vec::new();
+    let mut bytes_in: u64 = 0;
     let started = Instant::now();
     let deadline = started + timeout;
     let mut stream = resp.into_data_stream();
@@ -503,17 +506,18 @@ pub async fn consume_sse_until(
             tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), stream.next()).await;
         match next {
             Ok(Some(Ok(chunk))) => {
+                bytes_in += chunk.len() as u64;
                 for payload in split_sse_data_lines(&chunk, &mut pending) {
                     if let Some(event) = parser.feed_line(&payload) {
                         match mode {
                             SseConsumeMode::Text => {
                                 if parser.text_ready().is_some() {
-                                    return Ok(ConsumedSse { parser });
+                                    return Ok(ConsumedSse { parser, bytes_in });
                                 }
                             }
                             SseConsumeMode::Image => {
                                 if parser.image_ready().is_some() {
-                                    return Ok(ConsumedSse { parser });
+                                    return Ok(ConsumedSse { parser, bytes_in });
                                 }
                             }
                         }
@@ -532,13 +536,13 @@ pub async fn consume_sse_until(
     match mode {
         SseConsumeMode::Text => {
             if parser.text_ready().is_some() {
-                return Ok(ConsumedSse { parser });
+                return Ok(ConsumedSse { parser, bytes_in });
             }
             bail!("sse ended before text ready predicate");
         }
         SseConsumeMode::Image => {
             if parser.image_ready().is_some() {
-                return Ok(ConsumedSse { parser });
+                return Ok(ConsumedSse { parser, bytes_in });
             }
             bail!("sse ended before image file_id predicate");
         }

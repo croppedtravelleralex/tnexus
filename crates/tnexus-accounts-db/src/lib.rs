@@ -223,6 +223,61 @@ impl AccountsDb {
             Ok(())
         })
     }
+
+    /// Decrement local `quota` by `amount` (floored at 0). Returns `(before, after)`.
+    pub fn decrement_quota(&self, email: &str, amount: i64) -> Result<Option<(i64, i64)>> {
+        let key = email.trim().to_lowercase();
+        if key.is_empty() || amount <= 0 {
+            return Ok(None);
+        }
+        self.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let mut out = None;
+            {
+                let mut stmt = tx.prepare("SELECT id, access_token, data FROM accounts")?;
+                let rows = stmt.query_map([], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?;
+                for row in rows {
+                    let (id, token, data) = row?;
+                    let mut value = row_to_value(&token, &data)?;
+                    let em = value
+                        .get("email")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_lowercase();
+                    if em != key {
+                        continue;
+                    }
+                    if value
+                        .get("image_quota_unknown")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false)
+                    {
+                        break;
+                    }
+                    let before = value.get("quota").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let after = (before - amount).max(0);
+                    if let Some(obj) = value.as_object_mut() {
+                        obj.insert("quota".into(), json!(after));
+                    }
+                    let data_str = normalize_data_json(&value, &token)?;
+                    tx.execute(
+                        "UPDATE accounts SET data = ?1 WHERE id = ?2",
+                        params![data_str, id],
+                    )?;
+                    out = Some((before, after));
+                    break;
+                }
+            }
+            tx.commit()?;
+            Ok(out)
+        })
+    }
 }
 
 fn access_token_from_value(value: &Value) -> Result<String> {
@@ -313,6 +368,36 @@ mod tests {
         let items = db.list_account_values().unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].get("image_inflight").and_then(|v| v.as_i64()), Some(1));
+    }
+
+    #[test]
+    fn decrement_quota_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("tnexus-accounts-db-{}", uuid()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("accounts.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE accounts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    access_token TEXT NOT NULL UNIQUE,
+                    data TEXT NOT NULL
+                );",
+            )
+            .unwrap();
+        }
+        let db = AccountsDb::open(&path).unwrap();
+        db.upsert_account_value(&json!({
+            "email": "quota@example.com",
+            "access_token": "tok-q",
+            "status": "正常",
+            "quota": 5
+        }))
+        .unwrap();
+        let changed = db.decrement_quota("quota@example.com", 1).unwrap();
+        assert_eq!(changed, Some((5, 4)));
+        let items = db.list_account_values().unwrap();
+        assert_eq!(items[0].get("quota").and_then(|v| v.as_i64()), Some(4));
     }
 
     fn uuid() -> String {

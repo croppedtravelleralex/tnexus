@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use tracing::info;
@@ -6,6 +6,7 @@ use tracing::info;
 use crate::account::PinAccount;
 use crate::conversation::{build_text_chat_body, DEFAULT_TIMEZONE};
 use crate::estuary::{download_image_bytes, get_attachment_download_url, get_file_download_url};
+use crate::image_metrics::ImageRunMetrics;
 use crate::poll::{poll_image_ready_from_tasks, query_tasks};
 use crate::requirements::{RequirementsClient, BASE_URL};
 use crate::sentinel::build_chat_headers;
@@ -84,15 +85,36 @@ impl UpstreamRuntime {
 
     /// Bootstrap → requirements → image prepare/start → SSE → estuary download.
     pub async fn run_image(&mut self, prompt: &str, model: &str) -> Result<Vec<u8>> {
-        self.client.bootstrap(true).await?;
-        let requirements = self.client.fetch_chat_requirements().await?;
+        self.run_image_with_metrics(prompt, model)
+            .await
+            .map(|(bytes, _)| bytes)
+    }
 
+    pub async fn run_image_with_metrics(
+        &mut self,
+        prompt: &str,
+        model: &str,
+    ) -> Result<(Vec<u8>, ImageRunMetrics)> {
+        let wall_start = Instant::now();
+        let mut metrics = ImageRunMetrics::default();
+
+        let t0 = Instant::now();
+        self.client.bootstrap(true).await?;
+        metrics.bootstrap_ms = t0.elapsed().as_millis() as u64;
+
+        let t0 = Instant::now();
+        let requirements = self.client.fetch_chat_requirements().await?;
+        metrics.requirements_ms = t0.elapsed().as_millis() as u64;
+
+        let t0 = Instant::now();
         let conduit = self
             .client
             .prepare_image_conversation(prompt, model, &requirements)
             .await?;
+        metrics.prepare_ms = t0.elapsed().as_millis() as u64;
         info!(conduit_len = conduit.len(), "image prepare complete");
 
+        let t0 = Instant::now();
         let resp = self
             .client
             .start_image_conversation(prompt, model, &requirements, &conduit)
@@ -100,20 +122,27 @@ impl UpstreamRuntime {
 
         let consumed =
             consume_sse_until(resp, SseConsumeMode::Image, self.image_sse_timeout).await?;
+        metrics.sse_ms = t0.elapsed().as_millis() as u64;
+        metrics.sse_bytes_in = consumed.bytes_in;
+        metrics.sse_events = consumed.parser.event_count() as u32;
         let ready = consumed
             .parser
             .image_ready()
             .context("image SSE ended without file_id")?;
 
         let mut ready_for_download = ready;
+        let t0 = Instant::now();
         let download_url = match self.resolve_image_download_url(&ready_for_download).await {
             Ok(url) => url,
             Err(initial_err) => {
                 if ready_for_download.conversation_id.is_empty() {
+                    metrics.resolve_url_ms = t0.elapsed().as_millis() as u64;
+                    metrics.wall_ms = wall_start.elapsed().as_millis() as u64;
                     return Err(initial_err);
                 }
                 let mut last_err = initial_err;
                 let mut resolved_url = None;
+                let poll_start = Instant::now();
                 for attempt in 0..3 {
                     tokio::time::sleep(Duration::from_millis(1500)).await;
                     let tasks = query_tasks(
@@ -143,14 +172,26 @@ impl UpstreamRuntime {
                         info!(attempt, "tasks poll returned no file_ids");
                     }
                 }
+                metrics.poll_tasks_ms = poll_start.elapsed().as_millis() as u64;
                 match resolved_url {
                     Some(url) => url,
-                    None => return Err(last_err),
+                    None => {
+                        metrics.resolve_url_ms = t0.elapsed().as_millis() as u64;
+                        metrics.wall_ms = wall_start.elapsed().as_millis() as u64;
+                        return Err(last_err);
+                    }
                 }
             }
         };
+        metrics.resolve_url_ms = t0.elapsed().as_millis() as u64;
+
+        let t0 = Instant::now();
         let access_token = self.client.account().access_token.clone();
-        download_image_bytes(self.client.client(), &download_url, &access_token).await
+        let bytes = download_image_bytes(self.client.client(), &download_url, &access_token).await?;
+        metrics.download_ms = t0.elapsed().as_millis() as u64;
+        metrics.image_bytes = bytes.len() as u64;
+        metrics.wall_ms = wall_start.elapsed().as_millis() as u64;
+        Ok((bytes, metrics))
     }
 
     async fn resolve_image_download_url(&self, ready: &ImageSseReady) -> Result<String> {

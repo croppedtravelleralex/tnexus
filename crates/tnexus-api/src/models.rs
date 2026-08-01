@@ -20,6 +20,8 @@ pub struct JobRecord {
     pub input_prompt: String,
     pub status: String,
     pub error_message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_timings_ms: Option<serde_json::Value>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }

@@ -53,6 +53,8 @@ struct ChatMessage {
 #[derive(Debug, Deserialize)]
 struct ImageGenerationResponse {
     data: Vec<ImageDataItem>,
+    #[serde(default)]
+    _tnexus_pipeline: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -73,6 +75,7 @@ pub struct GeneratedImage {
     pub bytes: Option<Vec<u8>>,
     pub source_url: Option<String>,
     pub revised_prompt: Option<String>,
+    pub pipeline: Option<serde_json::Value>,
 }
 
 pub struct SlotGenerateTask {
@@ -219,6 +222,7 @@ impl UpstreamClient {
         }
         let resp: ImageGenerationResponse =
             serde_json::from_str(&text).context("image generation json")?;
+        let pipeline = resp._tnexus_pipeline.clone();
         let item = resp
             .data
             .into_iter()
@@ -236,6 +240,7 @@ impl UpstreamClient {
                     bytes: None,
                     source_url: Some(url.to_string()),
                     revised_prompt: item.revised_prompt,
+                    pipeline,
                 });
             }
             let resp = self
@@ -259,6 +264,7 @@ impl UpstreamClient {
                 bytes: Some(bytes.to_vec()),
                 source_url: Some(url.to_string()),
                 revised_prompt: item.revised_prompt,
+                pipeline,
             });
         }
 
@@ -271,6 +277,7 @@ impl UpstreamClient {
             bytes: Some(bytes),
             source_url: None,
             revised_prompt: item.revised_prompt,
+            pipeline,
         })
     }
 }

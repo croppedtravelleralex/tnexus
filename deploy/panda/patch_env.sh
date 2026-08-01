@@ -23,6 +23,7 @@ ensure_kv TNEXUS_ACCOUNT_OPS_IMAGE ghcr.io/croppedtravelleralex/tnexus-account-o
 ensure_kv ACCOUNTS_DB /gptimage/data/accounts.db
 ensure_kv SCHEDULING_STATE_FILE /data/pool/scheduling_state.json
 ensure_kv USAGE_EVENTS_FILE /data/pool/usage_events.ndjson
+ensure_kv PIPELINE_EVENTS_FILE /data/pool/pipeline_events.ndjson
 ensure_kv ACCOUNT_OPS_BASE http://127.0.0.1:9011
 ensure_kv ACCOUNT_OPS_TOKEN "$TOKEN"
 ensure_kv GPTIMAGE_ROOT /gptimage

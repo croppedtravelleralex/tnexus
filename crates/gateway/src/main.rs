@@ -1,5 +1,6 @@
 //! gptimage-gateway-rs MVP gateway (Rust face).
 
+mod pipeline_telemetry;
 mod scheduling_gate;
 mod accounts_routes;
 mod auth_routes;
@@ -35,9 +36,10 @@ use helper_client::{
     HelperClient, ImageRunRequest, PinAccount, QuotaRefreshRequest, TextRunRequest,
 };
 use protocol::{
-    chat_completion_response, classify_fault, image_generation_response,
-    image_generation_url_response, openai_error, ChatCompletionRequest, ImageEditRequest,
-    ImageGenerationRequest,
+    chat_completion_response, classify_fault, image_generation_b64_response_with_pipeline,
+    image_generation_response, image_generation_url_response,
+    image_generation_url_response_with_pipeline, openai_error, ChatCompletionRequest,
+    ImageEditRequest, ImageGenerationRequest,
 };
 use serde_json::{json, Value};
 use state::AppState;
@@ -423,23 +425,81 @@ async fn run_upstream_image(
     account: &PinAccount,
     prompt: String,
     model: String,
-) -> Result<helper_client::BridgeOk, anyhow::Error> {
+) -> Result<(helper_client::BridgeOk, upstream::ImageRunMetrics), anyhow::Error> {
     upstream_face::run_image(account, prompt, model)
         .await
-        .map(|bytes| {
-            let b64 = BASE64.encode(bytes);
-            helper_client::BridgeOk {
+        .map(|(bytes, metrics)| {
+            let b64 = BASE64.encode(&bytes);
+            let bridge = helper_client::BridgeOk {
                 ok: true,
                 content: None,
                 b64_json: Some(b64),
                 conversation_id: None,
                 fault: None,
                 error: None,
-                elapsed_ms: None,
+                elapsed_ms: Some(metrics.wall_ms),
                 raw: None,
                 quota: None,
-            }
+            };
+            (bridge, metrics)
         })
+}
+
+fn finalize_upstream_image(
+    st: &AppState,
+    email: &str,
+    gateway_wall_ms: u128,
+    upstream: &upstream::ImageRunMetrics,
+    asset_store_ms: u64,
+    response_out_bytes: u64,
+) -> Value {
+    let quota_change = st.scheduling_gate.decrement_quota(email).ok().flatten();
+    let (quota_before, quota_after) = quota_change.unwrap_or((-1, -1));
+    let pipeline = json!({
+        "account_email": email,
+        "quota_before": if quota_before >= 0 { Some(quota_before) } else { None },
+        "quota_after": if quota_after >= 0 { Some(quota_after) } else { None },
+        "timings_ms": {
+            "gateway_wall_ms": gateway_wall_ms,
+            "asset_store_ms": asset_store_ms,
+            "bootstrap_ms": upstream.bootstrap_ms,
+            "requirements_ms": upstream.requirements_ms,
+            "prepare_ms": upstream.prepare_ms,
+            "sse_ms": upstream.sse_ms,
+            "resolve_url_ms": upstream.resolve_url_ms,
+            "poll_tasks_ms": upstream.poll_tasks_ms,
+            "download_ms": upstream.download_ms,
+            "upstream_wall_ms": upstream.wall_ms,
+            "sse_events": upstream.sse_events,
+        },
+        "bytes": {
+            "sse_in": upstream.sse_bytes_in,
+            "image_download": upstream.image_bytes,
+            "response_out": response_out_bytes,
+        },
+    });
+    pipeline_telemetry::append_event(&pipeline_telemetry::PipelineEvent {
+        ts: pipeline_telemetry::now_rfc3339(),
+        kind: "gateway_image".into(),
+        email: email.to_string(),
+        job_id: None,
+        slot_index: None,
+        ok: true,
+        quota_before: if quota_before >= 0 {
+            Some(quota_before)
+        } else {
+            None
+        },
+        quota_after: if quota_after >= 0 {
+            Some(quota_after)
+        } else {
+            None
+        },
+        timings_ms: pipeline.get("timings_ms").cloned(),
+        bytes: pipeline.get("bytes").cloned(),
+        extra: None,
+    });
+    pipeline
 }
 
 async fn quota_refresh(
@@ -759,6 +819,7 @@ async fn image_generations(
     };
     let mut result: Result<helper_client::BridgeOk, anyhow::Error> =
         Err(anyhow::anyhow!("image generation not attempted"));
+    let mut upstream_metrics: Option<upstream::ImageRunMetrics> = None;
     let mut used_account = account.clone();
     let _inflight_guard = st.scheduling_gate.begin_inflight(&used_account.email);
 
@@ -766,42 +827,55 @@ async fn image_generations(
         let i = (start_idx + try_no) % candidates.len();
         let cand = &candidates[i];
         used_account = cand.clone();
-        let attempt_result: Result<helper_client::BridgeOk, anyhow::Error> =
-            if st.data_plane == DataPlane::Upstream {
-                info!(email=%cand.email, attempt=try_no + 1, max_attempts, "upstream image attempt");
-                run_upstream_image(cand, req.prompt.clone(), req.model.clone()).await
-            } else {
-                let bridge_req = ImageRunRequest {
-                    account: cand.clone(),
-                    prompt: req.prompt.clone(),
-                    model: req.model.clone(),
-                    size: req.size.clone(),
-                };
-                st.helper.run_image(&bridge_req).await.map_err(|e| e.into())
+        if st.data_plane == DataPlane::Upstream {
+            info!(email=%cand.email, attempt=try_no + 1, max_attempts, "upstream image attempt");
+            let attempt_result =
+                run_upstream_image(cand, req.prompt.clone(), req.model.clone()).await;
+            match attempt_result {
+                Ok((bridge, metrics)) if bridge.ok => {
+                    upstream_metrics = Some(metrics);
+                    result = Ok(bridge);
+                    break;
+                }
+                Err(e) if is_admin
+                    && upstream_image_retryable(&e)
+                    && try_no + 1 < max_attempts =>
+                {
+                    warn!(
+                        email=%cand.email,
+                        attempt=try_no + 1,
+                        error=%e,
+                        "upstream image failed; retrying next pool account"
+                    );
+                    result = Err(e);
+                    continue;
+                }
+                Ok((bridge, _)) => {
+                    result = Ok(bridge);
+                    break;
+                }
+                Err(e) => {
+                    result = Err(e);
+                    break;
+                }
+            }
+        } else {
+            let bridge_req = ImageRunRequest {
+                account: cand.clone(),
+                prompt: req.prompt.clone(),
+                model: req.model.clone(),
+                size: req.size.clone(),
             };
-
-        match &attempt_result {
-            Ok(r) if r.ok => {
-                result = attempt_result;
-                break;
-            }
-            Err(e) if is_admin
-                && st.data_plane == DataPlane::Upstream
-                && upstream_image_retryable(e)
-                && try_no + 1 < max_attempts =>
-            {
-                warn!(
-                    email=%cand.email,
-                    attempt=try_no + 1,
-                    error=%e,
-                    "upstream image failed; retrying next pool account"
-                );
-                result = attempt_result;
-                continue;
-            }
-            _ => {
-                result = attempt_result;
-                break;
+            let attempt_result = st.helper.run_image(&bridge_req).await.map_err(|e| e.into());
+            match &attempt_result {
+                Ok(r) if r.ok => {
+                    result = attempt_result;
+                    break;
+                }
+                _ => {
+                    result = attempt_result;
+                    break;
+                }
             }
         }
     }
@@ -841,16 +915,33 @@ async fn image_generations(
                         Some("self"),
                     );
                 };
+                let asset_t0 = Instant::now();
                 match build_image_asset_url(&st, &headers, bytes) {
                     Ok(url) => {
+                        let asset_store_ms = asset_t0.elapsed().as_millis() as u64;
+                        let pipeline = upstream_metrics.as_ref().map(|m| {
+                            finalize_upstream_image(
+                                &st,
+                                &account.email,
+                                elapsed_ms,
+                                m,
+                                asset_store_ms,
+                                url.len() as u64,
+                            )
+                        });
                         info!(
                             email=%account.email,
                             elapsed_ms,
                             url_len=url.len(),
+                            quota_after=?pipeline.as_ref().and_then(|p| p.get("quota_after")),
                             "image ok (url)"
                         );
-                        return (StatusCode::OK, Json(image_generation_url_response(&url)))
-                            .into_response();
+                        let body = if let Some(p) = pipeline {
+                            image_generation_url_response_with_pipeline(&url, p)
+                        } else {
+                            image_generation_url_response(&url)
+                        };
+                        return (StatusCode::OK, Json(body)).into_response();
                     }
                     Err(e) => {
                         return err(
@@ -872,13 +963,29 @@ async fn image_generations(
                     Some("self"),
                 );
             }
+            let pipeline = upstream_metrics.as_ref().map(|m| {
+                finalize_upstream_image(
+                    &st,
+                    &account.email,
+                    elapsed_ms,
+                    m,
+                    0,
+                    b64.len() as u64,
+                )
+            });
             info!(
                 email=%account.email,
                 elapsed_ms,
                 b64_len=b64.len(),
+                quota_after=?pipeline.as_ref().and_then(|p| p.get("quota_after")),
                 "image ok"
             );
-            (StatusCode::OK, Json(image_generation_response(&b64))).into_response()
+            let body = if let Some(p) = pipeline {
+                image_generation_b64_response_with_pipeline(&b64, p)
+            } else {
+                image_generation_response(&b64)
+            };
+            (StatusCode::OK, Json(body)).into_response()
         }
         Ok(r) => {
             let fault = r.fault.as_deref();
