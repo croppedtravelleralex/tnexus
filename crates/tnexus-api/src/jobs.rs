@@ -204,6 +204,7 @@ fn result_image_meta(r: &JobResultRecord) -> (Option<i32>, Option<i32>, Option<i
 }
 
 pub async fn result_to_view(state: &AppState, r: JobResultRecord) -> Result<JobResultView> {
+    let (width, height, size_bytes) = result_image_meta(&r);
     let storage = state.storage.as_ref();
     let has_persisted = r
         .inline_preview_b64
@@ -233,7 +234,6 @@ pub async fn result_to_view(state: &AppState, r: JobResultRecord) -> Result<JobR
     {
         let keywords = r.keywords.and_then(|v| serde_json::from_value(v).ok());
         if url.contains("/v1/images/assets/") {
-            let (width, height, size_bytes) = result_image_meta(&r);
             return Ok(JobResultView {
                 id: r.id,
                 provider: r.provider,
@@ -252,7 +252,6 @@ pub async fn result_to_view(state: &AppState, r: JobResultRecord) -> Result<JobR
         }
         if has_persisted {
             let thumb = thumb_api_url(r.id, 512);
-            let (width, height, size_bytes) = result_image_meta(&r);
             return Ok(JobResultView {
                 id: r.id,
                 provider: r.provider,
@@ -269,7 +268,6 @@ pub async fn result_to_view(state: &AppState, r: JobResultRecord) -> Result<JobR
                 size_bytes,
             });
         }
-        let (width, height, size_bytes) = result_image_meta(&r);
         return Ok(JobResultView {
             id: r.id,
             provider: r.provider,
@@ -316,7 +314,6 @@ pub async fn result_to_view(state: &AppState, r: JobResultRecord) -> Result<JobR
         None
     };
     let keywords = r.keywords.and_then(|v| serde_json::from_value(v).ok());
-    let (width, height, size_bytes) = result_image_meta(&r);
     Ok(JobResultView {
         id: r.id,
         provider: r.provider,

@@ -7,6 +7,7 @@ use futures::future::try_join_all;
 use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
 use sqlx::{PgPool, Row};
+use std::io::Cursor;
 use std::time::{Duration, Instant};
 use tnexus_domain::agent::{
     build_director_system_prompt, build_image_prompt, parse_director_response_with_fallback,
@@ -411,7 +412,11 @@ async fn persist_slot(
     let (width, height, size_bytes) = bytes
         .as_ref()
         .map(|b| {
-            let dims = image::image_dimensions_from_memory(b).ok();
+            let dims = image::ImageReader::new(Cursor::new(b.as_slice()))
+                .with_guessed_format()
+                .ok()
+                .and_then(|reader| reader.decode().ok())
+                .map(|img| img.dimensions());
             (
                 dims.map(|(w, _)| w as i32),
                 dims.map(|(_, h)| h as i32),
