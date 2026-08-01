@@ -209,7 +209,7 @@ impl AccountsStore {
             .get("image_quota_unknown")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        let image_quota_state = if is_unlimited_type(out.get("type").and_then(|v| v.as_str())) {
+        let image_quota_state = if Self::is_unlimited_type(out.get("type").and_then(|v| v.as_str())) {
             "unlimited"
         } else if image_quota_unknown {
             "unknown"
