@@ -168,7 +168,7 @@ impl SchedulingGate {
         }
     }
 
-    pub fn decrement_quota(&self, email: &str) -> Result<Option<(i64, i64)>> {
+    pub fn decrement_quota(&self, email: &str) -> anyhow::Result<Option<(i64, i64)>> {
         self.db.decrement_quota(email, 1)
     }
 }
