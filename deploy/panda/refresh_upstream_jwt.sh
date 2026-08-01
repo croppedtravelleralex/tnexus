@@ -40,8 +40,9 @@ if [[ -z "$GW_TOKEN" ]]; then
 fi
 
 tmp=$(mktemp)
-grep -v '^UPSTREAM_API_KEY=' "$ENV_FILE" >"$tmp"
+grep -v '^UPSTREAM_API_KEY=' "$ENV_FILE" | grep -v '^GATEWAY_AUTH_KEY=' >"$tmp"
 printf 'UPSTREAM_API_KEY=%s\n' "$GW_TOKEN" >>"$tmp"
+printf 'GATEWAY_AUTH_KEY=%s\n' "$GW_TOKEN" >>"$tmp"
 mv "$tmp" "$ENV_FILE"
 chmod 600 "$ENV_FILE"
-echo "refreshed UPSTREAM_API_KEY (len=${#GW_TOKEN})"
+echo "refreshed UPSTREAM_API_KEY + GATEWAY_AUTH_KEY (len=${#GW_TOKEN})"
