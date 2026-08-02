@@ -53,7 +53,7 @@ impl AppState {
         let redis_client = redis::Client::open(config.redis_url.as_str())?;
         let redis = ConnectionManager::new(redis_client).await?;
 
-        let image_store = tnexus_storage::ImageStore::from_env().await?;
+        let image_store = tnexus_storage::ImageStore::from_env().await?.map(Arc::new);
 
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(300))
