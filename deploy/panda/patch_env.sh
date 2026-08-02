@@ -30,5 +30,6 @@ ensure_kv GPTIMAGE_ROOT /gptimage
 ensure_kv GATEWAY_BASE http://127.0.0.1:8014
 ensure_kv IMAGE_RESPONSE_FORMAT url
 ensure_kv IMAGE_PARALLEL_CONCURRENCY 0
+ensure_kv IMAGE_STORE_PATH /data/images
 
 echo "env patched (ACCOUNT_OPS_TOKEN set if new)"

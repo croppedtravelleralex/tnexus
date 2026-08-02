@@ -39,7 +39,7 @@ function ImageMetaBadge({
     if (image.width && image.height && image.size_bytes) return;
 
     const url = apiAssetUrl(image.download_url || image.preview_url);
-    if (!url) return;
+    if (!url || url.includes("/v1/images/assets/")) return;
 
     let cancelled = false;
 
@@ -170,6 +170,7 @@ function SuccessTile({
   onPreview: (url: string, downloadUrl?: string | null) => void;
 }) {
   const preview = apiAssetUrl(image.preview_url || image.thumb_url);
+  const lightbox = apiAssetUrl(image.download_url || image.preview_url || image.thumb_url);
   const download = apiAssetUrl(image.download_url || image.preview_url);
 
   return (
@@ -179,7 +180,7 @@ function SuccessTile({
         <button
           type="button"
           className="h-full w-full cursor-zoom-in"
-          onClick={() => onPreview(preview, download)}
+          onClick={() => onPreview(lightbox ?? preview, download)}
         >
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src={preview} alt="" className="h-full w-full object-cover transition group-hover:scale-[1.02]" />
@@ -192,7 +193,7 @@ function SuccessTile({
           <button
             type="button"
             title="查看大图"
-            onClick={() => onPreview(preview, download)}
+            onClick={() => onPreview(lightbox ?? preview, download)}
             className="rounded-md bg-white/90 p-1.5 text-zinc-800 shadow hover:bg-white"
           >
             <ZoomIn className="h-4 w-4" />

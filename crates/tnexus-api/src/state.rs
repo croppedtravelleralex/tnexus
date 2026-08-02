@@ -8,7 +8,7 @@ use redis::aio::ConnectionManager;
 use sqlx::PgPool;
 use std::sync::Arc;
 use tnexus_auth::AuthService;
-use tnexus_storage::SharedStorage;
+use tnexus_storage::SharedImageStore;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -16,7 +16,7 @@ pub struct AppState {
     pub pool: PgPool,
     pub auth: AuthService,
     pub redis: ConnectionManager,
-    pub storage: Option<SharedStorage>,
+    pub image_store: Option<SharedImageStore>,
     pub http: reqwest::Client,
     pub accounts: AccountsStore,
     pub refresh_progress: account_ops::ProgressStore,
@@ -53,12 +53,7 @@ impl AppState {
         let redis_client = redis::Client::open(config.redis_url.as_str())?;
         let redis = ConnectionManager::new(redis_client).await?;
 
-        let storage = if let Some(r2_cfg) = &config.r2 {
-            let storage = tnexus_storage::AssetStorage::from_config(r2_cfg).await?;
-            Some(Arc::new(storage))
-        } else {
-            None
-        };
+        let image_store = tnexus_storage::ImageStore::from_env().await?;
 
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(300))
@@ -71,7 +66,7 @@ impl AppState {
             pool,
             auth,
             redis,
-            storage,
+            image_store,
             http,
             accounts,
             refresh_progress: account_ops::ProgressStore::new(),

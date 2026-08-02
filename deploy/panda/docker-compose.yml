@@ -35,6 +35,7 @@ services:
     network_mode: host
     volumes:
       - /opt/tnexus/data/pool:/data/pool:rw
+      - /opt/tnexus/data/images:/data/images:rw
       - /root/gptimage/data:/gptimage/data:rw
     depends_on:
       - postgres
@@ -49,6 +50,7 @@ services:
     network_mode: host
     volumes:
       - /opt/tnexus/data/pool:/data/pool:rw
+      - /opt/tnexus/data/images:/data/images:rw
     depends_on:
       - postgres
       - redis

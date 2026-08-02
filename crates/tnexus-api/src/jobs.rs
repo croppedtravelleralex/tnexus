@@ -97,7 +97,6 @@ pub async fn list_job_summaries(state: &AppState, user_id: Uuid, limit: i64) -> 
     for row in rows {
         let id: Uuid = row.get("id");
         let thumb_result_id: Option<Uuid> = row.get("thumb_result_id");
-        let thumb_key: Option<String> = row.get("thumb_key");
         let source_url: Option<String> = row.get("source_url");
         let thumb_url = if let Some(url) = source_url.filter(|s| !s.is_empty()) {
             if url.contains("/v1/images/assets/") {
@@ -105,11 +104,6 @@ pub async fn list_job_summaries(state: &AppState, user_id: Uuid, limit: i64) -> 
             } else {
                 Some(url)
             }
-        } else if let (Some(storage), Some(key)) = (state.storage.as_ref(), thumb_key) {
-            storage
-                .presign_get(&key, state.config.presign_ttl_secs, false)
-                .await
-                .ok()
         } else if let Some(id) = thumb_result_id {
             Some(thumb_api_url(id, 120))
         } else {
@@ -199,13 +193,16 @@ fn thumb_api_url(result_id: Uuid, width: u32) -> String {
     format!("/api/images/thumb/{result_id}?w={width}")
 }
 
+fn original_api_url(result_id: Uuid) -> String {
+    format!("/api/images/original/{result_id}")
+}
+
 fn result_image_meta(r: &JobResultRecord) -> (Option<i32>, Option<i32>, Option<i64>) {
     (r.width, r.height, r.size_bytes)
 }
 
-pub async fn result_to_view(state: &AppState, r: JobResultRecord) -> Result<JobResultView> {
+pub async fn result_to_view(_state: &AppState, r: JobResultRecord) -> Result<JobResultView> {
     let (width, height, size_bytes) = result_image_meta(&r);
-    let storage = state.storage.as_ref();
     let has_persisted = r
         .inline_preview_b64
         .as_ref()
@@ -234,6 +231,23 @@ pub async fn result_to_view(state: &AppState, r: JobResultRecord) -> Result<JobR
     {
         let keywords = r.keywords.and_then(|v| serde_json::from_value(v).ok());
         if url.contains("/v1/images/assets/") {
+            if has_persisted {
+                return Ok(JobResultView {
+                    id: r.id,
+                    provider: r.provider,
+                    preview_url: Some(thumb_api_url(r.id, 1280)),
+                    download_url: Some(original_api_url(r.id)),
+                    thumb_url: Some(thumb_api_url(r.id, 240)),
+                    preview_b64: None,
+                    b64_json: None,
+                    agent_prompt: r.agent_prompt,
+                    revised_prompt: r.revised_prompt,
+                    keywords,
+                    width,
+                    height,
+                    size_bytes,
+                });
+            }
             return Ok(JobResultView {
                 id: r.id,
                 provider: r.provider,
@@ -251,12 +265,12 @@ pub async fn result_to_view(state: &AppState, r: JobResultRecord) -> Result<JobR
             });
         }
         if has_persisted {
-            let thumb = thumb_api_url(r.id, 512);
+            let thumb = thumb_api_url(r.id, 1280);
             return Ok(JobResultView {
                 id: r.id,
                 provider: r.provider,
                 preview_url: Some(thumb.clone()),
-                download_url: Some(url.clone()),
+                download_url: Some(original_api_url(r.id)),
                 thumb_url: Some(thumb_api_url(r.id, 240)),
                 preview_b64: None,
                 b64_json: None,
@@ -284,31 +298,37 @@ pub async fn result_to_view(state: &AppState, r: JobResultRecord) -> Result<JobR
             size_bytes,
         });
     }
-    let preview_url = if let (Some(s), Some(key)) = (storage, &r.r2_key_preview) {
-        Some(s.presign_get(key, state.config.presign_ttl_secs, false).await?)
-    } else if r
+    let has_inline = r
         .inline_preview_b64
         .as_ref()
         .map(|s| !s.trim().is_empty())
-        .unwrap_or(false)
-    {
-        Some(thumb_api_url(r.id, 768))
-    } else {
-        None
-    };
-    let download_url = if let (Some(s), Some(key)) = (storage, &r.r2_key_original) {
-        Some(s.presign_get(key, state.config.presign_ttl_secs, true).await?)
-    } else {
-        None
-    };
-    let thumb_url = if let (Some(s), Some(key)) = (storage, &r.r2_key_thumb) {
-        Some(s.presign_get(key, state.config.presign_ttl_secs, false).await?)
-    } else if r
-        .inline_preview_b64
+        .unwrap_or(false);
+    let has_file = r
+        .r2_key_original
         .as_ref()
         .map(|s| !s.trim().is_empty())
         .unwrap_or(false)
-    {
+        || r
+            .r2_key_preview
+            .as_ref()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false)
+        || r
+            .r2_key_thumb
+            .as_ref()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
+    let preview_url = if has_file || has_inline {
+        Some(thumb_api_url(r.id, 1280))
+    } else {
+        None
+    };
+    let download_url = if has_file || has_inline {
+        Some(original_api_url(r.id))
+    } else {
+        None
+    };
+    let thumb_url = if has_file || has_inline {
         Some(thumb_api_url(r.id, 240))
     } else {
         None

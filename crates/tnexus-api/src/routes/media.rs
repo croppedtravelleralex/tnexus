@@ -101,6 +101,7 @@ pub fn image_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", get(list_images))
         .route("/thumb/{id}", get(get_image_thumb))
+        .route("/original/{id}", get(get_image_original))
         .route("/delete", post(delete_images))
         .route("/tags", get(list_tags).post(set_image_tags))
 }
@@ -280,7 +281,11 @@ async fn list_images(
         let preview = view.preview_url.clone();
         let thumb = view.thumb_url.clone();
         let download = view.download_url.clone();
-        let url = preview.or(thumb.clone()).or(download).unwrap_or_default();
+        let url = download
+            .clone()
+            .or(preview.clone())
+            .or(thumb.clone())
+            .unwrap_or_default();
         let has_inline = view
             .preview_b64
             .as_ref()
@@ -402,6 +407,58 @@ fn default_thumb_width() -> u32 {
     240
 }
 
+async fn load_stored_bytes(
+    state: &AppState,
+    row: &sqlx::postgres::PgRow,
+    prefer_thumb: bool,
+) -> Result<Option<Vec<u8>>, (StatusCode, String)> {
+    let key: Option<String> = if prefer_thumb {
+        row.get::<Option<String>, _>("r2_key_thumb")
+            .or_else(|| row.get("r2_key_preview"))
+            .filter(|s| !s.trim().is_empty())
+    } else {
+        row.get::<Option<String>, _>("r2_key_original")
+            .filter(|s| !s.trim().is_empty())
+    };
+    if let (Some(store), Some(key)) = (state.image_store.as_ref(), key) {
+        let bytes = store
+            .read_bytes(&key)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        return Ok(Some(bytes));
+    }
+    Ok(None)
+}
+
+async fn fetch_result_image_row(
+    state: &AppState,
+    id: Uuid,
+    user_id: Uuid,
+    is_admin: bool,
+) -> Result<sqlx::postgres::PgRow, (StatusCode, String)> {
+    if is_admin {
+        sqlx::query(
+            "SELECT inline_preview_b64, r2_key_original, r2_key_thumb, r2_key_preview, source_url FROM job_results WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&state.pool)
+        .await
+    } else {
+        sqlx::query(
+            "SELECT jr.inline_preview_b64, jr.r2_key_original, jr.r2_key_thumb, jr.r2_key_preview, jr.source_url
+             FROM job_results jr
+             JOIN jobs j ON j.id = jr.job_id
+             WHERE jr.id = $1 AND j.user_id = $2",
+        )
+        .bind(id)
+        .bind(user_id)
+        .fetch_optional(&state.pool)
+        .await
+    }
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .ok_or((StatusCode::NOT_FOUND, "image not found".into()))
+}
+
 async fn get_image_thumb(
     State(state): State<Arc<AppState>>,
     user: AuthUser,
@@ -414,52 +471,14 @@ async fn get_image_thumb(
     let user_id = Uuid::parse_str(&user.claims.sub)
         .map_err(|_| (StatusCode::BAD_REQUEST, "bad user".into()))?;
     let is_admin = user.claims.role == Role::Admin;
-    let row = if is_admin {
-        sqlx::query(
-            "SELECT inline_preview_b64, r2_key_thumb, r2_key_preview, source_url FROM job_results WHERE id = $1",
-        )
-        .bind(id)
-        .fetch_optional(&state.pool)
-        .await
-    } else {
-        sqlx::query(
-            "SELECT jr.inline_preview_b64, jr.r2_key_thumb, jr.r2_key_preview, jr.source_url
-             FROM job_results jr
-             JOIN jobs j ON j.id = jr.job_id
-             WHERE jr.id = $1 AND j.user_id = $2",
-        )
-        .bind(id)
-        .bind(user_id)
-        .fetch_optional(&state.pool)
-        .await
-    }
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-    .ok_or((StatusCode::NOT_FOUND, "image not found".into()))?;
+    let row = fetch_result_image_row(&state, id, user_id, is_admin).await?;
 
     let b64: Option<String> = row.get("inline_preview_b64");
     if let Some(raw) = b64.filter(|s| !s.trim().is_empty()) {
         return serve_resized_thumb(&raw, &headers, q.w);
     }
 
-    let r2_key: Option<String> = row
-        .get::<Option<String>, _>("r2_key_thumb")
-        .or_else(|| row.get("r2_key_preview"))
-        .filter(|s| !s.trim().is_empty());
-
-    if let (Some(storage), Some(key)) = (state.storage.as_ref(), r2_key.as_deref()) {
-        let url = storage
-            .presign_get(key, state.config.presign_ttl_secs, false)
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        let bytes = state
-            .http
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| (StatusCode::BAD_GATEWAY, format!("fetch thumb: {e}")))?
-            .bytes()
-            .await
-            .map_err(|e| (StatusCode::BAD_GATEWAY, format!("read thumb: {e}")))?;
+    if let Some(bytes) = load_stored_bytes(&state, &row, true).await? {
         let img = image::load_from_memory(&bytes)
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("decode image: {e}")))?;
         return encode_thumbnail(&img, &headers, q.w);
@@ -473,6 +492,65 @@ async fn get_image_thumb(
     }
 
     Err((StatusCode::NOT_FOUND, "no preview available".into()))
+}
+
+async fn get_image_original(
+    State(state): State<Arc<AppState>>,
+    user: AuthUser,
+    Path(id): Path<String>,
+) -> Result<Response, (StatusCode, String)> {
+    let id = Uuid::parse_str(id.trim())
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid id".into()))?;
+    let user_id = Uuid::parse_str(&user.claims.sub)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "bad user".into()))?;
+    let is_admin = user.claims.role == Role::Admin;
+    let row = fetch_result_image_row(&state, id, user_id, is_admin).await?;
+
+    let b64: Option<String> = row.get("inline_preview_b64");
+    if let Some(raw) = b64.filter(|s| !s.trim().is_empty()) {
+        return serve_original_bytes(&raw);
+    }
+
+    if let Some(bytes) = load_stored_bytes(&state, &row, false).await? {
+        let content_type = sniff_image_content_type(&bytes);
+        return Ok(([(header::CONTENT_TYPE, content_type)], bytes).into_response());
+    }
+
+    if let Some(url) = row
+        .get::<Option<String>, _>("source_url")
+        .filter(|s| s.starts_with("http://") || s.starts_with("https://"))
+    {
+        return Ok(axum::response::Redirect::temporary(&url).into_response());
+    }
+
+    Err((StatusCode::NOT_FOUND, "no original available".into()))
+}
+
+fn serve_original_bytes(raw: &str) -> Result<Response, (StatusCode, String)> {
+    let bytes = if raw.starts_with("data:") {
+        raw.split_once(',').map(|(_, p)| p).unwrap_or(raw)
+    } else {
+        raw
+    };
+    let input = base64::Engine::decode(
+        &base64::engine::general_purpose::STANDARD,
+        bytes,
+    )
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("b64 decode: {e}")))?;
+    let content_type = sniff_image_content_type(&input);
+    Ok(([(header::CONTENT_TYPE, content_type)], input).into_response())
+}
+
+fn sniff_image_content_type(bytes: &[u8]) -> &'static str {
+    if bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
+        "image/png"
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        "image/jpeg"
+    } else if bytes.starts_with(b"RIFF") && bytes.len() > 12 && bytes[8..12] == *b"WEBP" {
+        "image/webp"
+    } else {
+        "application/octet-stream"
+    }
 }
 
 fn serve_resized_thumb(raw: &str, headers: &HeaderMap, width: u32) -> Result<Response, (StatusCode, String)> {
@@ -496,7 +574,7 @@ fn encode_thumbnail(
     headers: &HeaderMap,
     width: u32,
 ) -> Result<Response, (StatusCode, String)> {
-    let max_w = width.clamp(64, 640);
+    let max_w = width.clamp(64, 2048);
     let thumb = img.thumbnail(max_w, max_w);
     let use_webp = headers
         .get(header::ACCEPT)

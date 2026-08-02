@@ -332,6 +332,9 @@ export default function StudioPage() {
         actor_image_counts: counts,
       });
 
+      setActiveJobId(job_id);
+      setRefreshKey((k) => k + 1);
+
       queuedTimer = setTimeout(() => {
         if (!jobStarted) {
           setQueueHint("任务仍在排队，请稍候…（若超过 30 秒仍未开始，请联系管理员检查 worker 服务）");

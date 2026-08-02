@@ -16,7 +16,7 @@ use tnexus_domain::agent::{
 use tnexus_domain::factors::FactorPoint;
 use tnexus_domain::gen_config::GenConfig;
 use tnexus_domain::job::{JobStatus, WorkflowPath};
-use tnexus_storage::{AssetStorage, R2Config};
+use tnexus_storage::ImageStore;
 use upstream::{
     agent_prompt_text, api_model_name, keywords_json, ImageGenOptions, SlotGenerateTask,
     UpstreamClient,
@@ -38,7 +38,6 @@ struct WorkerConfig {
     upstream_api_key: Option<String>,
     image_response_format: String,
     image_parallel_concurrency: usize,
-    r2: Option<R2Config>,
 }
 
 struct ActorPlan {
@@ -77,11 +76,12 @@ async fn main() -> Result<()> {
     let redis_client = redis::Client::open(cfg.redis_url.as_str())?;
     let mut redis = ConnectionManager::new(redis_client).await?;
 
-    let storage = if let Some(r2) = &cfg.r2 {
-        Some(AssetStorage::from_config(r2).await?)
+    let image_store = ImageStore::from_env().await?;
+    if let Some(store) = &image_store {
+        tracing::info!(backend = store.backend_name(), "image store enabled");
     } else {
-        None
-    };
+        tracing::warn!("no image store configured; falling back to inline DB blobs");
+    }
 
     let upstream = UpstreamClient {
         http: reqwest::Client::builder()
@@ -114,7 +114,7 @@ async fn main() -> Result<()> {
             &pool,
             &mut redis,
             &upstream,
-            storage.as_ref(),
+            image_store.as_ref(),
             job_id,
         )
         .await
@@ -139,7 +139,7 @@ async fn process_job(
     pool: &PgPool,
     redis: &mut ConnectionManager,
     upstream: &UpstreamClient,
-    storage: Option<&AssetStorage>,
+    image_store: Option<&ImageStore>,
     job_id: Uuid,
 ) -> Result<()> {
     let wall_start = Instant::now();
@@ -332,7 +332,7 @@ async fn process_job(
         .collect();
 
     let persist_futs = persist_tasks.into_iter().map(|task| {
-        persist_slot(pool, storage, job.user_id, job_id, task)
+        persist_slot(pool, image_store, job.user_id, job_id, task)
     });
     try_join_all(persist_futs).await?;
     phase_timings.insert(
@@ -352,7 +352,7 @@ async fn process_job(
 
 async fn persist_slot(
     pool: &PgPool,
-    storage: Option<&AssetStorage>,
+    image_store: Option<&ImageStore>,
     user_id: Uuid,
     job_id: Uuid,
     task: SlotPersistTask,
@@ -387,8 +387,8 @@ async fn persist_slot(
         return Err(anyhow::anyhow!("image payload missing bytes and url"));
     };
 
-    let (orig, prev, thumb) = if let (Some(storage), Some(bytes)) = (storage, bytes.as_ref()) {
-        let asset = storage
+    let (orig, prev, thumb) = if let (Some(store), Some(bytes)) = (image_store, bytes.as_ref()) {
+        let asset = store
             .store_image_variants(user_id, job_id, bytes)
             .await?;
         (
@@ -400,7 +400,7 @@ async fn persist_slot(
         (None, None, None)
     };
 
-    let inline_preview = if storage.is_none() {
+    let inline_preview = if image_store.is_none() {
         bytes.as_ref().map(|b| STANDARD.encode(b))
     } else {
         None
@@ -668,17 +668,6 @@ fn actor_count_for(counts: &serde_json::Value, model_id: &str) -> u32 {
 }
 
 fn load_config() -> Result<WorkerConfig> {
-    let r2 = if std::env::var("R2_BUCKET").is_ok() {
-        Some(R2Config {
-            account_id: std::env::var("R2_ACCOUNT_ID")?,
-            access_key_id: std::env::var("R2_ACCESS_KEY_ID")?,
-            secret_access_key: std::env::var("R2_SECRET_ACCESS_KEY")?,
-            bucket: std::env::var("R2_BUCKET")?,
-            endpoint: std::env::var("R2_ENDPOINT").ok(),
-        })
-    } else {
-        None
-    };
     let image_parallel_concurrency = std::env::var("IMAGE_PARALLEL_CONCURRENCY")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
@@ -701,6 +690,5 @@ fn load_config() -> Result<WorkerConfig> {
         image_response_format: std::env::var("IMAGE_RESPONSE_FORMAT")
             .unwrap_or_else(|_| "url".into()),
         image_parallel_concurrency,
-        r2,
     })
 }

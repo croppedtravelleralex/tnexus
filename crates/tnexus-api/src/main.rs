@@ -122,7 +122,8 @@ fn build_cors(origins: &[String]) -> CorsLayer {
 async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     Json(serde_json::json!({
         "status": "ok",
-        "r2": state.storage.is_some(),
+        "image_store": state.image_store.as_ref().map(|s| s.backend_name()),
+        "r2": state.image_store.as_ref().map(|s| s.uses_remote_urls()).unwrap_or(false),
         "static_ui": state.config.static_dir.is_some(),
     }))
 }

@@ -30,6 +30,7 @@ function thumbFallback(item: ManagedImage) {
 }
 
 function fullSrc(item: ManagedImage) {
+  if (item.rel) return apiAssetUrl(`/api/images/original/${item.rel}`);
   return apiAssetUrl(item.url) || apiAssetUrl(item.thumbnail_url) || "";
 }
 

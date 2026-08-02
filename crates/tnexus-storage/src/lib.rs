@@ -1,3 +1,6 @@
+mod image_store;
+mod local;
+
 use anyhow::{Context, Result};
 use aws_config::BehaviorVersion;
 use aws_credential_types::Credentials;
@@ -10,6 +13,9 @@ use image::{GenericImageView, ImageFormat};
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
+
+pub use image_store::{ImageStore, SharedImageStore};
+pub use local::LocalAssetStorage;
 
 #[derive(Clone)]
 pub struct R2Config {
@@ -125,7 +131,9 @@ impl AssetStorage {
     }
 }
 
-fn generate_variants(image_bytes: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
+pub type SharedStorage = Arc<AssetStorage>;
+
+pub(crate) fn generate_variants(image_bytes: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
     let img = image::load_from_memory(image_bytes).context("decode image")?;
     let preview = resize_to_webp(&img, 512)?;
     let thumb = resize_to_webp(&img, 256)?;
@@ -145,5 +153,3 @@ fn resize_to_webp(img: &image::DynamicImage, max_side: u32) -> Result<Vec<u8>> {
         .context("encode webp")?;
     Ok(buf)
 }
-
-pub type SharedStorage = Arc<AssetStorage>;
