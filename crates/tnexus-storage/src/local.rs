@@ -49,7 +49,7 @@ impl LocalAssetStorage {
         let path = self.path_for_key(key);
         tokio::fs::read(&path)
             .await
-            .with_context(|| format!("read image file {path}"))
+            .with_context(|| format!("read image file {}", path.display()))
     }
 
     pub async fn put_bytes(&self, key: &str, bytes: &[u8], _content_type: &str) -> Result<()> {
