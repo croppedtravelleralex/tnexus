@@ -1,6 +1,6 @@
 # TNexus 合并施工总控 · gateway-rs + gptimage 管理台
 
-最后更新：**2026-07-30**  
+最后更新：**2026-08-02**  
 状态：**规划阶段** — 仓库合并与 UI 迁移尚未开工  
 决策记录：见 [HANDOFF.md](HANDOFF.md) · UI 对照源见 [docs/SOURCE.md](docs/SOURCE.md)
 
@@ -31,12 +31,14 @@
 | 用户生图额度 | 暂不做 |
 | 管理员 vs 普通用户权限差 | 暂一致 |
 
-### 红线
+### 红线（Agent / 人工均须遵守 — 违反视为重大事故）
 
-- **禁止**在 Panda 上 `cargo build` / `docker build` / `npm run build`  
-- 发布链路：**本地改测 → git commit → push → GHCR → Panda pull + compose up**  
-- **禁止** `scp` / `docker cp` 绕过 git 部署生产代码  
-- 生产 `:8012` 只读诊断不受限  
+- **禁止**在 Panda 上 `cargo build` / `docker build` / `npm run build` / `buildx`（**曾导致生产机 CPU/内存爆满**）
+- **禁止**在 Panda 上 `git pull` 后本地编译镜像当作发布
+- **禁止** `scp` / `docker cp` / `rsync` 二进制绕过 git 部署生产代码
+- 发布链路唯一：**本地或 CI 构建 → git commit → push → GHCR Actions → Panda `deploy.sh`（仅 pull + compose up）**
+- Cursor 强制规则：`.cursor/rules/panda-no-remote-build.mdc`（`alwaysApply: true`）
+- 生产 `:8012` 只读诊断不受限
 
 ---
 
@@ -205,7 +207,7 @@ TNexus/
 - [ ] **P4-2** `/image-manager` — 图片管理
 - [ ] **P4-3** `/logs` — 日志管理
 - [ ] **P4-4** `/ops` — 运维仪表盘（替换 gateway-rs JSON 占位）
-- [ ] **P4-5** `/chat` — 对话
+- [ ] **P4-5** `/chat` — 对话（**API 代理 + SSE 已上线** `b8d6fa8`；多轮持久化待补）
 - [ ] **P4-6** `/settings` — 系统设置（剔除注册机/无限画布相关卡片）
 - [ ] **P4-7** `/debug` — 可选，默认管理员可见
 
@@ -214,8 +216,9 @@ TNexus/
 - [ ] **P5-1** 合并 `deploy/nginx/tnexus.relai.asia.conf`（`/v1/`、`/api/backend/` → gateway）
 - [ ] **P5-2** `scripts/panda_setup_tnexus_env.py` 迁入并更新（`UPSTREAM_API_KEY`、Postgres 密码保留逻辑）
 - [ ] **P5-3** Panda compose：gateway 容器 + tnexus api/worker（或单镜像多 command）
-- [ ] **P5-4** `prod_url_chain_test.py` — URL 生图全链路 OK
-- [ ] **P5-5** 号池页生产冒烟（只读列表 + 一次调度切换 + 流水图有数据）
+- [ ] **P5-4** `prod_url_chain_test.py` — URL 生图全链路 OK（✅ 2026-08-02）
+- [ ] **P5-5** 号池页生产冒烟（✅ 热力图/绿 badge/`test_ux_coverage.py`）
+- [ ] **P5-5b** gateway `POST /v1/images/edits` capabilities + 冒烟脚本（capabilities ✅ `1ab5d25`；E2E 脚本待补）
 - [ ] **P5-6** `gptimage.relai.asia` → `tnexus.relai.asia` 301（管理台路径迁移完成后）
 - [ ] **P5-7** 更新 [docs/33-panda-deploy-20260728.md](docs/33-panda-deploy-20260728.md) 合并版
 
@@ -242,8 +245,8 @@ cargo build --workspace
 cargo test --workspace
 cd web && npm run build
 
-# Panda（只 pull，不 build）
-ssh panda "python3 /root/prod_url_chain_test.py"
+# Panda（只 pull，不 build — 禁止 ssh panda "docker build"）
+ssh panda "bash /root/TNexus/deploy/panda/deploy.sh"
 ssh panda "python3 /root/scripts/accounts_smoke_test.py"   # P3 后新增
 ```
 
@@ -270,4 +273,4 @@ ssh panda "python3 /root/scripts/accounts_smoke_test.py"   # P3 后新增
 | P2 号池 API | ☐ 未开始 | — |
 | P3 号池 UI | ☐ 未开始 | — |
 | P4 其余管理页 | ☐ 未开始 | — |
-| P5 部署验收 | ☐ 部分（仅 URL 生图链路过） | 2026-07-30 |
+| P5 部署验收 | ☑ 主链已验（`1ab5d25`）；edits capabilities true；10 并发 / edits E2E / `:8012` 像素对比待做 | 2026-08-02 |

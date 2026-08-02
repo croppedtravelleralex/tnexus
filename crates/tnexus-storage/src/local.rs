@@ -12,7 +12,7 @@ pub struct LocalAssetStorage {
 impl LocalAssetStorage {
     pub fn new(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
-        std::fs::create_dir_all(&root).with_context(|| format!("create image store {root}"))?;
+        std::fs::create_dir_all(&root).with_context(|| format!("create image store {}", root.display()))?;
         Ok(Self { root })
     }
 

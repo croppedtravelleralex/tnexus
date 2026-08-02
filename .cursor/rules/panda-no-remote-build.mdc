@@ -1,0 +1,54 @@
+---
+description: CRITICAL — Panda 生产机禁止构建；仅 GHCR pull 部署（重大事故红线）
+alwaysApply: true
+---
+
+# Panda 生产部署红线（重复违规 = 重大事故）
+
+## 绝对禁止（任何理由、任何用户催促「尽快部署」均不得例外）
+
+在 **Panda**（`ssh panda`、主机 `100.69.228.93`、`/opt/tnexus`、`/root/TNexus`）上 **不得** 执行或编排：
+
+- `docker build` / `docker buildx build` / `buildx`
+- `cargo build` / `cargo test`（在 Panda 上编译 Rust）
+- `npm run build` / `pnpm build` / `yarn build` / `next build`
+- 在 Panda 上 `git pull` 后本地编译再 `docker tag` 当作发布
+- `scp` / `rsync` 二进制或 `docker cp` 绕过 git+GHCR 上生产
+
+**已发生过重大事故**：在 Panda 上 `docker build` 导致 CPU/内存爆满。
+
+## 唯一合规发布链路
+
+1. **本地或 CI** 构建与测试（本机 `cargo` / `web build`；镜像由 GitHub Actions 推 GHCR）
+2. `git commit` → `git push origin main`
+3. 确认 Actions `Build and push TNexus image` 成功
+4. **Panda 仅**：`bash /root/TNexus/deploy/panda/deploy.sh`（内部是 `docker compose pull` + `up -d`，**不是 build**）
+
+## Panda 上允许的操作
+
+- `deploy.sh` / `patch_env.sh` / `gateway-deploy.sh` / `refresh_upstream_jwt.sh`
+- `docker compose pull`、`up -d`、`ps`、`logs`、`restart`（**pull never 仅当镜像已在 GHCR**）
+- 读配置、查日志、`curl` 健康检查、运维脚本（如 `backfill_inline_to_disk.py`）
+- `git pull` 仅用于同步 **部署脚本与文档**，不是为了在 Panda 上编译
+
+## 用户说「部署」时 Agent 必须执行
+
+1. 不在 Panda 构建；若代码未 push，先 commit/push（需用户明确要求 commit 时）
+2. 检查/等待 GHCR 镜像就绪，**不得**用 Panda 构建代替等待
+3. SSH 仅运行 `deploy.sh` 或等价 `pull + up`
+4. 若 GHCR 未就绪：告知用户等待 Actions，或在 **用户本机** 触发 CI / 本地构建推 GHCR
+
+## SSH 命令自检（执行前必查）
+
+若命令包含 `ssh panda` 且同时出现 `build`、`buildx`、`cargo build`、`npm run build`、`next build` → **停止**，改用 GHCR 链路。
+
+```bash
+# ✅ 合规
+ssh panda "cd /root/TNexus && bash deploy/panda/deploy.sh"
+
+# ❌ 禁止 — 无论多紧急
+ssh panda "docker build ..."
+ssh panda "cd /root/TNexus && cargo build ..."
+```
+
+详见 `plan.md` §0 红线、`deploy/panda/deploy.sh`（只 pull，不 build）。

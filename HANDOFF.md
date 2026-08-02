@@ -1,16 +1,16 @@
 # HANDOFF — TNexus（含 gateway-rs 合并）
 
-最后更新：**2026-08-01（图片交付/带宽策略文档 + 监控埋点）**
+最后更新：**2026-08-02（`1ab5d25`：出图元数据 + 全量同步额度 + gateway edits 已部署 Panda）**
 
 ## 读什么（按顺序）
 
 1. **[plan.md](plan.md)** — 合并施工总控与详细待办
 2. **[docs/38-tnexus-production-cutover.md](docs/38-tnexus-production-cutover.md)** — **1:1 替代 gptimage 生产切流路线图**
 3. **[docs/36-image-delivery-bandwidth-strategy.md](docs/36-image-delivery-bandwidth-strategy.md)** — AVIF/WebP 显示、R2/Edge 302、带宽分层
-3. **[docs/37-gptimage-tnexus-comparison.md](docs/37-gptimage-tnexus-comparison.md)** — 与 Python `:8012` 横向对比
-4. **[docs/34-tnexus-rollout-oauth-panda.md](docs/34-tnexus-rollout-oauth-panda.md)** — 号池/OAuth 三阶段上线
-5. **[docs/SOURCE.md](docs/SOURCE.md)** — UI/API 对照源（gptimage Python 仓）
-6. **[README.md](README.md)** — 本地开发与仓库结构
+4. **[docs/37-gptimage-tnexus-comparison.md](docs/37-gptimage-tnexus-comparison.md)** — 与 Python `:8012` 横向对比
+5. **[docs/34-tnexus-rollout-oauth-panda.md](docs/34-tnexus-rollout-oauth-panda.md)** — 号池/OAuth 三阶段上线
+6. **[docs/SOURCE.md](docs/SOURCE.md)** — UI/API 对照源（gptimage Python 仓）
+7. **[README.md](README.md)** — 本地开发与仓库结构
 
 ---
 
@@ -26,9 +26,41 @@
 
 ---
 
-## 当前状态（2026-07-31）
+## 当前状态（2026-08-02）
 
-### 已完成（本迭代）
+**生产镜像**：`main` @ **`1ab5d25`**
+
+| 批次 | commit | 内容 |
+|------|--------|------|
+| Studio UX + 对话 | `b8d6fa8` … `9e8105b` | size/风格、热力图、对话 SSE 代理、`GATEWAY_AUTH_KEY` |
+| 出图元数据 + 号池 | `0bc7463` … `9248d34` | `job_results` 宽高/字节数；无选中时「同步全部额度」 |
+| gateway edits | `1ab5d25` | `POST /v1/images/edits` upstream；URL 模式 worker 元数据 |
+
+### 已完成（2026-08-01 晚 — 已部署 Panda）
+
+| 项 | 状态 |
+|----|------|
+| 工作台出图角标：分辨率 + 文件大小 | ✅ migration `008` + `output-panel`；无 DB 字段时前端探测 |
+| 号池无选中 → 工具栏「同步全部额度」（`refresh-all`） | ✅ `accounts/page.tsx` |
+| Worker URL 模式写入 `width/height/size_bytes` | ✅ 无 R2 时仍下载 `source_url` 落库 |
+| Gateway `POST /v1/images/edits`（upstream 上传 + multimodal） | ✅ `1ab5d25`；需 `IMAGE_ENABLED=1` + `DATA_PLANE=upstream` |
+| `capabilities.image_edits` | ✅ gateway `:8014` 返回 `true` |
+
+### 已完成（2026-08-01 昼 — 已部署 Panda）
+
+| 项 | 状态 |
+|----|------|
+| 工作台 size/quality/风格 hint 全链路 | ✅ `b8d6fa8` |
+| 风格预设分类 + 子项 + 一键展开/收起 | ✅ |
+| 演员张数 1–9 + ≥10 输入；润色因子滑条 | ✅ |
+| 号池额度：调度中+正常 → 绿色 badge | ✅ API `image_quota_state` + 前端 |
+| IP 热力图 binding 对齐 | ✅ `usage_metrics` + worker 空 binding |
+| 日志阶段含 `ps_ms` +「其他」补差 | ✅ |
+| 对话 `POST /api/chat/completions`（SSE 代理 gateway） | ✅ |
+| `GATEWAY_AUTH_KEY` 与 `UPSTREAM_API_KEY` 同步刷新 | ✅ `9e8105b` `refresh_upstream_jwt.sh` |
+| 生产冒烟（生图 / 号池 / 对话流式 / 热力图） | ✅ 2026-08-01 |
+
+### 已完成（较早迭代）
 
 | 项 | 状态 |
 |----|------|
@@ -58,7 +90,7 @@
 
 | 项 | 状态 |
 |----|------|
-| GHCR 拉取最新镜像（api + worker + account-ops + 静态 UI） | ✅ 2026-07-31 18:03 `9dcb82a` |
+| GHCR 拉取最新镜像（api + worker + account-ops + gateway + 静态 UI） | ✅ 2026-08-02 `1ab5d25` |
 | gateway `:8014` `tnexus-gateway` | ✅ 与 TNexus `crates/gateway` 同步 |
 | `UPSTREAM_API_KEY` 定期刷新（cron） | ⚠️ 需运维；TTL ≈24h，过期报 `invalid session` |
 | 号池与 8012 共享 live `accounts.db`（WAL + 事务写入） | ✅ `tnexus-accounts-db` |
@@ -67,6 +99,10 @@
 | 生图进行中计时器实时刷新（不再固定显示「1秒」） | ✅ |
 | `pin_account.json` 与 pool/sqlite 同步 | ⚠️ 曾过期；刷新后需与 pool 对齐 |
 | Outlook 恢复 UI、养号结果 merge 回 JSON | 📋 下一迭代 |
+| 对话多轮持久化 / 对话生图 | 📋 Phase 1（见 [doc 38](docs/38-tnexus-production-cutover.md)） |
+| gateway edits 生产 E2E 脚本 | 📋 待补（capabilities 已 true；`prod_url_chain_test` 仅文生图） |
+| `:8012` vs `:8014` 同 prompt 像素级对比 | 📋 Phase 0 剩余 |
+| 10 并发压测 | 📋 Phase 0 剩余 |
 | gateway-rs 物理归档 | 已迁入 `crates/gateway`，待删独立仓 |
 
 ---
@@ -109,9 +145,9 @@ export TNEXUS_ROOT=/root/TNexus
 cd "$TNEXUS_ROOT" && git pull && bash deploy/panda/deploy.sh
 ```
 
-**不再需要** `export_pool.sh`、`panda_setup_tnexus_env.py` 或手动 `patch_env.sh`。JWT 由 `deploy/panda/refresh_upstream_jwt.sh` 在部署时自动刷新（只改 `UPSTREAM_API_KEY`，不覆盖整个 `.env`）。
+**不再需要** `export_pool.sh`、`panda_setup_tnexus_env.py` 或手动 `patch_env.sh`。JWT 由 `deploy/panda/refresh_upstream_jwt.sh` 在部署时自动刷新（只改 `UPSTREAM_API_KEY` + **`GATEWAY_AUTH_KEY`**（对话代理用），不覆盖整个 `.env`）。
 
-`.env` 必含：`ACCOUNTS_DB`、`SCHEDULING_STATE_FILE`、`ACCOUNT_OPS_*`、`TNEXUS_ACCOUNT_OPS_IMAGE`；`deploy.sh` 会通过 `patch_env.sh` 自动补齐缺失项。
+`.env` 必含：`ACCOUNTS_DB`、`SCHEDULING_STATE_FILE`、`ACCOUNT_OPS_*`、`TNEXUS_ACCOUNT_OPS_IMAGE`、`GATEWAY_BASE=http://127.0.0.1:8014`；`deploy.sh` 会通过 `patch_env.sh` 自动补齐缺失项。
 
 ### 刷新 worker → gateway JWT
 
@@ -133,20 +169,34 @@ Panda 上线后删除旧快照：`rm -f /opt/tnexus/data/pool/accounts_pool.json
 ### 验收
 
 ```bash
+# 生图 E2E（导演模式，需可出网）
 python3 /root/TNexus/scripts/prod_url_chain_test.py
-curl -fsS -o /dev/null -w '%{http_code}\n' https://tnexus.relai.asia/accounts
-# 登录后
-curl -fsS -b /tmp/cj https://tnexus.relai.asia/api/accounts?offset=0&limit=1
+
+# Studio UX 全项（尺寸/竞演/排队/额度/对话 SSE/日志阶段；建议在 Panda 上跑，避免本地 SSL EOF）
+python3 /root/TNexus/scripts/test_ux_coverage.py
+
+# 导演 vs 竞演模式
+python3 /root/TNexus/scripts/test_studio_modes.py
+
+curl -fsS https://tnexus.relai.asia/health
+curl -fsS http://127.0.0.1:9000/health
+curl -fsS http://127.0.0.1:8014/health
+curl -fsS -o /dev/null -w 'accounts_page=%{http_code}\n' https://tnexus.relai.asia/accounts/
 ```
+
+**2026-08-02 已验**：`prod_url_chain_test.py` OK；`job_results` 最新行含元数据（例 `1254×1254 · 1.27MB`）；`curl :8014/api/backend/capabilities` → `image_edits: true`。
+
+**2026-08-01 已验**：health 全绿；16:9(4k) 与 1:1 出图宽高比正确；竞演双 provider；排队 <30s 无黄字；40/40 调度账号绿 badge；热力图有 binding；对话 SSE + UI 流式正常；日志 `wall_clock_ms` 与阶段之和比 ≈1.01。
 
 ---
 
 ## 部署铁律
 
-1. **禁止在 Panda 上编译**任何项目  
-2. **只走 Git**：本地 → commit → push → GHCR → Panda `git pull` + `deploy.sh`  
-3. **禁止 scp/docker cp** 部署生产代码（**导号脚本读 sqlite 除外**）  
+1. **禁止在 Panda 上编译/构建**（`cargo` / `docker build` / `npm build` / `buildx`）— **违反曾导致 CPU/内存爆满（重大事故）**
+2. **只走 Git + GHCR**：本地或 CI 构建 → commit → push → Actions → Panda **仅** `deploy.sh`（pull + up）
+3. **禁止 scp/docker cp** 部署生产代码（**导号脚本读 sqlite 除外**）
 4. 生产 `:8012` **禁止**替换或重启（除非用户另立项）
+5. Cursor 强制规则：`.cursor/rules/panda-no-remote-build.mdc`（`alwaysApply: true`）
 
 ---
 
@@ -157,6 +207,7 @@ curl -fsS -b /tmp/cj https://tnexus.relai.asia/api/accounts?offset=0&limit=1
 | `/accounts` 404 | 旧 GHCR 镜像无静态页 | `deploy.sh` 拉最新 |
 | `/api/accounts` 404 | 同上 | 同上 |
 | worker 401 `invalid session` | **`UPSTREAM_API_KEY`（gateway JWT）过期** | `bash deploy/panda/deploy.sh`（自动刷新） |
+| 对话 `/api/chat/completions` 401 `login required`（JSON） | API 容器缺 **`GATEWAY_AUTH_KEY`**，gateway 拒 Bearer | `refresh_upstream_jwt.sh`（`9e8105b` 起与 `UPSTREAM_API_KEY` 同步）；`docker compose … up -d --force-recreate api` |
 | 8012 通、8014/TNexus 不通 | 多为 **Gateway JWT 过期** 或 pin 未对齐 | `panda_setup_tnexus_env.py` + `deploy.sh`；确认 `ACCOUNTS_DB` 指向 live db |
 | 图片管理灰块（旧图） | 历史记录仅存 gateway 内存 URL | 新图已写 `inline_preview_b64`；旧图不可恢复 |
 | worker env 未生效 | `docker restart` 不刷新 env | `deploy.sh` force-recreate |
