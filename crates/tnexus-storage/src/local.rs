@@ -57,11 +57,11 @@ impl LocalAssetStorage {
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
-                .with_context(|| format!("create dir {parent}"))?;
+                .with_context(|| format!("create dir {}", parent.display()))?;
         }
         tokio::fs::write(&path, bytes)
             .await
-            .with_context(|| format!("write image file {path}"))?;
+            .with_context(|| format!("write image file {}", path.display()))?;
         Ok(())
     }
 
