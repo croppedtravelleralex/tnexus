@@ -21,10 +21,11 @@ import { chatApi, conversationsApi } from "@/lib/api";
 import type { Conversation } from "@/lib/conversations";
 import {
   CHAT_ACTIVE_SESSION_KEY,
-  CHAT_MODEL_HINTS,
+  CHAT_CHANNEL_HINT,
+  CHAT_CHANNEL_LABEL,
+  CHAT_TEXT_CHANNEL,
   chatConversationTitle,
   createChatMessage,
-  DEFAULT_CHAT_MODELS,
   downloadTextFile,
   EMPTY_CHAT_STATE,
   exportChatAsMarkdown,
@@ -32,6 +33,7 @@ import {
   estimateBase64Bytes,
   formatBytes,
   isChatConversationState,
+  isEmptyChatConversation,
   repairLegacyMessages,
   type ChatConversationState,
   type ChatMessage,
@@ -53,11 +55,10 @@ export function ChatWorkbench() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
-  const [model, setModel] = useState(EMPTY_CHAT_STATE.model);
-  const [modelOptions, setModelOptions] = useState<string[]>([...DEFAULT_CHAT_MODELS]);
   const [stream, setStream] = useState(EMPTY_CHAT_STATE.stream);
   const [imageMode, setImageMode] = useState(false);
   const [streaming, setStreaming] = useState(false);
+  const [switchingId, setSwitchingId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [lightboxOpen, setLightboxOpen] = useState(false);
@@ -67,6 +68,27 @@ export function ChatWorkbench() {
   const listRef = useRef<HTMLDivElement>(null);
   const bootedRef = useRef(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const conversationCacheRef = useRef<Map<string, Conversation>>(new Map());
+
+  const mergeConversation = useCallback((c: Conversation) => {
+    conversationCacheRef.current.set(c.id, c);
+    setConversations((prev) => {
+      const idx = prev.findIndex((item) => item.id === c.id);
+      const next = idx >= 0 ? [...prev] : [c, ...prev];
+      if (idx >= 0) next[idx] = c;
+      return next.sort(
+        (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
+      );
+    });
+    return c;
+  }, []);
+
+  const visibleConversations = useMemo(() => {
+    return conversations.filter((c) => {
+      if (c.id === conversationId) return true;
+      return !isEmptyChatConversation(c);
+    });
+  }, [conversations, conversationId]);
 
   const scrollToBottom = () => {
     requestAnimationFrame(() => {
@@ -77,19 +99,26 @@ export function ChatWorkbench() {
   const loadConversations = useCallback(async () => {
     const list = await conversationsApi.list();
     const chatOnly = list.filter((c) => isChatConversationState(c.state));
+    for (const c of chatOnly) {
+      conversationCacheRef.current.set(c.id, c as Conversation);
+    }
     setConversations(chatOnly as Conversation[]);
     return chatOnly;
   }, []);
 
   const persistState = useCallback(
-    async (id: string, state: ChatConversationState) => {
-      await conversationsApi.patch(id, {
+    async (id: string, state: ChatConversationState, options?: { refreshList?: boolean }) => {
+      const patched = await conversationsApi.patch(id, {
         title: chatConversationTitle(state.messages),
         state,
       });
-      await loadConversations();
+      mergeConversation(patched);
+      if (options?.refreshList) {
+        await loadConversations();
+      }
+      return patched;
     },
-    [loadConversations],
+    [loadConversations, mergeConversation],
   );
 
   const applyConversation = useCallback((c: Conversation) => {
@@ -97,40 +126,45 @@ export function ChatWorkbench() {
     setConversationId(c.id);
     sessionStorage.setItem(CHAT_ACTIVE_SESSION_KEY, c.id);
     setMessages(repairLegacyMessages(c.state.messages, c.title));
-    setModel(c.state.model ?? EMPTY_CHAT_STATE.model);
     setStream(c.state.stream ?? true);
     setError("");
   }, []);
 
   const selectConversation = useCallback(
     async (id: string) => {
+      if (id === conversationId && !switchingId) return;
+      setSwitchingId(id);
+      setError("");
+      const cached = conversationCacheRef.current.get(id) ?? conversations.find((c) => c.id === id);
+      if (cached && isChatConversationState(cached.state)) {
+        applyConversation(cached);
+      }
       try {
         const c = await conversationsApi.get(id);
+        mergeConversation(c);
         applyConversation(c);
       } catch (err) {
         setError(err instanceof Error ? err.message : "加载对话失败");
+      } finally {
+        setSwitchingId(null);
       }
     },
-    [applyConversation],
+    [applyConversation, conversationId, conversations, mergeConversation, switchingId],
   );
 
-  const createConversation = useCallback(async () => {
-    const created = await conversationsApi.create({
-      title: "新对话",
-      state: EMPTY_CHAT_STATE,
-    });
-    await loadConversations();
-    applyConversation(created);
+  const startNewConversation = useCallback(() => {
+    setConversationId(null);
+    setMessages([]);
     setInput("");
-  }, [applyConversation, loadConversations]);
+    setError("");
+    sessionStorage.removeItem(CHAT_ACTIVE_SESSION_KEY);
+    inputRef.current?.focus();
+  }, []);
 
   useEffect(() => {
     if (bootedRef.current) return;
     bootedRef.current = true;
     void (async () => {
-      void chatApi.listModels().then((ids) => {
-        if (ids.length > 0) setModelOptions(ids);
-      });
       const list = await loadConversations();
       const stored = sessionStorage.getItem(CHAT_ACTIVE_SESSION_KEY);
       if (stored) {
@@ -205,11 +239,11 @@ export function ChatWorkbench() {
       await persistState(id, {
         kind: "chat",
         messages: nextMessages,
-        model,
+        model: CHAT_TEXT_CHANNEL,
         stream,
       });
     },
-    [model, persistState, stream],
+    [persistState, stream],
   );
 
   const deleteConversation = async (id: string) => {
@@ -264,7 +298,7 @@ export function ChatWorkbench() {
 
       await chatApi.streamCompletion(
         {
-          model,
+          model: CHAT_TEXT_CHANNEL,
           stream: withStream,
           image_mode: withImageMode,
           messages: toApiMessages(apiMessages),
@@ -311,11 +345,11 @@ export function ChatWorkbench() {
       await persistState(activeId, {
         kind: "chat",
         messages: finalMessages,
-        model,
+        model: CHAT_TEXT_CHANNEL,
         stream,
       });
     },
-    [model, persistState, stream],
+    [persistState, stream],
   );
 
   const onSend = useCallback(async () => {
@@ -337,17 +371,17 @@ export function ChatWorkbench() {
       if (!activeId) {
         const created = await conversationsApi.create({
           title: chatConversationTitle(nextMessages),
-          state: { kind: "chat", messages: nextMessages, model, stream },
+          state: { kind: "chat", messages: nextMessages, model: CHAT_TEXT_CHANNEL, stream },
         });
         activeId = created.id;
         setConversationId(activeId);
         sessionStorage.setItem(CHAT_ACTIVE_SESSION_KEY, activeId);
-        await loadConversations();
+        mergeConversation(created);
       } else {
-        await persistState(activeId, {
+        void persistState(activeId, {
           kind: "chat",
           messages: nextMessages,
-          model,
+          model: CHAT_TEXT_CHANNEL,
           stream,
         });
       }
@@ -369,11 +403,10 @@ export function ChatWorkbench() {
     input,
     streaming,
     messages,
-    model,
     stream,
     imageMode,
     conversationId,
-    loadConversations,
+    mergeConversation,
     persistState,
     runCompletion,
   ]);
@@ -389,7 +422,7 @@ export function ChatWorkbench() {
       await persistState(conversationId, {
         kind: "chat",
         messages: truncated,
-        model,
+        model: CHAT_TEXT_CHANNEL,
         stream,
       });
       await runCompletion(conversationId, truncated, stream, imageMode);
@@ -410,7 +443,7 @@ export function ChatWorkbench() {
     }
   };
 
-  const modelHint = CHAT_MODEL_HINTS[model] ?? "上游网关模型别名";
+  const modelHint = CHAT_CHANNEL_HINT;
 
   return (
     <div className="flex h-full min-h-0 bg-[var(--neo-surface)]">
@@ -429,7 +462,7 @@ export function ChatWorkbench() {
               >
                 <Download className="h-3.5 w-3.5" />
               </Button>
-              <Button variant="outline" size="sm" className="h-7 px-2" onClick={() => void createConversation()}>
+              <Button variant="outline" size="sm" className="h-7 px-2" onClick={() => startNewConversation()}>
                 <Plus className="h-3.5 w-3.5" />
               </Button>
               <Button
@@ -444,7 +477,7 @@ export function ChatWorkbench() {
             </div>
           </div>
           <div className="flex-1 space-y-1 overflow-y-auto p-2">
-            {conversations.map((c) => (
+            {visibleConversations.map((c) => (
               <div
                 key={c.id}
                 className={cn(
@@ -452,6 +485,7 @@ export function ChatWorkbench() {
                   conversationId === c.id
                     ? "border-[var(--neo-primary)] bg-white"
                     : "border-transparent hover:bg-white/80",
+                  switchingId === c.id && "opacity-70",
                 )}
               >
                 <button
@@ -490,16 +524,7 @@ export function ChatWorkbench() {
       <div className="flex min-h-0 flex-1 flex-col">
         <div className="border-b border-[var(--neo-border)] px-4 py-2">
           <div className="mx-auto flex max-w-3xl flex-wrap items-center gap-3">
-            <label className="text-xs text-[var(--neo-muted)]">通道</label>
-            <select
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              className="neo-input h-8 rounded-lg px-2 text-sm"
-            >
-              {modelOptions.map((id) => (
-                <option key={id} value={id}>{id}</option>
-              ))}
-            </select>
+            <span className="text-sm font-medium text-[var(--neo-ink)]">{CHAT_CHANNEL_LABEL}</span>
             <span className="text-[10px] text-[var(--neo-muted)]">{modelHint}</span>
             <label className="ml-auto flex items-center gap-1.5 text-xs text-[var(--neo-muted)]">
               <input type="checkbox" checked={imageMode} onChange={(e) => setImageMode(e.target.checked)} />
@@ -643,7 +668,7 @@ export function ChatWorkbench() {
               </Button>
             </div>
             <p className="mt-2 text-center text-[10px] text-[var(--neo-muted)]">
-              TNexus 对话走号池上游，模型名是网关别名，不是 ChatGPT 网页版的模型列表。
+              {CHAT_CHANNEL_HINT}。生图请开启「生图模式」。
             </p>
           </div>
         </div>

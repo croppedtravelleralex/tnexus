@@ -16,12 +16,24 @@ export type ChatConversationState = {
 
 export const CHAT_ACTIVE_SESSION_KEY = "tnexus-chat-active-id";
 
+/** 发给网关的内部通道 id（不在 UI 展示 OpenAI 型号名） */
+export const CHAT_TEXT_CHANNEL = "gpt-4o-mini";
+
+export const CHAT_CHANNEL_LABEL = "文本对话";
+export const CHAT_CHANNEL_HINT = "走号池 ChatGPT 上游通道";
+
 export const EMPTY_CHAT_STATE: ChatConversationState = {
   kind: "chat",
   messages: [],
-  model: "gpt-4o-mini",
+  model: CHAT_TEXT_CHANNEL,
   stream: true,
 };
+
+export function isEmptyChatConversation(c: { title?: string; state?: unknown }): boolean {
+  if (!isChatConversationState(c.state)) return true;
+  const msgs = c.state.messages ?? [];
+  return msgs.length === 0 && (c.title ?? "新对话") === "新对话";
+}
 
 export function createChatMessage(role: ChatMessage["role"], content: string): ChatMessage {
   return {
@@ -51,11 +63,12 @@ export function repairLegacyMessages(messages: ChatMessage[], title?: string): C
 }
 
 export const CHAT_MODEL_HINTS: Record<string, string> = {
-  "gpt-4o-mini": "文本对话（上游 ChatGPT 通道，非官网模型名）",
-  "gpt-image-2": "生图专用",
+  [CHAT_TEXT_CHANNEL]: CHAT_CHANNEL_HINT,
+  "gpt-image-2": "生图通道（生图模式自动使用）",
 };
 
-export const DEFAULT_CHAT_MODELS = ["gpt-4o-mini", "gpt-image-2"] as const;
+/** @deprecated UI 不再展示网关型号列表 */
+export const DEFAULT_CHAT_MODELS = [CHAT_TEXT_CHANNEL, "gpt-image-2"] as const;
 
 export function chatConversationTitle(messages: ChatMessage[]): string {
   const lastUser = [...messages].reverse().find((m) => m.role === "user");
