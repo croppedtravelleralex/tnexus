@@ -201,6 +201,16 @@ async fn nurture_process_one(
         match nurture::run_text_nurture(&st.http, &job.access_token, &job.prompt).await {
             Ok(v) => {
                 st.ops.record_nurture_success();
+                let binding = if job.email.is_empty() {
+                    "default"
+                } else {
+                    job.email.as_str()
+                };
+                if let Err(e) =
+                    crate::usage_events::record_dialogues_nurture(&job.email, binding)
+                {
+                    tracing::warn!(error = %e, "dialogues_nurture usage event failed");
+                }
                 Json(v)
             }
             Err(e) => {

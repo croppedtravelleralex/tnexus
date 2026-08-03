@@ -676,8 +676,9 @@ fn load_config() -> Result<WorkerConfig> {
         database_url: std::env::var("DATABASE_URL")?,
         redis_url: std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".into()),
         gptimage_base: std::env::var("GPTIMAGE_BASE")
+            .or_else(|_| std::env::var("GATEWAY_BASE"))
             .or_else(|_| std::env::var("UPSTREAM_API_BASE"))
-            .unwrap_or_else(|_| "http://127.0.0.1:8012".into()),
+            .unwrap_or_else(|_| "http://127.0.0.1:8014".into()),
         grok2api_base: std::env::var("GROK2API_BASE")
             .or_else(|_| std::env::var("UPSTREAM_API_BASE"))
             .unwrap_or_else(|_| "http://127.0.0.1:18000".into()),

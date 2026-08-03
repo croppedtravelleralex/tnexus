@@ -37,6 +37,7 @@
 | [39-grok2api-rust-migration.md](39-grok2api-rust-migration.md) | **grok2api 完整 Rust 移植** — 号池/API/运维/OCR、crate 拆分、Phase 0–7 |
 | [35-tnexus-gptimage-gap.md](35-tnexus-gptimage-gap.md) | ChatGPT gptimage 替代差距（加权 ≈85%） |
 | [38-tnexus-production-cutover.md](38-tnexus-production-cutover.md) | gptimage 生产切流 |
+| [40-tnexus-shutdown-readiness.md](40-tnexus-shutdown-readiness.md) | 停服 gptimage 就绪清单（不停 8012 推进） |
 | [R2.md](R2.md) | R2 存储配置 |
 | [../TNexus.md](../TNexus.md) | 产品愿景 |
 

@@ -16,6 +16,7 @@ struct SchedulingStateFile {
     by_email: HashMap<String, String>,
 }
 
+#[derive(Clone)]
 pub struct SchedulingGate {
     scheduling_path: PathBuf,
     backend: AccountsBackend,

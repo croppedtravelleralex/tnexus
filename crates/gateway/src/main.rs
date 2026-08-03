@@ -174,6 +174,7 @@ async fn main() -> anyhow::Result<()> {
         SchedulingGate::from_env()
     };
 
+    let reconcile_gate = scheduling_gate.clone();
     let state = Arc::new(AppState {
         helper,
         data_plane: cfg.data_plane,
@@ -192,6 +193,13 @@ async fn main() -> anyhow::Result<()> {
         image_account_rr: AtomicUsize::new(0),
         image_queue_depth: AtomicUsize::new(0),
         duplicate_prompt: duplicate_prompt::DuplicatePromptGate::new(),
+    });
+
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+            reconcile_gate.reconcile_stale_inflight();
+        }
     });
 
     let auth_public = Router::new()
@@ -271,8 +279,15 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn helper_liveness(st: &AppState) -> bool {
+    if st.data_plane == DataPlane::Upstream && st.image_enabled {
+        return true;
+    }
+    st.helper.health().await.is_ok()
+}
+
 async fn health(State(st): State<Arc<AppState>>) -> impl IntoResponse {
-    let helper_ok = st.helper.health().await.is_ok();
+    let helper_ok = helper_liveness(&st).await;
     let n_accounts = st.accounts.lock().await.len();
     // Unauthenticated endpoint: report liveness and shape, never pool identities.
     Json(json!({

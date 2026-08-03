@@ -6,8 +6,15 @@ use axum::{extract::State, Json};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
+async fn helper_liveness(st: &AppState) -> bool {
+    if st.data_plane == DataPlane::Upstream && st.image_enabled {
+        return true;
+    }
+    st.helper.health().await.is_ok()
+}
+
 pub async fn capabilities(State(st): State<Arc<AppState>>) -> Json<Value> {
-    let helper_ok = st.helper.health().await.is_ok();
+    let helper_ok = helper_liveness(&st).await;
     let upstream_mode = st.data_plane == DataPlane::Upstream;
     let image_edits_enabled = st.image_enabled && upstream_mode;
     let mut deferred = Vec::new();

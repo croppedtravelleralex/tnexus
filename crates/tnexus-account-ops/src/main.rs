@@ -6,6 +6,7 @@ mod pkce;
 mod relogin;
 mod refresh;
 mod routes;
+mod usage_events;
 mod user_info;
 mod workers;
 

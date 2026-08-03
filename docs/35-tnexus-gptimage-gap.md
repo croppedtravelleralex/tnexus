@@ -39,7 +39,7 @@ account-ops 已切 **Rust 二进制**（OAuth + token refresh）；养号/Outloo
 | G 数据面对话/Studio parity | 8% | 65 | 88 |
 | **加权合计** | **100%** | **≈90%** | **≈93%** |
 
-**当前加权 ≈ 90%**。到 **95%** 仍需：Panda 实切 Postgres（断 gptimage 卷）、`:8012` humanlike 压测对照、Sentinel PoW 全自动化（部分账号密码重登需 `OPENAI_SENTINEL_HEADER`）。
+**当前加权 ≈ 90%**（停服就绪 ~91% 待本轮 deploy 复测）。到 **95%** 仍需：Panda 实切 Postgres（**不停 :8012 进程，仅迁数据**）、`:8012` humanlike 压测对照、Sentinel PoW 全自动化、灰度切流 7 天。见 [40-tnexus-shutdown-readiness.md](40-tnexus-shutdown-readiness.md)。
 
 ---
 

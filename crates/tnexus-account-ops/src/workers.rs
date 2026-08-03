@@ -50,6 +50,14 @@ async fn nurture_loop(ops: Arc<OpsServices>, http: reqwest::Client) {
         match result {
             Ok(v) => {
                 ops.record_nurture_success();
+                let binding = if job.email.is_empty() {
+                    "default"
+                } else {
+                    job.email.as_str()
+                };
+                if let Err(e) = crate::usage_events::record_dialogues_nurture(&job.email, binding) {
+                    warn!(error = %e, "dialogues_nurture usage event failed");
+                }
                 let bytes = v.get("bytes").and_then(|b| b.as_u64()).unwrap_or(0);
                 info!(email = %job.email, bytes, "nurture ok");
             }

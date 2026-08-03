@@ -65,7 +65,8 @@ impl AppConfig {
                 .map(str::to_string)
                 .collect(),
             gptimage_base: env::var("GPTIMAGE_BASE")
-                .unwrap_or_else(|_| "http://127.0.0.1:8012".into()),
+                .or_else(|_| env::var("GATEWAY_BASE"))
+                .unwrap_or_else(|_| "http://127.0.0.1:8014".into()),
             gptimage_admin_token: env::var("GPTIMAGE_ADMIN_TOKEN").ok(),
             account_ops_base: env::var("ACCOUNT_OPS_BASE")
                 .unwrap_or_else(|_| "http://127.0.0.1:9011".into()),

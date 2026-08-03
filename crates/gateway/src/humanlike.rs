@@ -46,6 +46,7 @@ pub fn score_account(input: &AccountScoreInput, hour: u8, jitter: f64) -> f64 {
 }
 
 /// Pick index into `candidates` using humanlike scores; falls back to `rr_start % len`.
+/// With probability `epsilon`, explore a random candidate (ε-greedy, aligned with gptimage).
 pub fn pick_account_index(
     candidates: &[AccountScoreInput],
     rr_start: usize,
@@ -53,8 +54,16 @@ pub fn pick_account_index(
     if candidates.is_empty() {
         return 0;
     }
+    let epsilon = std::env::var("HUMANLIKE_EPSILON")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(0.12)
+        .clamp(0.0, 1.0);
     let hour = Local::now().hour() as u8;
     let mut rng = rand::thread_rng();
+    if epsilon > 0.0 && rng.gen::<f64>() < epsilon {
+        return rng.gen_range(0..candidates.len());
+    }
     let mut best_idx = rr_start % candidates.len();
     let mut best_score = -1.0;
     for (i, c) in candidates.iter().enumerate() {
