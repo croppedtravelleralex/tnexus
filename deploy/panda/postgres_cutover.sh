@@ -28,7 +28,13 @@ fi
 
 PG_CONTAINER="${PG_CONTAINER:-panda-postgres-1}"
 
-python3 -c "import psycopg2" 2>/dev/null || pip3 install -q psycopg2-binary
+if ! python3 -c "import psycopg2" 2>/dev/null; then
+  if command -v apt-get >/dev/null; then
+    apt-get install -y python3-psycopg2
+  else
+    pip3 install -q psycopg2-binary
+  fi
+fi
 
 echo "==> apply migration 009"
 docker exec -i "$PG_CONTAINER" psql -U tnexus -d tnexus <"$MIGRATION"
