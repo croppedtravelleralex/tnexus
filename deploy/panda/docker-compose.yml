@@ -37,7 +37,6 @@ services:
     volumes:
       - /opt/tnexus/data/pool:/data/pool:rw
       - /opt/tnexus/data/images:/data/images:rw
-      - /root/gptimage/data:/gptimage/data:rw
     depends_on:
       - postgres
       - redis

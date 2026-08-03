@@ -4,7 +4,7 @@ set -euo pipefail
 
 TNEXUS_ROOT="${TNEXUS_ROOT:-/root/TNexus}"
 ENV_FILE="/opt/tnexus/.env"
-SQLITE_PATH="${SQLITE_PATH:-/gptimage/data/accounts.db}"
+SQLITE_PATH="${SQLITE_PATH:-/root/gptimage/data/accounts.db}"
 MIGRATION="$TNEXUS_ROOT/migrations/009_tnexus_accounts.sql"
 
 if [[ ! -f "$ENV_FILE" ]]; then
@@ -43,6 +43,7 @@ export ACCOUNTS_DB="$SQLITE_PATH"
 python3 "$TNEXUS_ROOT/scripts/etl_accounts_to_postgres.py"
 
 echo "==> reconcile counts"
+export ACCOUNTS_DB="$SQLITE_PATH"
 python3 "$TNEXUS_ROOT/scripts/reconcile_accounts_postgres.py" || true
 
 echo "==> patch $ENV_FILE"
@@ -59,3 +60,6 @@ fi
 
 echo "done. ACCOUNTS_* now:"
 grep -E '^ACCOUNTS_' "$ENV_FILE"
+
+echo "==> redeploy TNexus (gateway + api/worker pick up postgres env)"
+bash "$TNEXUS_ROOT/deploy/panda/deploy.sh"

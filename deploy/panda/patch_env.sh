@@ -20,8 +20,10 @@ if grep -q "^ACCOUNTS_FILE=" "$ENV" 2>/dev/null; then
 fi
 
 ensure_kv TNEXUS_ACCOUNT_OPS_IMAGE ghcr.io/croppedtravelleralex/tnexus-account-ops:latest
-ensure_kv ACCOUNTS_BACKEND sqlite
-ensure_kv ACCOUNTS_DB /gptimage/data/accounts.db
+if ! grep -q '^ACCOUNTS_BACKEND=postgres' "$ENV" 2>/dev/null; then
+  ensure_kv ACCOUNTS_BACKEND sqlite
+  ensure_kv ACCOUNTS_DB /gptimage/data/accounts.db
+fi
 ensure_kv SCHEDULING_STATE_FILE /data/pool/scheduling_state.json
 ensure_kv USAGE_EVENTS_FILE /data/pool/usage_events.ndjson
 ensure_kv PIPELINE_EVENTS_FILE /data/pool/pipeline_events.ndjson
