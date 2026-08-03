@@ -3,7 +3,7 @@ use crate::state::AppState;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
-    routing::{get, patch, post},
+    routing::{delete, get, patch, post},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
@@ -36,7 +36,7 @@ pub struct PatchConversationBody {
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", get(list_handler).post(create_handler))
-        .route("/{id}", get(get_handler).patch(patch_handler))
+        .route("/{id}", get(get_handler).patch(patch_handler).delete(delete_handler))
 }
 
 async fn list_handler(
@@ -91,6 +91,24 @@ async fn get_handler(
     .map_err(internal)?
     .ok_or((StatusCode::NOT_FOUND, "not found".into()))?;
     row_to_conv(row).ok_or(internal("row")).map(Json)
+}
+
+async fn delete_handler(
+    State(state): State<Arc<AppState>>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let uid = parse_uid(&user)?;
+    let result = sqlx::query("DELETE FROM conversations WHERE id = $1 AND user_id = $2")
+        .bind(id)
+        .bind(uid)
+        .execute(&state.pool)
+        .await
+        .map_err(internal)?;
+    if result.rows_affected() == 0 {
+        return Err((StatusCode::NOT_FOUND, "not found".into()));
+    }
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 async fn patch_handler(

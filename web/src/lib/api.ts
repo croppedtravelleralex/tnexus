@@ -318,6 +318,8 @@ export const conversationsApi = {
       method: "PATCH",
       body: JSON.stringify(body),
     }),
+  delete: (id: string) =>
+    api<{ ok: boolean }>(`/api/conversations/${id}`, { method: "DELETE", body: "{}" }),
 };
 
 export const jobsApi = {

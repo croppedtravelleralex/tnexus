@@ -27,6 +27,11 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { Account, IpNurtureBinding, IpNurturePreset } from "@/lib/api";
 import {
+  collectAbnormalReasons,
+  formatAbnormalSummary,
+  formatRecoveryHint,
+} from "@/lib/account-abnormal";
+import {
   aggregateCfDays,
   aggregateEgressDays,
   bindingLabelForAccount,
@@ -273,10 +278,21 @@ export function AccountsDataTable({
           </div>
         </td>
         <td className="px-2 py-2">
-          <Badge variant={status.badge} className="inline-flex items-center gap-1 rounded-md px-2 py-1">
-            <StatusIcon className="size-3.5" />
-            {account.status}
-          </Badge>
+          <div className="max-w-52">
+            <Badge variant={status.badge} className="inline-flex items-center gap-1 rounded-md px-2 py-1">
+              <StatusIcon className="size-3.5" />
+              {account.status}
+            </Badge>
+            {account.status === "异常" || account.status === "限流" ? (
+              <div
+                className="mt-1 space-y-0.5 text-[10px] leading-snug text-amber-800"
+                title={collectAbnormalReasons(account).join("\n")}
+              >
+                <p className="line-clamp-2">{formatAbnormalSummary(account)}</p>
+                <p className="text-amber-600/80">{formatRecoveryHint(account)}</p>
+              </div>
+            ) : null}
+          </div>
         </td>
         <td className="px-2 py-2">
           <button
