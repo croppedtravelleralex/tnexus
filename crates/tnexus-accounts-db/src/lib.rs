@@ -176,6 +176,49 @@ impl AccountsDb {
         })
     }
 
+    /// Reset `image_inflight` to 0 when above `ceiling` (stale inflight leak repair).
+    pub fn reconcile_inflight_above(&self, ceiling: i64) -> Result<usize> {
+        if ceiling <= 0 {
+            return Ok(0);
+        }
+        self.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let mut reset = 0usize;
+            {
+                let mut stmt = tx.prepare("SELECT id, access_token, data FROM accounts")?;
+                let rows = stmt.query_map([], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?;
+                for row in rows {
+                    let (id, token, data) = row?;
+                    let mut value = row_to_value(&token, &data)?;
+                    let cur = value
+                        .get("image_inflight")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0);
+                    if cur <= ceiling {
+                        continue;
+                    }
+                    if let Some(obj) = value.as_object_mut() {
+                        obj.insert("image_inflight".into(), json!(0));
+                    }
+                    let data_str = normalize_data_json(&value, &token)?;
+                    tx.execute(
+                        "UPDATE accounts SET data = ?1 WHERE id = ?2",
+                        params![data_str, id],
+                    )?;
+                    reset += 1;
+                }
+            }
+            tx.commit()?;
+            Ok(reset)
+        })
+    }
+
     pub fn touch_inflight(&self, email: &str, delta: i64) -> Result<()> {
         let key = email.trim().to_lowercase();
         if key.is_empty() {
@@ -368,6 +411,36 @@ mod tests {
         let items = db.list_account_values().unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].get("image_inflight").and_then(|v| v.as_i64()), Some(1));
+    }
+
+    #[test]
+    fn reconcile_inflight_above_resets_stale_counters() {
+        let dir = std::env::temp_dir().join(format!("tnexus-accounts-db-{}", uuid()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("accounts.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE accounts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    access_token TEXT NOT NULL UNIQUE,
+                    data TEXT NOT NULL
+                );",
+            )
+            .unwrap();
+        }
+        let db = AccountsDb::open(&path).unwrap();
+        db.upsert_account_value(&json!({
+            "email": "stale@example.com",
+            "access_token": "tok-stale",
+            "status": "正常",
+            "image_inflight": 99
+        }))
+        .unwrap();
+        let reset = db.reconcile_inflight_above(8).unwrap();
+        assert_eq!(reset, 1);
+        let items = db.list_account_values().unwrap();
+        assert_eq!(items[0].get("image_inflight").and_then(|v| v.as_i64()), Some(0));
     }
 
     #[test]

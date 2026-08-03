@@ -676,7 +676,11 @@ export const proxyApi = {
 const GATEWAY_BASE = (process.env.NEXT_PUBLIC_GATEWAY_BASE ?? "http://localhost:8014").replace(/\/$/, "");
 const GATEWAY_KEY = process.env.NEXT_PUBLIC_GATEWAY_KEY ?? "";
 
-async function readChatStream(res: Response, onDelta: (text: string) => void) {
+async function readChatStream(
+  res: Response,
+  onDelta: (text: string) => void,
+  onImageB64?: (b64: string) => void,
+) {
   const reader = res.body?.getReader();
   if (!reader) throw new Error("无响应流");
   const decoder = new TextDecoder();
@@ -694,10 +698,16 @@ async function readChatStream(res: Response, onDelta: (text: string) => void) {
       if (payload === "[DONE]") return;
       try {
         const json = JSON.parse(payload) as {
-          choices?: Array<{ delta?: { content?: string } }>;
+          choices?: Array<{
+            delta?: { content?: string; tnexus_image_b64?: string };
+            message?: { tnexus_image_b64?: string };
+          }>;
         };
-        const delta = json.choices?.[0]?.delta?.content;
-        if (delta) onDelta(delta);
+        const choice = json.choices?.[0];
+        const delta = choice?.delta;
+        if (delta?.content) onDelta(delta.content);
+        const imageB64 = delta?.tnexus_image_b64 ?? choice?.message?.tnexus_image_b64;
+        if (imageB64 && onImageB64) onImageB64(imageB64);
       } catch {
         // skip malformed chunk
       }
@@ -709,6 +719,7 @@ export const chatApi = {
   streamCompletion: async (
     body: { model: string; messages: Array<{ role: string; content: string }>; stream?: boolean },
     onDelta: (text: string) => void,
+    onImageB64?: (b64: string) => void,
   ) => {
     const stream = body.stream !== false;
     let res: Response;
@@ -738,13 +749,19 @@ export const chatApi = {
       throw new Error(text || res.statusText);
     }
     if (stream) {
-      await readChatStream(res, onDelta);
+      await readChatStream(res, onDelta, onImageB64);
       return;
     }
     const data = (await res.json()) as {
-      choices?: Array<{ message?: { content?: string } }>;
+      choices?: Array<{
+        message?: { content?: string; tnexus_image_b64?: string };
+      }>;
     };
-    const content = data.choices?.[0]?.message?.content ?? "";
+    const message = data.choices?.[0]?.message;
+    if (message?.tnexus_image_b64 && onImageB64) {
+      onImageB64(message.tnexus_image_b64);
+    }
+    const content = message?.content ?? "";
     if (content) onDelta(content);
   },
 };

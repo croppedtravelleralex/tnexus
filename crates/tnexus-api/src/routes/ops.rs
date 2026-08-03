@@ -191,9 +191,24 @@ async fn nurture_process_one(
         "email": body.email,
         "source": if body.source.is_empty() { "tnexus_accounts_ui" } else { body.source.as_str() },
     });
+    let mut nurture_email = body.email.trim().to_lowercase();
+    let mut nurture_binding = String::new();
     if !body.access_token.is_empty() {
         if let Some(account) = state.accounts.export_account_for_token(&body.access_token).await {
-            payload["account"] = account;
+            payload["account"] = account.clone();
+            if nurture_email.is_empty() {
+                nurture_email = account
+                    .get("email")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_lowercase();
+            }
+            nurture_binding = crate::usage_metrics::binding_key_for_account_fields(
+                account.get("proxy_binding_hash").and_then(|v| v.as_str()),
+                account.get("proxy").and_then(|v| v.as_str()),
+                account.get("egress_ip").and_then(|v| v.as_str()),
+            );
         }
     }
     let data = account_ops::nurture_process_one(&state, payload)
@@ -203,6 +218,33 @@ async fn nurture_process_one(
         let _ = state.accounts.merge_remote_items(&[account]).await;
     } else if let Some(updated) = data.get("updated_account").cloned() {
         let _ = state.accounts.merge_remote_items(&[updated]).await;
+    }
+    let ok = data.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+    if ok {
+        if nurture_email.is_empty() {
+            nurture_email = data
+                .get("email")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_lowercase();
+        }
+        if nurture_binding.is_empty() {
+            nurture_binding = data
+                .get("binding_key")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+        }
+        if !nurture_email.is_empty() {
+            let _ = crate::usage_metrics::record_event(&crate::usage_metrics::UsageEvent {
+                ts: chrono::Utc::now().to_rfc3339(),
+                email: nurture_email,
+                binding: nurture_binding,
+                metric: "dialogues_nurture".into(),
+                ok: true,
+            });
+        }
     }
     Ok(Json(data))
 }

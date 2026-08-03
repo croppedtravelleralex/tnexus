@@ -18,10 +18,10 @@ use auth_routes::{
     list_users, login, logout, me, register, require_admin, require_auth, require_member,
     set_user_disabled,
 };
-use axum::{
+use axum::extract::FromRequest;
     body::Body,
-    extract::{Path, Query, State},
-    http::{header, HeaderMap, Method, StatusCode},
+    extract::{Multipart, Path, Query, State},
+    http::{header, HeaderMap, Method, Request, StatusCode},
     middleware,
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -36,10 +36,14 @@ use helper_client::{
     HelperClient, ImageRunRequest, PinAccount, QuotaRefreshRequest, TextRunRequest,
 };
 use protocol::{
-    chat_completion_response, classify_fault, image_generation_b64_response_with_pipeline,
-    image_generation_response, image_generation_url_response,
-    image_generation_url_response_with_pipeline, openai_error, ChatCompletionRequest,
-    ImageEditRequest, ImageGenerationRequest,
+    chat_completion_response, chat_completion_response_with_image_b64, classify_fault,
+    chat_message_requests_image, extract_chat_image_prompt, fold_chat_messages_for_upstream,
+    image_generation_b64_multi_response,
+    image_generation_b64_multi_response_with_pipeline,
+    image_generation_response, image_generation_url_multi_response,
+    image_generation_url_multi_response_with_pipeline, image_generation_url_response,
+    openai_error, ChatCompletionRequest,
+    ImageEditRequest, ImageGenerationRequest, MAX_IMAGE_BATCH_N,
 };
 use serde_json::{json, Value};
 use state::AppState;
@@ -48,7 +52,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, TryAcquireError};
 use tower_http::{
     cors::{AllowOrigin, Any, CorsLayer},
     services::ServeDir,
@@ -565,19 +569,143 @@ async fn quota_refresh(
     }
 }
 
+fn try_acquire_image_permit(st: &AppState) -> Result<tokio::sync::OwnedSemaphorePermit, Response> {
+    match st.image_sem.clone().try_acquire_owned() {
+        Ok(permit) => Ok(permit),
+        Err(TryAcquireError::NoPermitsAvailable) => Err(err(
+            StatusCode::TOO_MANY_REQUESTS,
+            "image_service_busy: global concurrency limit reached",
+            "image_service_busy",
+            Some("gate"),
+        )),
+        Err(TryAcquireError::Closed) => Err(err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "image semaphore closed",
+            "semaphore_closed",
+            Some("self"),
+        )),
+    }
+}
+
+async fn chat_image_completions(
+    st: &Arc<AppState>,
+    req: &ChatCompletionRequest,
+    account: &PinAccount,
+    last_user: &str,
+) -> Response {
+    if !st.image_enabled {
+        return err(
+            StatusCode::NOT_IMPLEMENTED,
+            "chat image requires IMAGE_ENABLED=1",
+            "image_deferred",
+            Some("gate"),
+        );
+    }
+    if st.data_plane != DataPlane::Upstream {
+        return err(
+            StatusCode::NOT_IMPLEMENTED,
+            "chat image requires DATA_PLANE=upstream",
+            "image_deferred",
+            Some("gate"),
+        );
+    }
+
+    let permit = match try_acquire_image_permit(st) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    let image_prompt = extract_chat_image_prompt(last_user);
+    let image_model = if req.model.contains("image") {
+        req.model.clone()
+    } else {
+        "gpt-image-2".into()
+    };
+    let t0 = Instant::now();
+    let _inflight_guard = st.scheduling_gate.begin_inflight(&account.email);
+    let attempt = run_upstream_image(
+        account,
+        image_prompt,
+        image_model.clone(),
+        "1024x1024".into(),
+        None,
+        false,
+    )
+    .await;
+    let elapsed_ms = t0.elapsed().as_millis();
+    drop(permit);
+
+    match attempt {
+        Ok((bridge, metrics)) if bridge.ok => {
+            let b64 = bridge.b64_json.unwrap_or_default();
+            if b64.len() < 1000 {
+                return err(
+                    StatusCode::BAD_GATEWAY,
+                    "empty/short image from chat image path",
+                    "empty_image",
+                    Some("self"),
+                );
+            }
+            finalize_upstream_image(&st, &account.email, elapsed_ms, &metrics, 0, b64.len() as u64);
+            info!(email=%account.email, elapsed_ms, b64_len=b64.len(), "chat image ok");
+            if req.stream {
+                let stream = upstream::chat_image_b64_sse_stream(&req.model, &b64)
+                    .map(|chunk| chunk.map_err(std::io::Error::other));
+                match Response::builder()
+                    .status(StatusCode::OK)
+                    .header(header::CONTENT_TYPE, "text/event-stream")
+                    .header(header::CACHE_CONTROL, "no-cache")
+                    .header(header::CONNECTION, "keep-alive")
+                    .body(Body::from_stream(stream))
+                {
+                    Ok(r) => r,
+                    Err(e) => err(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        e.to_string(),
+                        "stream_build_failed",
+                        Some("self"),
+                    ),
+                }
+            } else {
+                (
+                    StatusCode::OK,
+                    Json(chat_completion_response_with_image_b64(&req.model, &b64)),
+                )
+                    .into_response()
+            }
+        }
+        Ok(bridge) => {
+            let msg = bridge
+                .error
+                .unwrap_or_else(|| "chat image bridge failed".into());
+            err(StatusCode::BAD_GATEWAY, msg, "image_failed", Some("upstream"))
+        }
+        Err(e) => {
+            error!(error=%e, "chat image upstream failed");
+            err(
+                StatusCode::BAD_GATEWAY,
+                e.to_string(),
+                "upstream_unreachable",
+                Some("upstream"),
+            )
+        }
+    }
+}
+
 async fn chat_completions(
     State(st): State<Arc<AppState>>,
     user: auth_routes::AuthUser,
     headers: HeaderMap,
     Json(req): Json<ChatCompletionRequest>,
 ) -> impl IntoResponse {
-    let prompt = req
+    let last_user = req
         .messages
         .iter()
         .rev()
         .find(|m| m.role == "user")
         .map(|m| m.text())
         .unwrap_or_default();
+    let prompt = fold_chat_messages_for_upstream(&req.messages);
     if prompt.trim().is_empty() {
         return err(
             StatusCode::BAD_REQUEST,
@@ -592,6 +720,11 @@ async fn chat_completions(
             Ok(a) => a,
             Err(r) => return r,
         };
+
+    if chat_message_requests_image(&last_user) {
+        return chat_image_completions(&st, &req, &account, &last_user).await;
+    }
+
     let model = req.model.clone();
 
     if req.stream {
@@ -724,112 +857,31 @@ async fn chat_completions(
     }
 }
 
-async fn image_generations(
-    State(st): State<Arc<AppState>>,
-    user: auth_routes::AuthUser,
-    headers: HeaderMap,
-    Json(req): Json<ImageGenerationRequest>,
-) -> impl IntoResponse {
-    if !st.image_enabled {
-        return err(
-            StatusCode::NOT_IMPLEMENTED,
-            "image generation deferred; set IMAGE_ENABLED=1 after backend pipeline integration",
-            "image_deferred",
-            Some("gate"),
-        );
-    }
+struct ImageBatchItem {
+    b64: String,
+    upstream_metrics: Option<upstream::ImageRunMetrics>,
+    account: PinAccount,
+    elapsed_ms: u128,
+    pipeline: Option<Value>,
+}
 
-    if req.n != 1 {
-        return err(
-            StatusCode::BAD_REQUEST,
-            "MVP only supports n=1",
-            "n_unsupported",
-            Some("client"),
-        );
-    }
-
-    let is_admin = user.claims.role.is_admin();
-    let preferred = preferred_email(&headers);
-    let candidates =
-        match collect_image_accounts(&st, preferred, is_admin).await {
-            Ok(c) => c,
-            Err(r) => return r,
-        };
-    let start_idx = st
-        .image_account_rr
-        .fetch_add(1, Ordering::Relaxed)
-        % candidates.len();
-    let account = candidates[start_idx].clone();
-
-    let permit = match st.image_sem.clone().acquire_owned().await {
-        Ok(p) => p,
-        Err(_) => {
-            return err(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "image semaphore closed",
-                "semaphore_closed",
-                Some("self"),
-            );
-        }
-    };
-
-    let qreq = QuotaRefreshRequest {
-        account: account.clone(),
-        min_remaining: st.min_image_quota,
-    };
-    if st.data_plane == DataPlane::Upstream {
-        info!(email=%account.email, "upstream image: skipping helper quota precheck");
-    } else {
-        match st.helper.refresh_quota(&qreq).await {
-            Ok(q) if q.ok && q.imageable.unwrap_or(false) => {}
-            Ok(q) if q.ok => {
-                drop(permit);
-                return err(
-                    StatusCode::TOO_MANY_REQUESTS,
-                    format!(
-                        "image_quota_insufficient: remaining={:?} status={:?} min={} restore_at={:?}",
-                        q.remaining, q.status, st.min_image_quota, q.restore_at
-                    ),
-                    "image_quota_insufficient",
-                    Some("gate"),
-                );
-            }
-            Ok(q) => {
-                drop(permit);
-                let fault = q.fault.as_deref().unwrap_or("upstream");
-                let msg = q
-                    .error
-                    .unwrap_or_else(|| "quota refresh failed before image".into());
-                let code = if fault == "self" {
-                    StatusCode::INTERNAL_SERVER_ERROR
-                } else {
-                    StatusCode::BAD_GATEWAY
-                };
-                return err(code, msg, "quota_refresh_failed", Some(fault));
-            }
-            Err(e) => {
-                drop(permit);
-                error!(error=%e, "helper quota precheck failed");
-                return err(
-                    StatusCode::BAD_GATEWAY,
-                    e.to_string(),
-                    "helper_unreachable",
-                    Some("self"),
-                );
-            }
-        }
-    }
-
-    let t0 = Instant::now();
+async fn generate_one_image(
+    st: &AppState,
+    candidates: &[PinAccount],
+    start_idx: usize,
+    is_admin: bool,
+    req: &ImageGenerationRequest,
+) -> Result<ImageBatchItem, Result<helper_client::BridgeOk, anyhow::Error>> {
     let max_attempts = if is_admin && st.data_plane == DataPlane::Upstream {
         candidates.len().max(1)
     } else {
         1
     };
+    let t0 = Instant::now();
     let mut result: Result<helper_client::BridgeOk, anyhow::Error> =
         Err(anyhow::anyhow!("image generation not attempted"));
     let mut upstream_metrics: Option<upstream::ImageRunMetrics> = None;
-    let mut used_account = account.clone();
+    let mut used_account = candidates[start_idx].clone();
     let _inflight_guard = st.scheduling_gate.begin_inflight(&used_account.email);
 
     for try_no in 0..max_attempts {
@@ -895,263 +947,42 @@ async fn image_generations(
             }
         }
     }
-    let account = used_account;
-    let elapsed_ms = t0.elapsed().as_millis();
-    drop(permit);
 
+    let elapsed_ms = t0.elapsed().as_millis();
     match result {
         Ok(r) if r.ok => {
-            let want_url = image_assets::wants_url_response(&req.response_format);
-            if want_url {
-                let bytes = if let Some(b64) = r.b64_json.as_deref() {
-                    match BASE64.decode(b64) {
-                        Ok(b) if b.len() >= 256 => b,
-                        Ok(_) => {
-                            return err(
-                                StatusCode::BAD_GATEWAY,
-                                "empty/short image payload from bridge",
-                                "empty_image",
-                                Some("self"),
-                            );
-                        }
-                        Err(e) => {
-                            return err(
-                                StatusCode::BAD_GATEWAY,
-                                format!("invalid b64_json from bridge: {e}"),
-                                "empty_image",
-                                Some("self"),
-                            );
-                        }
-                    }
-                } else {
-                    return err(
-                        StatusCode::BAD_GATEWAY,
-                        "bridge returned no image payload for url response",
-                        "empty_image",
-                        Some("self"),
-                    );
-                };
-                let asset_t0 = Instant::now();
-                match build_image_asset_url(&st, &headers, bytes) {
-                    Ok(url) => {
-                        let asset_store_ms = asset_t0.elapsed().as_millis() as u64;
-                        let pipeline = upstream_metrics.as_ref().map(|m| {
-                            finalize_upstream_image(
-                                &st,
-                                &account.email,
-                                elapsed_ms,
-                                m,
-                                asset_store_ms,
-                                url.len() as u64,
-                            )
-                        });
-                        info!(
-                            email=%account.email,
-                            elapsed_ms,
-                            url_len=url.len(),
-                            quota_after=?pipeline.as_ref().and_then(|p| p.get("quota_after")),
-                            "image ok (url)"
-                        );
-                        let body = if let Some(p) = pipeline {
-                            image_generation_url_response_with_pipeline(&url, p)
-                        } else {
-                            image_generation_url_response(&url)
-                        };
-                        return (StatusCode::OK, Json(body)).into_response();
-                    }
-                    Err(e) => {
-                        return err(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            e.to_string(),
-                            "image_url_failed",
-                            Some("self"),
-                        );
-                    }
-                }
-            }
-
             let b64 = r.b64_json.unwrap_or_default();
             if b64.len() < 1000 {
-                return err(
-                    StatusCode::BAD_GATEWAY,
-                    "empty/short b64_json from bridge",
-                    "empty_image",
-                    Some("self"),
-                );
+                return Err(Err(anyhow::anyhow!("empty/short b64_json from bridge")));
             }
-            let pipeline = upstream_metrics.as_ref().map(|m| {
-                finalize_upstream_image(
-                    &st,
-                    &account.email,
-                    elapsed_ms,
-                    m,
-                    0,
-                    b64.len() as u64,
-                )
-            });
-            info!(
-                email=%account.email,
+            Ok(ImageBatchItem {
+                b64,
+                upstream_metrics,
+                account: used_account,
                 elapsed_ms,
-                b64_len=b64.len(),
-                quota_after=?pipeline.as_ref().and_then(|p| p.get("quota_after")),
-                "image ok"
-            );
-            let body = if let Some(p) = pipeline {
-                image_generation_b64_response_with_pipeline(&b64, p)
-            } else {
-                image_generation_response(&b64)
-            };
-            (StatusCode::OK, Json(body)).into_response()
+                pipeline: None,
+            })
         }
-        Ok(r) => {
-            let fault = r.fault.as_deref();
-            let msg = r.error.unwrap_or_else(|| "image bridge failed".into());
-            let class = classify_fault(fault, Some(&msg));
-            warn!(email=%account.email, elapsed_ms, fault=?fault, error=%msg, "image failed");
-            let (code, err_code) = match class {
-                protocol::ErrorClass::Self_ => (StatusCode::INTERNAL_SERVER_ERROR, "image_failed"),
-                protocol::ErrorClass::Gate => {
-                    (StatusCode::TOO_MANY_REQUESTS, "image_quota_insufficient")
-                }
-                _ => (StatusCode::BAD_GATEWAY, "image_failed"),
-            };
-            err(code, msg, err_code, Some(class.as_str()))
-        }
-        Err(e) => {
-            error!(email=%account.email, elapsed_ms, error=%e, "image call failed");
-            err(
-                StatusCode::BAD_GATEWAY,
-                e.to_string(),
-                if st.data_plane == DataPlane::Upstream {
-                    "upstream_unreachable"
-                } else {
-                    "helper_unreachable"
-                },
-                Some(if st.data_plane == DataPlane::Upstream {
-                    "upstream"
-                } else {
-                    "self"
-                }),
-            )
-        }
+        Ok(r) => Err(Ok(r)),
+        Err(e) => Err(Err(e)),
     }
 }
 
-async fn run_upstream_image_edit(
-    account: &PinAccount,
-    prompt: String,
-    model: String,
-    size: String,
-    image_bytes: Vec<u8>,
-) -> Result<(helper_client::BridgeOk, upstream::ImageRunMetrics), anyhow::Error> {
-    let prompt = tnexus_domain::append_image_generation_hints(&prompt, &size, "auto", false);
-    upstream_face::run_image_edit(account, prompt, model, image_bytes, "edit.png".into())
-        .await
-        .map(|(bytes, metrics)| {
-            let b64 = BASE64.encode(&bytes);
-            let bridge = helper_client::BridgeOk {
-                ok: true,
-                content: None,
-                b64_json: Some(b64),
-                conversation_id: None,
-                fault: None,
-                error: None,
-                elapsed_ms: Some(metrics.wall_ms),
-                raw: None,
-                quota: None,
-            };
-            (bridge, metrics)
-        })
-}
-
-async fn image_edits(
-    State(st): State<Arc<AppState>>,
-    user: auth_routes::AuthUser,
-    headers: HeaderMap,
-    Json(req): Json<ImageEditRequest>,
-) -> impl IntoResponse {
-    if !st.image_enabled {
-        return err(
-            StatusCode::NOT_IMPLEMENTED,
-            "image edits deferred; set IMAGE_ENABLED=1 after backend pipeline integration",
-            "image_edits_deferred",
-            Some("gate"),
-        );
-    }
-    if st.data_plane != DataPlane::Upstream {
-        return err(
-            StatusCode::NOT_IMPLEMENTED,
-            "image edits require DATA_PLANE=upstream",
-            "image_edits_deferred",
-            Some("gate"),
-        );
-    }
-    if req.n != 1 {
-        return err(
-            StatusCode::BAD_REQUEST,
-            "MVP only supports n=1",
-            "n_unsupported",
-            Some("client"),
-        );
-    }
-    let Some(image_raw) = req.image.as_deref().filter(|s| !s.trim().is_empty()) else {
-        return err(
-            StatusCode::BAD_REQUEST,
-            "image field is required (base64 or data URL)",
-            "image_required",
-            Some("client"),
-        );
-    };
-    let image_bytes = match upstream::upload::decode_image_payload(image_raw) {
-        Ok(bytes) if bytes.len() >= 64 => bytes,
-        Ok(_) => {
-            return err(
-                StatusCode::BAD_REQUEST,
-                "image payload too short",
-                "image_invalid",
-                Some("client"),
-            );
-        }
-        Err(e) => {
-            return err(
-                StatusCode::BAD_REQUEST,
-                format!("invalid image payload: {e}"),
-                "image_invalid",
-                Some("client"),
-            );
-        }
-    };
-
-    let is_admin = user.claims.role.is_admin();
-    let preferred = preferred_email(&headers);
-    let candidates = match collect_image_accounts(&st, preferred, is_admin).await {
-        Ok(c) => c,
-        Err(r) => return r,
-    };
-    let start_idx = st
-        .image_account_rr
-        .fetch_add(1, Ordering::Relaxed)
-        % candidates.len();
-    let account = candidates[start_idx].clone();
-
-    let permit = match st.image_sem.clone().acquire_owned().await {
-        Ok(p) => p,
-        Err(_) => {
-            return err(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "image semaphore closed",
-                "semaphore_closed",
-                Some("self"),
-            );
-        }
-    };
-
-    let t0 = Instant::now();
+async fn generate_one_image_edit(
+    st: &AppState,
+    candidates: &[PinAccount],
+    start_idx: usize,
+    is_admin: bool,
+    req: &ImageEditRequest,
+    image_bytes: &[u8],
+    mask_bytes: Option<&[u8]>,
+) -> Result<ImageBatchItem, Result<helper_client::BridgeOk, anyhow::Error>> {
     let max_attempts = if is_admin { candidates.len().max(1) } else { 1 };
+    let t0 = Instant::now();
     let mut result: Result<helper_client::BridgeOk, anyhow::Error> =
         Err(anyhow::anyhow!("image edit not attempted"));
     let mut upstream_metrics: Option<upstream::ImageRunMetrics> = None;
-    let mut used_account = account.clone();
+    let mut used_account = candidates[start_idx].clone();
     let _inflight_guard = st.scheduling_gate.begin_inflight(&used_account.email);
 
     for try_no in 0..max_attempts {
@@ -1164,7 +995,8 @@ async fn image_edits(
             req.prompt.clone(),
             req.model.clone(),
             req.size.clone(),
-            image_bytes.clone(),
+            image_bytes.to_vec(),
+            mask_bytes.map(|m| m.to_vec()),
         )
         .await;
         match attempt_result {
@@ -1193,61 +1025,624 @@ async fn image_edits(
             }
         }
     }
-    let account = used_account;
-    let elapsed_ms = t0.elapsed().as_millis();
-    drop(permit);
 
+    let elapsed_ms = t0.elapsed().as_millis();
     match result {
         Ok(r) if r.ok => {
             let b64 = r.b64_json.unwrap_or_default();
             if b64.len() < 1000 {
+                return Err(Err(anyhow::anyhow!("empty/short b64_json from bridge")));
+            }
+            Ok(ImageBatchItem {
+                b64,
+                upstream_metrics,
+                account: used_account,
+                elapsed_ms,
+                pipeline: None,
+            })
+        }
+        Ok(r) => Err(Ok(r)),
+        Err(e) => Err(Err(e)),
+    }
+}
+
+fn image_batch_bridge_failure(
+    account: &PinAccount,
+    elapsed_ms: u128,
+    r: helper_client::BridgeOk,
+    log_label: &str,
+) -> Response {
+    let fault = r.fault.as_deref();
+    let msg = r.error.unwrap_or_else(|| format!("{log_label} bridge failed"));
+    let class = classify_fault(fault, Some(&msg));
+    warn!(email=%account.email, elapsed_ms, fault=?fault, error=%msg, log_label, "image batch bridge failed");
+    let (code, err_code) = match class {
+        protocol::ErrorClass::Self_ => (StatusCode::INTERNAL_SERVER_ERROR, "image_failed"),
+        protocol::ErrorClass::Gate => (StatusCode::TOO_MANY_REQUESTS, "image_quota_insufficient"),
+        _ => (StatusCode::BAD_GATEWAY, "image_failed"),
+    };
+    err(code, msg, err_code, Some(class.as_str()))
+}
+
+fn image_batch_upstream_failure(st: &AppState, account: &PinAccount, elapsed_ms: u128, e: &anyhow::Error) -> Response {
+    error!(email=%account.email, elapsed_ms, error=%e, "image call failed");
+    err(
+        StatusCode::BAD_GATEWAY,
+        e.to_string(),
+        if st.data_plane == DataPlane::Upstream {
+            "upstream_unreachable"
+        } else {
+            "helper_unreachable"
+        },
+        Some(if st.data_plane == DataPlane::Upstream {
+            "upstream"
+        } else {
+            "self"
+        }),
+    )
+}
+
+async fn image_generations(
+    State(st): State<Arc<AppState>>,
+    user: auth_routes::AuthUser,
+    headers: HeaderMap,
+    Json(req): Json<ImageGenerationRequest>,
+) -> impl IntoResponse {
+    if !st.image_enabled {
+        return err(
+            StatusCode::NOT_IMPLEMENTED,
+            "image generation deferred; set IMAGE_ENABLED=1 after backend pipeline integration",
+            "image_deferred",
+            Some("gate"),
+        );
+    }
+
+    if req.n == 0 || req.n > MAX_IMAGE_BATCH_N {
+        return err(
+            StatusCode::BAD_REQUEST,
+            format!("n must be between 1 and {}", MAX_IMAGE_BATCH_N),
+            "n_unsupported",
+            Some("client"),
+        );
+    }
+    let batch_n = req.n;
+
+    let is_admin = user.claims.role.is_admin();
+    let preferred = preferred_email(&headers);
+    let candidates =
+        match collect_image_accounts(&st, preferred, is_admin).await {
+            Ok(c) => c,
+            Err(r) => return r,
+        };
+    let start_idx = st
+        .image_account_rr
+        .fetch_add(1, Ordering::Relaxed)
+        % candidates.len();
+    let account = candidates[start_idx].clone();
+
+    let permit = match try_acquire_image_permit(&st) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    let qreq = QuotaRefreshRequest {
+        account: account.clone(),
+        min_remaining: st.min_image_quota * batch_n as i64,
+    };
+    if st.data_plane == DataPlane::Upstream {
+        info!(email=%account.email, "upstream image: skipping helper quota precheck");
+    } else {
+        match st.helper.refresh_quota(&qreq).await {
+            Ok(q) if q.ok && q.imageable.unwrap_or(false) => {}
+            Ok(q) if q.ok => {
+                drop(permit);
+                return err(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    format!(
+                        "image_quota_insufficient: remaining={:?} status={:?} min={} restore_at={:?}",
+                        q.remaining, q.status, st.min_image_quota, q.restore_at
+                    ),
+                    "image_quota_insufficient",
+                    Some("gate"),
+                );
+            }
+            Ok(q) => {
+                drop(permit);
+                let fault = q.fault.as_deref().unwrap_or("upstream");
+                let msg = q
+                    .error
+                    .unwrap_or_else(|| "quota refresh failed before image".into());
+                let code = if fault == "self" {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                } else {
+                    StatusCode::BAD_GATEWAY
+                };
+                return err(code, msg, "quota_refresh_failed", Some(fault));
+            }
+            Err(e) => {
+                drop(permit);
+                error!(error=%e, "helper quota precheck failed");
                 return err(
                     StatusCode::BAD_GATEWAY,
-                    "empty/short b64_json from bridge",
-                    "empty_image",
+                    e.to_string(),
+                    "helper_unreachable",
                     Some("self"),
                 );
             }
-            let pipeline = upstream_metrics.as_ref().map(|m| {
-                finalize_upstream_image(&st, &account.email, elapsed_ms, m, 0, b64.len() as u64)
-            });
-            info!(
-                email=%account.email,
-                elapsed_ms,
-                b64_len=b64.len(),
-                quota_after=?pipeline.as_ref().and_then(|p| p.get("quota_after")),
-                "image edit ok"
-            );
-            let body = if let Some(p) = pipeline {
-                image_generation_b64_response_with_pipeline(&b64, p)
-            } else {
-                image_generation_response(&b64)
-            };
-            (StatusCode::OK, Json(body)).into_response()
-        }
-        Ok(r) => {
-            let fault = r.fault.as_deref();
-            let msg = r.error.unwrap_or_else(|| "image edit bridge failed".into());
-            let class = classify_fault(fault, Some(&msg));
-            let (code, err_code) = match class {
-                protocol::ErrorClass::Self_ => (StatusCode::INTERNAL_SERVER_ERROR, "image_failed"),
-                protocol::ErrorClass::Gate => {
-                    (StatusCode::TOO_MANY_REQUESTS, "image_quota_insufficient")
-                }
-                _ => (StatusCode::BAD_GATEWAY, "image_failed"),
-            };
-            err(code, msg, err_code, Some(class.as_str()))
-        }
-        Err(e) => {
-            error!(error=%e, "upstream image edit failed");
-            err(
-                StatusCode::BAD_GATEWAY,
-                e.to_string(),
-                "upstream_unreachable",
-                Some("upstream"),
-            )
         }
     }
+
+    let t0 = Instant::now();
+    let mut batch_items: Vec<ImageBatchItem> = Vec::with_capacity(batch_n as usize);
+    for _ in 0..batch_n {
+        let start_idx = st
+            .image_account_rr
+            .fetch_add(1, Ordering::Relaxed)
+            % candidates.len();
+        match generate_one_image(&st, &candidates, start_idx, is_admin, &req).await {
+            Ok(item) => {
+                let pipeline = item.upstream_metrics.as_ref().map(|m| {
+                    finalize_upstream_image(
+                        &st,
+                        &item.account.email,
+                        item.elapsed_ms,
+                        m,
+                        0,
+                        item.b64.len() as u64,
+                    )
+                });
+                batch_items.push(ImageBatchItem {
+                    pipeline,
+                    ..item
+                });
+            }
+            Err(Err(e)) => {
+                drop(permit);
+                let account = candidates[start_idx].clone();
+                return image_batch_upstream_failure(&st, &account, t0.elapsed().as_millis(), &e);
+            }
+            Err(Ok(r)) => {
+                drop(permit);
+                let account = candidates[start_idx].clone();
+                return image_batch_bridge_failure(&account, t0.elapsed().as_millis(), r, "image");
+            }
+        }
+    }
+    let elapsed_ms = t0.elapsed().as_millis();
+    drop(permit);
+
+    let want_url = image_assets::wants_url_response(&req.response_format);
+    if want_url {
+        let mut urls: Vec<String> = Vec::with_capacity(batch_items.len());
+        let mut total_asset_store_ms = 0u64;
+        for item in &batch_items {
+            let bytes = match BASE64.decode(&item.b64) {
+                Ok(b) if b.len() >= 256 => b,
+                Ok(_) => {
+                    return err(
+                        StatusCode::BAD_GATEWAY,
+                        "empty/short image payload from bridge",
+                        "empty_image",
+                        Some("self"),
+                    );
+                }
+                Err(e) => {
+                    return err(
+                        StatusCode::BAD_GATEWAY,
+                        format!("invalid b64_json from bridge: {e}"),
+                        "empty_image",
+                        Some("self"),
+                    );
+                }
+            };
+            let asset_t0 = Instant::now();
+            let url = match build_image_asset_url(&st, &headers, bytes) {
+                Ok(url) => url,
+                Err(e) => {
+                    return err(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        e.to_string(),
+                        "image_url_failed",
+                        Some("self"),
+                    );
+                }
+            };
+            let asset_store_ms = asset_t0.elapsed().as_millis() as u64;
+            total_asset_store_ms += asset_store_ms;
+            urls.push(url);
+        }
+        let last = batch_items.last().expect("batch_items");
+        let pipeline = last.pipeline.clone().map(|mut p| {
+            if let Some(obj) = p.as_object_mut() {
+                obj.insert("batch_n".into(), json!(batch_n));
+                if let Some(timings) = obj.get_mut("timings_ms").and_then(|v| v.as_object_mut()) {
+                    timings.insert("gateway_wall_ms".into(), json!(elapsed_ms));
+                    timings.insert("asset_store_ms".into(), json!(total_asset_store_ms));
+                }
+            }
+            p
+        });
+        info!(
+            email=%last.account.email,
+            elapsed_ms,
+            batch_n,
+            url_count=urls.len(),
+            quota_after=?pipeline.as_ref().and_then(|p| p.get("quota_after")),
+            "image ok (url)"
+        );
+        let body = if let Some(p) = pipeline {
+            image_generation_url_multi_response_with_pipeline(&urls, p)
+        } else if urls.len() == 1 {
+            image_generation_url_response(&urls[0])
+        } else {
+            image_generation_url_multi_response(&urls)
+        };
+        return (StatusCode::OK, Json(body)).into_response();
+    }
+
+    let b64s: Vec<String> = batch_items.iter().map(|i| i.b64.clone()).collect();
+    let last = batch_items.last().expect("batch_items");
+    let pipeline = last.pipeline.clone().map(|mut p| {
+        if let Some(obj) = p.as_object_mut() {
+            obj.insert("batch_n".into(), json!(batch_n));
+            if let Some(timings) = obj.get_mut("timings_ms").and_then(|v| v.as_object_mut()) {
+                timings.insert("gateway_wall_ms".into(), json!(elapsed_ms));
+            }
+        }
+        p
+    });
+    info!(
+        email=%last.account.email,
+        elapsed_ms,
+        batch_n,
+        b64_count=b64s.len(),
+        quota_after=?pipeline.as_ref().and_then(|p| p.get("quota_after")),
+        "image ok"
+    );
+    let body = if let Some(p) = pipeline {
+        image_generation_b64_multi_response_with_pipeline(&b64s, p)
+    } else if b64s.len() == 1 {
+        image_generation_response(&b64s[0])
+    } else {
+        image_generation_b64_multi_response(&b64s)
+    };
+    (StatusCode::OK, Json(body)).into_response()
+}
+
+async fn run_upstream_image_edit(
+    account: &PinAccount,
+    prompt: String,
+    model: String,
+    size: String,
+    image_bytes: Vec<u8>,
+    mask_bytes: Option<Vec<u8>>,
+) -> Result<(helper_client::BridgeOk, upstream::ImageRunMetrics), anyhow::Error> {
+    let prompt = tnexus_domain::append_image_generation_hints(&prompt, &size, "auto", false);
+    upstream_face::run_image_edit(
+        account,
+        prompt,
+        model,
+        image_bytes,
+        "edit.png".into(),
+        mask_bytes,
+    )
+        .await
+        .map(|(bytes, metrics)| {
+            let b64 = BASE64.encode(&bytes);
+            let bridge = helper_client::BridgeOk {
+                ok: true,
+                content: None,
+                b64_json: Some(b64),
+                conversation_id: None,
+                fault: None,
+                error: None,
+                elapsed_ms: Some(metrics.wall_ms),
+                raw: None,
+                quota: None,
+            };
+            (bridge, metrics)
+        })
+}
+
+async fn image_edits(
+    State(st): State<Arc<AppState>>,
+    user: auth_routes::AuthUser,
+    headers: HeaderMap,
+    request: Request<Body>,
+) -> Response {
+    let is_multipart = request
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.starts_with("multipart/form-data"))
+        .unwrap_or(false);
+
+    if is_multipart {
+        let multipart = match Multipart::from_request(request, &()).await {
+            Ok(m) => m,
+            Err(e) => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    format!("invalid multipart: {e}"),
+                    "multipart_invalid",
+                    Some("client"),
+                );
+            }
+        };
+        match parse_image_edit_multipart(multipart).await {
+            Ok(req) => image_edits_json(st, user, headers, req).await,
+            Err(msg) => err(StatusCode::BAD_REQUEST, msg, "multipart_invalid", Some("client")),
+        }
+    } else {
+        let bytes = match axum::body::to_bytes(request.into_body(), 32 * 1024 * 1024).await {
+            Ok(b) => b,
+            Err(e) => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    format!("read body: {e}"),
+                    "invalid_json",
+                    Some("client"),
+                );
+            }
+        };
+        let req: ImageEditRequest = match serde_json::from_slice(&bytes) {
+            Ok(r) => r,
+            Err(e) => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    format!("invalid json: {e}"),
+                    "invalid_json",
+                    Some("client"),
+                );
+            }
+        };
+        image_edits_json(st, user, headers, req).await
+    }
+}
+
+async fn parse_image_edit_multipart(mut multipart: Multipart) -> Result<ImageEditRequest, String> {
+    let mut prompt = String::new();
+    let mut model = "gpt-image-2".to_string();
+    let mut size = "1024x1024".to_string();
+    let mut n = 1u32;
+    let mut image_bytes: Option<Vec<u8>> = None;
+    let mut mask_bytes: Option<Vec<u8>> = None;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| format!("multipart field: {e}"))?
+    {
+        let name = field.name().unwrap_or("").to_string();
+        match name.as_str() {
+            "prompt" => {
+                prompt = field
+                    .text()
+                    .await
+                    .map_err(|e| format!("prompt field: {e}"))?;
+            }
+            "model" => {
+                model = field
+                    .text()
+                    .await
+                    .map_err(|e| format!("model field: {e}"))?;
+            }
+            "size" => {
+                size = field
+                    .text()
+                    .await
+                    .map_err(|e| format!("size field: {e}"))?;
+            }
+            "n" => {
+                let text = field
+                    .text()
+                    .await
+                    .map_err(|e| format!("n field: {e}"))?;
+                n = text.parse().unwrap_or(1);
+            }
+            "image" | "image[]" => {
+                image_bytes = Some(
+                    field
+                        .bytes()
+                        .await
+                        .map_err(|e| format!("image field: {e}"))?
+                        .to_vec(),
+                );
+            }
+            "mask" => {
+                mask_bytes = Some(
+                    field
+                        .bytes()
+                        .await
+                        .map_err(|e| format!("mask field: {e}"))?
+                        .to_vec(),
+                );
+            }
+            _ => {}
+        }
+    }
+
+    let image = image_bytes.map(|bytes| BASE64.encode(&bytes));
+    let mask = mask_bytes.map(|bytes| BASE64.encode(&bytes));
+    Ok(ImageEditRequest {
+        model,
+        prompt,
+        image,
+        mask,
+        n,
+        size,
+    })
+}
+
+async fn image_edits_json(
+    st: Arc<AppState>,
+    user: auth_routes::AuthUser,
+    headers: HeaderMap,
+    req: ImageEditRequest,
+) -> Response {
+    if !st.image_enabled {
+        return err(
+            StatusCode::NOT_IMPLEMENTED,
+            "image edits deferred; set IMAGE_ENABLED=1 after backend pipeline integration",
+            "image_edits_deferred",
+            Some("gate"),
+        );
+    }
+    if st.data_plane != DataPlane::Upstream {
+        return err(
+            StatusCode::NOT_IMPLEMENTED,
+            "image edits require DATA_PLANE=upstream",
+            "image_edits_deferred",
+            Some("gate"),
+        );
+    }
+    if req.n == 0 || req.n > MAX_IMAGE_BATCH_N {
+        return err(
+            StatusCode::BAD_REQUEST,
+            format!("n must be between 1 and {}", MAX_IMAGE_BATCH_N),
+            "n_unsupported",
+            Some("client"),
+        );
+    }
+    let batch_n = req.n;
+    let Some(image_raw) = req.image.as_deref().filter(|s| !s.trim().is_empty()) else {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "image field is required (base64 or data URL)",
+            "image_required",
+            Some("client"),
+        );
+    };
+    let image_bytes = match upstream::upload::decode_image_payload(image_raw) {
+        Ok(bytes) if bytes.len() >= 64 => bytes,
+        Ok(_) => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "image payload too short",
+                "image_invalid",
+                Some("client"),
+            );
+        }
+        Err(e) => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                format!("invalid image payload: {e}"),
+                "image_invalid",
+                Some("client"),
+            );
+        }
+    };
+
+    let mask_bytes: Option<Vec<u8>> = match req.mask.as_deref().filter(|s| !s.trim().is_empty()) {
+        None => None,
+        Some(raw) => match upstream::upload::decode_image_payload(raw) {
+            Ok(bytes) if bytes.len() >= 64 => Some(bytes),
+            Ok(_) => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    "mask payload too short",
+                    "mask_invalid",
+                    Some("client"),
+                );
+            }
+            Err(e) => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    format!("invalid mask payload: {e}"),
+                    "mask_invalid",
+                    Some("client"),
+                );
+            }
+        },
+    };
+
+    let is_admin = user.claims.role.is_admin();
+    let preferred = preferred_email(&headers);
+    let candidates = match collect_image_accounts(&st, preferred, is_admin).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+
+    let permit = match try_acquire_image_permit(&st) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    let t0 = Instant::now();
+    let mut batch_items: Vec<ImageBatchItem> = Vec::with_capacity(batch_n as usize);
+    for _ in 0..batch_n {
+        let start_idx = st
+            .image_account_rr
+            .fetch_add(1, Ordering::Relaxed)
+            % candidates.len();
+        match generate_one_image_edit(
+            &st,
+            &candidates,
+            start_idx,
+            is_admin,
+            &req,
+            &image_bytes,
+            mask_bytes.as_deref(),
+        )
+        .await {
+            Ok(item) => {
+                let pipeline = item.upstream_metrics.as_ref().map(|m| {
+                    finalize_upstream_image(
+                        &st,
+                        &item.account.email,
+                        item.elapsed_ms,
+                        m,
+                        0,
+                        item.b64.len() as u64,
+                    )
+                });
+                batch_items.push(ImageBatchItem {
+                    pipeline,
+                    ..item
+                });
+            }
+            Err(Err(e)) => {
+                drop(permit);
+                let account = candidates[start_idx].clone();
+                return image_batch_upstream_failure(&st, &account, t0.elapsed().as_millis(), &e);
+            }
+            Err(Ok(r)) => {
+                drop(permit);
+                let account = candidates[start_idx].clone();
+                return image_batch_bridge_failure(&account, t0.elapsed().as_millis(), r, "image edit");
+            }
+        }
+    }
+    let elapsed_ms = t0.elapsed().as_millis();
+    drop(permit);
+
+    let b64s: Vec<String> = batch_items.iter().map(|i| i.b64.clone()).collect();
+    let last = batch_items.last().expect("batch_items");
+    let pipeline = last.pipeline.clone().map(|mut p| {
+        if let Some(obj) = p.as_object_mut() {
+            obj.insert("batch_n".into(), json!(batch_n));
+            if let Some(timings) = obj.get_mut("timings_ms").and_then(|v| v.as_object_mut()) {
+                timings.insert("gateway_wall_ms".into(), json!(elapsed_ms));
+            }
+        }
+        p
+    });
+    info!(
+        email=%last.account.email,
+        elapsed_ms,
+        batch_n,
+        b64_count=b64s.len(),
+        quota_after=?pipeline.as_ref().and_then(|p| p.get("quota_after")),
+        "image edit ok"
+    );
+    let body = if let Some(p) = pipeline {
+        image_generation_b64_multi_response_with_pipeline(&b64s, p)
+    } else if b64s.len() == 1 {
+        image_generation_response(&b64s[0])
+    } else {
+        image_generation_b64_multi_response(&b64s)
+    };
+    (StatusCode::OK, Json(body)).into_response()
 }
 
 fn preferred_email(headers: &HeaderMap) -> Option<String> {

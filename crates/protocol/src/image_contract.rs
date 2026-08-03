@@ -51,6 +51,8 @@ pub struct ImageEditRequest {
     pub prompt: String,
     #[serde(default)]
     pub image: Option<String>,
+    #[serde(default)]
+    pub mask: Option<String>,
     #[serde(default = "default_n")]
     pub n: u32,
     #[serde(default = "default_size")]

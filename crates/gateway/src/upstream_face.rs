@@ -45,10 +45,12 @@ pub async fn run_image_edit(
     model: String,
     image_bytes: Vec<u8>,
     file_name: String,
+    mask_bytes: Option<Vec<u8>>,
 ) -> Result<(Vec<u8>, upstream::ImageRunMetrics)> {
     let mut runtime = UpstreamRuntime::new(to_upstream(account))?;
+    let mask_ref = mask_bytes.as_deref();
     runtime
-        .run_image_edit_with_metrics(&prompt, &model, &image_bytes, &file_name)
+        .run_image_edit_with_metrics(&prompt, &model, &image_bytes, &file_name, mask_ref)
         .await
 }
 

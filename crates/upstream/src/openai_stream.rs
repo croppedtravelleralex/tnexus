@@ -35,6 +35,24 @@ fn format_delta_chunk(chunk_id: &str, model: &str, delta: &str) -> Bytes {
     Bytes::from(format!("data: {payload}\n\n"))
 }
 
+pub fn format_image_b64_delta_chunk(chunk_id: &str, model: &str, b64: &str) -> Bytes {
+    let payload = json!({
+        "id": chunk_id,
+        "object": "chat.completion.chunk",
+        "created": chrono_secs(),
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "delta": {
+                "content": "",
+                "tnexus_image_b64": b64,
+            },
+            "finish_reason": null
+        }]
+    });
+    Bytes::from(format!("data: {payload}\n\n"))
+}
+
 fn format_finish_chunk(chunk_id: &str, model: &str) -> Bytes {
     let payload = json!({
         "id": chunk_id,
@@ -134,6 +152,15 @@ impl Stream for OpenAiSseStream {
             }
         }
     }
+}
+
+pub fn chat_image_b64_sse_stream(model: &str, b64: &str) -> impl Stream<Item = std::result::Result<Bytes, Error>> {
+    let chunk_id = format!("chatcmpl-{}", Uuid::new_v4());
+    futures_util::stream::iter(vec![
+        Ok(format_image_b64_delta_chunk(&chunk_id, model, b64)),
+        Ok(format_finish_chunk(&chunk_id, model)),
+        Ok(Bytes::from_static(b"data: [DONE]\n\n")),
+    ])
 }
 
 #[cfg(test)]

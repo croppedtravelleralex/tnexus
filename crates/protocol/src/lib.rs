@@ -56,6 +56,83 @@ impl ChatMessage {
     }
 }
 
+/// Fold OpenAI-style messages into one upstream text prompt (multi-turn context).
+pub fn fold_chat_messages_for_upstream(messages: &[ChatMessage]) -> String {
+    if messages.is_empty() {
+        return String::new();
+    }
+    if messages.len() == 1 {
+        return messages[0].text();
+    }
+    let mut lines = Vec::new();
+    for m in messages {
+        let full = m.text();
+        let text = full.trim();
+        if text.is_empty() {
+            continue;
+        }
+        let label = match m.role.as_str() {
+            "assistant" => "Assistant",
+            "system" => "System",
+            _ => "User",
+        };
+        lines.push(format!("{label}: {text}"));
+    }
+    lines.join("\n\n")
+}
+
+/// User explicitly requested inline image generation in chat.
+pub fn chat_message_requests_image(text: &str) -> bool {
+    let t = text.trim();
+    let lower = t.to_lowercase();
+    lower.starts_with("@create image")
+        || t.starts_with("@Create image")
+        || lower.starts_with("/image ")
+        || lower.starts_with("/img ")
+}
+
+/// Extract image prompt from chat text (`@Create image`, `/image …`).
+pub fn extract_chat_image_prompt(text: &str) -> String {
+    let t = text.trim();
+    if let Some(rest) = t
+        .strip_prefix("/image ")
+        .or_else(|| t.strip_prefix("/img "))
+        .or_else(|| t.strip_prefix("/IMAGE "))
+    {
+        return rest.trim().to_string();
+    }
+    let lower = t.to_lowercase();
+    if lower.starts_with("@create image") {
+        let rest = t
+            .chars()
+            .skip("@create image".len())
+            .collect::<String>()
+            .trim_start_matches([' ', '\u{00a0}'])
+            .trim()
+            .to_string();
+        return if rest.is_empty() {
+            "@Create image".to_string()
+        } else {
+            rest
+        };
+    }
+    if t.starts_with("@Create image") {
+        let rest = t
+            .chars()
+            .skip("@Create image".len())
+            .collect::<String>()
+            .trim_start_matches([' ', '\u{00a0}'])
+            .trim()
+            .to_string();
+        return if rest.is_empty() {
+            "@Create image".to_string()
+        } else {
+            rest
+        };
+    }
+    t.to_string()
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ImageGenerationRequest {
     #[serde(default = "default_image_model")]
@@ -85,6 +162,9 @@ impl ImageGenerationRequest {
 fn default_image_model() -> String {
     "gpt-image-2".into()
 }
+/// OpenAI-compatible max batch size for `n` on image endpoints.
+pub const MAX_IMAGE_BATCH_N: u32 = 4;
+
 fn default_n() -> u32 {
     1
 }
@@ -141,6 +221,26 @@ pub fn chat_completion_response(model: &str, content: &str) -> Value {
     })
 }
 
+pub fn chat_completion_response_with_image_b64(model: &str, b64: &str) -> Value {
+    let id = format!("chatcmpl-{}", Uuid::new_v4());
+    json!({
+        "id": id,
+        "object": "chat.completion",
+        "created": chrono_secs(),
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": "",
+                "tnexus_image_b64": b64,
+            },
+            "finish_reason": "stop"
+        }],
+        "usage": { "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0 }
+    })
+}
+
 pub fn image_generation_response(b64: &str) -> Value {
     json!({
         "created": chrono_secs(),
@@ -176,6 +276,44 @@ pub fn image_generation_b64_response_with_pipeline(b64: &str, pipeline: Value) -
         json!([{ "b64_json": b64 }]),
         pipeline,
     )
+}
+
+pub fn image_generation_b64_multi_response(b64s: &[String]) -> Value {
+    let data: Vec<Value> = b64s
+        .iter()
+        .map(|b64| json!({ "b64_json": b64 }))
+        .collect();
+    json!({
+        "created": chrono_secs(),
+        "data": data,
+    })
+}
+
+pub fn image_generation_url_multi_response(urls: &[String]) -> Value {
+    let data: Vec<Value> = urls
+        .iter()
+        .map(|url| json!({ "url": url }))
+        .collect();
+    json!({
+        "created": chrono_secs(),
+        "data": data,
+    })
+}
+
+pub fn image_generation_b64_multi_response_with_pipeline(b64s: &[String], pipeline: Value) -> Value {
+    let data: Vec<Value> = b64s
+        .iter()
+        .map(|b64| json!({ "b64_json": b64 }))
+        .collect();
+    image_generation_response_with_pipeline(json!(data), pipeline)
+}
+
+pub fn image_generation_url_multi_response_with_pipeline(urls: &[String], pipeline: Value) -> Value {
+    let data: Vec<Value> = urls
+        .iter()
+        .map(|url| json!({ "url": url }))
+        .collect();
+    image_generation_response_with_pipeline(json!(data), pipeline)
 }
 
 fn chrono_secs() -> u64 {

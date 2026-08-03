@@ -32,12 +32,34 @@ impl SchedulingGate {
             .ok()
             .and_then(|s| s.parse::<i64>().ok())
             .unwrap_or(0);
-        Self {
+        let gate = Self {
             scheduling_path: std::env::var("SCHEDULING_STATE_FILE")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from("data/scheduling_state.json")),
             db,
             account_inflight_max,
+        };
+        gate.reconcile_stale_inflight();
+        gate
+    }
+
+    /// Clamp runaway inflight counters left behind by crashed workers or leaked guards.
+    pub fn reconcile_stale_inflight(&self) {
+        let ceiling = if self.account_inflight_max > 0 {
+            self.account_inflight_max.saturating_mul(4)
+        } else {
+            8
+        };
+        match self.db.reconcile_inflight_above(ceiling) {
+            Ok(n) if n > 0 => {
+                warn!(
+                    count = n,
+                    ceiling,
+                    "reset stale image_inflight counters"
+                );
+            }
+            Err(e) => warn!(error = %e, "reconcile_stale_inflight failed"),
+            _ => {}
         }
     }
 

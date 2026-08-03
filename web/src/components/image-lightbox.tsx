@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Download, RotateCcw, X, ZoomIn, ZoomOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { wheelZoomFactor, zoomAtPointer } from "@/lib/zoom-at-pointer";
 
 export type LightboxImage = {
   id: string;
@@ -29,6 +30,16 @@ export function ImageLightbox({ images, currentIndex, open, onOpenChange, onInde
   const dragging = useRef(false);
   const dragStart = useRef({ x: 0, y: 0, ox: 0, oy: 0 });
   const viewportRef = useRef<HTMLDivElement>(null);
+  const scaleRef = useRef(scale);
+  const offsetRef = useRef(offset);
+
+  useEffect(() => {
+    scaleRef.current = scale;
+  }, [scale]);
+
+  useEffect(() => {
+    offsetRef.current = offset;
+  }, [offset]);
 
   const resetTransform = useCallback(() => {
     setScale(1);
@@ -51,8 +62,21 @@ export function ImageLightbox({ images, currentIndex, open, onOpenChange, onInde
 
   const onWheel = useCallback((e: WheelEvent) => {
     e.preventDefault();
-    const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
-    setScale((s) => clampScale(s * factor));
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const next = zoomAtPointer(
+      e.clientX,
+      e.clientY,
+      viewport,
+      scaleRef.current,
+      offsetRef.current,
+      wheelZoomFactor(e.deltaY, 1.12),
+      MIN_SCALE,
+      MAX_SCALE,
+    );
+    if (!next) return;
+    setScale(next.scale);
+    setOffset(next.offset);
   }, []);
 
   useEffect(() => {
@@ -200,7 +224,7 @@ export function ImageLightbox({ images, currentIndex, open, onOpenChange, onInde
         ) : null}
       </div>
       <div className="px-4 py-2 text-center text-xs text-white/60" onClick={(e) => e.stopPropagation()}>
-        滚轮缩放（0.05×–20×）· 左键拖拽平移 · 按 0 重置
+        滚轮以指针为中心缩放（0.05×–20×）· 左键拖拽平移 · 按 0 重置
       </div>
     </div>
   );

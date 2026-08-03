@@ -26,6 +26,7 @@ async fn chat_completions(
     Json(body): Json<Value>,
 ) -> Result<Response, (StatusCode, String)> {
     let stream = body.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
+    let wants_image = chat_body_requests_image(&body);
     let url = format!(
         "{}/v1/chat/completions",
         st.config.gateway_base.trim_end_matches('/')
@@ -50,11 +51,16 @@ async fn chat_completions(
         return Err((status, text));
     }
 
+    let metric = if wants_image {
+        "images_chat"
+    } else {
+        "dialogues_real"
+    };
     let _ = usage_metrics::record_event(&UsageEvent {
         ts: Utc::now().to_rfc3339(),
         email: user.claims.email.clone(),
         binding: String::new(),
-        metric: "dialogues_real".into(),
+        metric: metric.into(),
         ok: true,
     });
 
@@ -76,4 +82,29 @@ async fn chat_completions(
         .await
         .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
     Ok(Json(json).into_response())
+}
+
+fn chat_body_requests_image(body: &Value) -> bool {
+    let last_user = body
+        .get("messages")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| {
+            arr.iter()
+                .rev()
+                .find(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
+        });
+    let text = last_user.and_then(|m| match m.get("content") {
+        Some(Value::String(s)) => Some(s.as_str()),
+        Some(other) => other.as_str(),
+        None => None,
+    });
+    text.map(|t| {
+        let trimmed = t.trim();
+        let lower = trimmed.to_lowercase();
+        lower.starts_with("@create image")
+            || trimmed.starts_with("@Create image")
+            || lower.starts_with("/image ")
+            || lower.starts_with("/img ")
+    })
+    .unwrap_or(false)
 }

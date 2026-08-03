@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Download, RotateCcw, X, ZoomIn, ZoomOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { wheelZoomFactor, zoomAtPointer } from "@/lib/zoom-at-pointer";
 
 type Props = {
   url: string | null;
@@ -42,8 +43,10 @@ export function ImagePreviewDialog({ url, open, onClose, downloadUrl, title }: P
   }, [open, url, resetView]);
 
   useEffect(() => {
-    if (scale <= 1) setOffset({ x: 0, y: 0 });
-  }, [scale]);
+    if (scale <= 1 && (offset.x !== 0 || offset.y !== 0)) {
+      setOffset({ x: 0, y: 0 });
+    }
+  }, [scale, offset.x, offset.y]);
 
   useEffect(() => {
     if (!open) return;
@@ -81,9 +84,22 @@ export function ImagePreviewDialog({ url, open, onClose, downloadUrl, title }: P
   const onWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    const delta = e.deltaY > 0 ? -0.12 : 0.12;
-    setScale((s) => Math.min(5, Math.max(0.25, s + delta)));
-  }, []);
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const next = zoomAtPointer(
+      e.clientX,
+      e.clientY,
+      viewport,
+      scale,
+      offset,
+      wheelZoomFactor(e.deltaY, 1.12),
+      0.25,
+      5,
+    );
+    if (!next) return;
+    setScale(next.scale <= 1 ? 1 : next.scale);
+    setOffset(next.scale <= 1 ? { x: 0, y: 0 } : next.offset);
+  }, [offset, scale]);
 
   const onMouseDown = useCallback(
     (e: React.MouseEvent) => {
@@ -118,7 +134,7 @@ export function ImagePreviewDialog({ url, open, onClose, downloadUrl, title }: P
       >
         <div className="flex shrink-0 items-center justify-between gap-4 border-b border-zinc-800 px-4 py-2">
           <p className="truncate text-sm text-zinc-300">
-            {title || "查看大图"} · 滚轮缩放
+            {title || "查看大图"} · 滚轮以指针为中心缩放
             {canDrag ? " · 按住拖拽" : ""} · {Math.round(scale * 100)}%
           </p>
           <div className="flex shrink-0 items-center gap-1">
