@@ -24,8 +24,7 @@ services:
     restart: unless-stopped
     env_file: /opt/tnexus/.env
     network_mode: host
-    volumes:
-      - /root/gptimage:/gptimage:rw
+    # Rust account-ops: OAuth + refresh + nurture/outlook/quota-prime workers (no /gptimage volume)
 
   api:
     image: ${TNEXUS_IMAGE}

@@ -10,10 +10,12 @@ alwaysApply: true
 在 **Panda**（`ssh panda`、主机 `100.69.228.93`、`/opt/tnexus`、`/root/TNexus`）上 **不得** 执行或编排：
 
 - `docker build` / `docker buildx build` / `buildx`
-- `cargo build` / `cargo test`（在 Panda 上编译 Rust）
+- `cargo build` / `cargo test` / `cargo check`（含 `docker run rust:* cargo`）
 - `npm run build` / `pnpm build` / `yarn build` / `next build`
 - 在 Panda 上 `git pull` 后本地编译再 `docker tag` 当作发布
-- `scp` / `rsync` 二进制或 `docker cp` 绕过 git+GHCR 上生产
+- `scp` / `rsync` / `tar` 同步源码到 Panda 后编译或 `docker tag` 当作发布
+- 编写或执行 `build_local_images.sh`、`cargo-check.sh`、`postgres_cutover.sh` 中要求 **先本地 build** 的步骤来绕过 GHCR
+- `docker build` / `docker buildx build` / `buildx`
 
 **已发生过重大事故**：在 Panda 上 `docker build` 导致 CPU/内存爆满。
 

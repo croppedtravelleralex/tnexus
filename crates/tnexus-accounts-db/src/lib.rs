@@ -1,5 +1,11 @@
 //! Shared gptimage-compatible `accounts.db` access (WAL + transactional writes).
 
+mod backend;
+mod pg;
+
+pub use backend::AccountsBackend;
+pub use pg::AccountsPg;
+
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};

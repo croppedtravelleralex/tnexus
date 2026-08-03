@@ -1,6 +1,6 @@
 # 38 — TNexus 1:1 替代 gptimage 生产路线图
 
-最后更新：**2026-08-01**
+最后更新：**2026-08-02**（Panda 已部署 `1ab5d25`；Phase 0 冒烟通过；edits 已接线）
 
 ## 目标
 
@@ -10,39 +10,78 @@ TNexus（gateway `:8014` + worker + api `:9000`）**独立承担全部生图/对
 
 ---
 
-## 当前阻塞项（本轮已修 / 待部署）
+## 当前阻塞项（2026-08-01 状态）
 
 | # | 问题 | 根因 | 状态 |
 |---|------|------|------|
-| 2 | 工作台比例/风格无效 | Gateway `run_upstream_image` 未传 `size`；upstream 仅靠 prompt 暗示尺寸；风格预设无选中态/无文案注入 | **代码已修**（见下） |
-| 3 | 额度 badge 灰色 | API 未填 `image_quota_state`；前端未按「调度中+正常」着色 | **代码已修** |
-| 4 | IP 热力图空白 | Worker 写 `binding:"default"` 覆盖 email 解析；API binding key 与前端 `egress:` 前缀不一致 | **代码已修** |
-| 5 | 日志总时长 ≠ 分阶段之和 | 内联阶段缺 `ps_ms`（构思）等；无「其他」补差 | **代码已修** |
-| 6 | 对话未独立 | UI 直连 `NEXT_PUBLIC_GATEWAY_BASE`；无 tnexus-api 代理/调用日志/多轮持久化 | **规划中**（P1） |
+| 2 | 工作台比例/风格无效 | Gateway 未传 `size`；风格无 hint 注入 | ✅ **已部署** `b8d6fa8` |
+| 3 | 额度 badge 灰色 | API 缺 `image_quota_state` | ✅ **已部署** |
+| 4 | IP 热力图空白 | binding key / worker 写 `default` | ✅ **已部署** |
+| 5 | 日志总时长 ≠ 分阶段之和 | 缺 `ps_ms`、无「其他」补差 | ✅ **已部署** |
+| 6 | 对话未独立 | UI 直连 gateway；无 API 代理 | ✅ **P1 主链已部署**（见下）；多轮/对话生图仍缺 |
 
-### 本轮代码修复摘要
+### 本轮代码修复摘要（`b8d6fa8` … `1ab5d25`）
 
-- `tnexus_domain::append_image_generation_hints` — 对齐 Python `build_image_prompt` 的尺寸/质量/透明背景 hint
-- Worker 生图前注入 hint；Gateway upstream 路径传入 `req.size`
+**Studio / 对话（`b8d6fa8` + `deefbaa` + `9e8105b`）**
+
+- `tnexus_domain::append_image_generation_hints` — 对齐 Python `build_image_prompt`
+- Worker 生图前注入 hint；Gateway upstream 传 `req.size`
 - `usage_metrics::binding_key_for_account_fields` — 对齐 gptimage `binding_key_for_account`
-- Worker `record_usage_event` 传空 binding，由 API 按 email 解析
+- Worker `record_usage_event` 空 binding → API 按 email 解析
 - `image-quota.ts` — 调度中且正常 → 绿色 badge
-- `image-log-phases.ts` — 展示 `ps_ms` + 「其他」补差
+- `image-log-phases.ts` — `ps_ms` +「其他」补差
+- `tnexus-api` `POST /api/chat/completions` — SSE 透传 gateway + `dialogues_real` 用量
+- `refresh_upstream_jwt.sh` — 同步写入 **`GATEWAY_AUTH_KEY`**（对话代理 Bearer）
+- `patch_env.sh` — 默认 `GATEWAY_BASE=http://127.0.0.1:8014`
+- `accounts_store.rs` — `Self::is_unlimited_type` 编译修复（`deefbaa`）
+
+**出图元数据 / 号池（`0bc7463` … `9248d34`）**
+
+- migration `008`：`job_results.width/height/size_bytes`
+- Worker 存图时解析尺寸；无 R2 时从 `source_url` 下载后落库
+- Studio「出图效果」角标显示分辨率与大小
+- 号池无选中账号时工具栏「同步全部额度」→ `refresh-all`
+
+**图生图 edits（`1ab5d25`）**
+
+- `upstream/upload.rs` — 对齐 Python `_upload_image_once`
+- `runtime::run_image_edit_with_metrics` — 上传参考图 + multimodal start
+- Gateway `POST /v1/images/edits` — 需 `IMAGE_ENABLED=1` + `DATA_PLANE=upstream`
+- `capabilities.image_edits: true`（同上条件）
 
 ---
 
 ## 分阶段切流计划
 
-### Phase 0 — 观测与对齐（当前，~1 周）
+### Phase 0 — 观测与对齐（当前）
 
 - [x] Pipeline 埋点（`phase_timings_ms`、quota、bandwidth）
 - [x] 工作台参数链路修复（size/style）
 - [x] 号池 UI 对齐（额度色、热力图 binding）
-- [ ] **部署上述修复到 Panda** 并复测 10 并发
+- [x] **部署到 Panda**（`1ab5d25`，2026-08-02）
+- [x] 生产冒烟：热力图有数据；额度调度中绿；日志阶段之和 ≈ 总时长；对话 SSE
 - [ ] 对比 `:8012` vs `:8014` 同 prompt 同 size 出图尺寸（像素级）
-- [ ] 确认 `USAGE_EVENTS_FILE` 容器挂载与 worker/api 同路径
+- [ ] 10 并发压测
 
-**验收**：热力图有数据；额度调度中为绿；日志阶段之和 ≈ 总时长（±0.5s）
+**验收脚本**（在 Panda 上执行）：
+
+```bash
+python3 /root/TNexus/scripts/prod_url_chain_test.py      # 生图 E2E
+python3 /root/TNexus/scripts/test_ux_coverage.py       # Studio UX 七项
+python3 /root/TNexus/scripts/test_studio_modes.py        # 导演 vs 竞演
+```
+
+**2026-08-01 实测摘要**：
+
+| 检查项 | 结果 |
+|--------|------|
+| 16:9(4k) `gen_config` | `3840×2160`；缩略图约 `1672×941` |
+| 1:1 | `1024×1024`；缩略图约 `1254×1254` |
+| 竞演 + 极端 `ps_factors` | 双 provider 完成，preview >8KB |
+| 排队黄字（30s 内开工） | `queue_start_s≈2s`，无「任务仍在排队…」 |
+| 调度账号绿 badge | 40/40 `success`（emerald） |
+| 对话流式 | `text/event-stream`；UI 流式出字 |
+| 日志阶段 | `wall_clock_ms=95431`，阶段和比 ≈1.01 |
 
 ### Phase 1 — 数据面能力补齐（~2–3 周）
 
@@ -51,8 +90,9 @@ TNexus（gateway `:8014` + worker + api `:9000`）**独立承担全部生图/对
 | 能力 | 生产 `:8012` | TNexus | 优先级 |
 |------|-------------|--------|--------|
 | 文生图 SSE 主链 | ✅ | ✅ upstream | — |
-| size/quality/透明背景 | prompt hint + API | **已补 hint** | P0 |
-| 图生图 / edits | ✅ | ❌ | P1 |
+| size/quality/透明背景 | prompt hint + API | ✅ hint 已上线 | — |
+| 对话经 tnexus-api 代理 | ✅ | ✅ **已上线** | — |
+| 图生图 / edits | ✅ | ✅ **upstream 已上线** `1ab5d25` | — |
 | 对话生图（chat 内出图） | ✅ | ❌ | P1 |
 | humanlike 调度/背压 | ✅ ~8k 行 | scheduling_gate 子集 | P1 |
 | dispatch_gate / 并发槽泄漏修复 | ✅ | 部分 | P1 |
@@ -61,11 +101,12 @@ TNexus（gateway `:8014` + worker + api `:9000`）**独立承担全部生图/对
 
 **任务清单**：
 
-1. Gateway `POST /v1/images/edits` 接线 upstream
-2. Chat 对话页改走 `tnexus-api` 代理 → gateway，写入调用日志（`dialogues_real`）
+1. ~~Gateway `POST /v1/images/edits` 接线 upstream~~ ✅ `1ab5d25`（单图 base64；mask / 多图待补）
+2. ~~Chat 对话页改走 `tnexus-api` 代理~~ ✅ `b8d6fa8`
 3. 养号/拟人对话写 `dialogues_nurture` 到 `usage_events`
-4. `dispatch_gate` 或等价：inflight 泄漏检测 + 账号自动隔离
-5. 背压：全局/ per-binding 并发与 `:8012` 对齐配置
+4. 对话多轮 + 会话持久化（对齐 gptimage conversations）
+5. `dispatch_gate` 或等价：inflight 泄漏检测 + 账号自动隔离
+6. 背压：全局/ per-binding 并发与 `:8012` 对齐配置
 
 ### Phase 2 — 灰度切流（~1 周）
 
@@ -91,25 +132,19 @@ TNexus（gateway `:8014` + worker + api `:9000`）**独立承担全部生图/对
 
 ---
 
-## 对话功能（#6）独立实现路线
+## 对话功能（#6）
 
-**现状**：`web/src/app/(console)/chat/page.tsx` → `ChatWorkbench` → 浏览器直连 `NEXT_PUBLIC_GATEWAY_BASE/v1/chat/completions`。
-
-**缺口**：
+**现状（2026-08-01）**：`ChatWorkbench` → `POST /api/chat/completions`（cookie 鉴权）→ gateway `/v1/chat/completions`（`GATEWAY_AUTH_KEY` Bearer）。
 
 | 项 | gptimage | TNexus |
 |----|----------|--------|
-| 同源 API 代理 | ✅ 经后端 | ❌ 需配 CORS + 暴露 Gateway Key |
-| 调用日志 / 热力图 `dialogues_real` | ✅ | ❌ |
-| 多轮 + 会话持久化 | ✅ | ❌ |
-| 对话生图 | ✅ | ❌ |
+| 同源 API 代理 | ✅ | ✅ `crates/tnexus-api/src/routes/chat.rs` |
+| 调用用量 `dialogues_real` | ✅ | ✅ `usage_metrics::record_event` |
+| 流式 SSE | ✅ | ✅ 已验 |
+| 多轮 + 会话持久化 | ✅ | ❌ Phase 1 |
+| 对话生图 | ✅ | ❌ Phase 1 |
 
-**P1 实现顺序**：
-
-1. `tnexus-api` 增加 `POST /api/chat/completions`（SSE 透传 gateway，`require_auth`）
-2. `chatApi` 改调 `/api/chat/completions`（cookie 鉴权）
-3. 成功调用写 `usage_events` + system_logs（`dialogues_real`）
-4. （P2）对话生图：检测 tool call / 图片 SSE，复用 worker 生图链
+**注意**：若仅配置 `UPSTREAM_API_KEY` 而未同步 `GATEWAY_AUTH_KEY`，对话代理会返回 gateway 的 `{"error":"login required","ok":false}`（401）。`deploy.sh` 自 `9e8105b` 起自动同步。
 
 ---
 
@@ -117,20 +152,24 @@ TNexus（gateway `:8014` + worker + api `:9000`）**独立承担全部生图/对
 
 ```bash
 # Panda（仅 pull + up，不编译）
-cd /opt/tnexus && git pull && ./deploy/panda/deploy.sh
+export TNEXUS_ROOT=/root/TNexus
+cd "$TNEXUS_ROOT" && git pull && bash deploy/panda/deploy.sh
 
-# 验证
-curl -s localhost:9000/health
-curl -s localhost:8014/health
-# 生图 smoke（管理员 JWT）
-# 号池：按 IP 分组 → 热力图非空
-# 日志：总时长 ≈ 阶段之和
+# 健康
+curl -fsS http://127.0.0.1:9000/health
+curl -fsS http://127.0.0.1:8014/health
+
+# 冒烟（推荐在 Panda 本机）
+python3 scripts/prod_url_chain_test.py
+python3 scripts/test_ux_coverage.py
 ```
 
-环境：
+环境（`/opt/tnexus/.env`）：
 
 - `USAGE_EVENTS_FILE=/data/pool/usage_events.ndjson`（api + worker 一致）
-- `UPSTREAM_API_KEY` gateway JWT 未过期
+- `UPSTREAM_API_KEY` — worker → gateway JWT（≈24h TTL）
+- **`GATEWAY_AUTH_KEY`** — api 对话代理 → gateway（与上同步刷新）
+- **`GATEWAY_BASE=http://127.0.0.1:8014`**
 - `DATA_PLANE=upstream`
 
 ---
@@ -140,3 +179,4 @@ curl -s localhost:8014/health
 - [35-tnexus-gptimage-gap.md](35-tnexus-gptimage-gap.md) — 能力差距量化
 - [37-gptimage-tnexus-comparison.md](37-gptimage-tnexus-comparison.md) — 横向对比
 - [36-image-delivery-bandwidth-strategy.md](36-image-delivery-bandwidth-strategy.md) — 带宽与图床
+- [HANDOFF.md](../HANDOFF.md) — 现网拓扑与已知问题

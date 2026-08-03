@@ -5,7 +5,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use tnexus_accounts_db::AccountsDb;
+use tnexus_accounts_db::AccountsBackend;
 use tracing::warn;
 
 const STATE_VERIFIED: &str = "verified_ready";
@@ -18,26 +18,28 @@ struct SchedulingStateFile {
 
 pub struct SchedulingGate {
     scheduling_path: PathBuf,
-    db: AccountsDb,
+    backend: AccountsBackend,
     /// 0 = unlimited concurrent inflight per account
     account_inflight_max: i64,
 }
 
 impl SchedulingGate {
     pub fn from_env() -> Self {
-        let db = AccountsDb::from_env().unwrap_or_else(|e| {
+        Self::from_backend(AccountsBackend::from_env(None).unwrap_or_else(|e| {
             panic!("ACCOUNTS_DB required for scheduling gate: {e}");
-        });
-        let account_inflight_max = std::env::var("IMAGE_ACCOUNT_INFLIGHT_MAX")
-            .ok()
-            .and_then(|s| s.parse::<i64>().ok())
-            .unwrap_or(0);
+        }))
+    }
+
+    pub fn from_backend(backend: AccountsBackend) -> Self {
         let gate = Self {
             scheduling_path: std::env::var("SCHEDULING_STATE_FILE")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from("data/scheduling_state.json")),
-            db,
-            account_inflight_max,
+            backend,
+            account_inflight_max: std::env::var("IMAGE_ACCOUNT_INFLIGHT_MAX")
+                .ok()
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(0),
         };
         gate.reconcile_stale_inflight();
         gate
@@ -50,7 +52,7 @@ impl SchedulingGate {
         } else {
             8
         };
-        match self.db.reconcile_inflight_above(ceiling) {
+        match self.backend.reconcile_inflight_above(ceiling) {
             Ok(n) if n > 0 => {
                 warn!(
                     count = n,
@@ -88,7 +90,7 @@ impl SchedulingGate {
     }
 
     fn load_accounts_by_email(&self) -> HashMap<String, Value> {
-        self.db.accounts_by_email().unwrap_or_else(|e| {
+        self.backend.accounts_by_email().unwrap_or_else(|e| {
             warn!(error=%e, "load accounts from sqlite failed");
             HashMap::new()
         })
@@ -177,7 +179,7 @@ impl SchedulingGate {
         if key.is_empty() {
             return;
         }
-        if let Err(e) = self.db.touch_inflight(&key, delta) {
+        if let Err(e) = self.backend.touch_inflight(&key, delta) {
             warn!(error=%e, email = %key, "touch_inflight failed");
         }
     }
@@ -191,7 +193,28 @@ impl SchedulingGate {
     }
 
     pub fn decrement_quota(&self, email: &str) -> anyhow::Result<Option<(i64, i64)>> {
-        self.db.decrement_quota(email, 1)
+        self.backend.decrement_quota(email, 1)
+    }
+
+    pub fn account_inflight_cap(&self) -> u64 {
+        self.account_inflight_max.max(0) as u64
+    }
+
+    pub fn account_metrics(&self, email: &str) -> Option<(i64, bool, i64, i64)> {
+        let key = email.trim().to_lowercase();
+        let accounts = self.load_accounts_by_email();
+        let row = accounts.get(&key)?;
+        let quota = row.get("quota").and_then(|v| v.as_i64()).unwrap_or(0);
+        let unknown = row
+            .get("image_quota_unknown")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let inflight = row.get("image_inflight").and_then(|v| v.as_i64()).unwrap_or(0);
+        let soft = row
+            .get("soft_band_percent")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        Some((quota, unknown, inflight, soft))
     }
 }
 

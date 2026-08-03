@@ -99,6 +99,15 @@ impl UpstreamRuntime {
         self.run_image_with_references(prompt, model, &[]).await
     }
 
+    pub async fn run_image_with_references(
+        &mut self,
+        prompt: &str,
+        model: &str,
+        references: &[ImageReference],
+    ) -> Result<(Vec<u8>, ImageRunMetrics)> {
+        self.run_image_with_references_inner(prompt, model, references).await
+    }
+
     pub async fn run_image_edit_with_metrics(
         &mut self,
         prompt: &str,
@@ -107,16 +116,43 @@ impl UpstreamRuntime {
         file_name: &str,
         mask_bytes: Option<&[u8]>,
     ) -> Result<(Vec<u8>, ImageRunMetrics)> {
+        self.run_image_edit_with_metrics_and_assets(prompt, model, image_bytes, file_name, mask_bytes, &[])
+            .await
+    }
+
+    pub async fn run_image_edit_with_metrics_and_assets(
+        &mut self,
+        prompt: &str,
+        model: &str,
+        image_bytes: &[u8],
+        file_name: &str,
+        mask_bytes: Option<&[u8]>,
+        extra_file_ids: &[String],
+    ) -> Result<(Vec<u8>, ImageRunMetrics)> {
         let uploaded = upload_image_bytes(self.client(), image_bytes, file_name).await?;
         let mut references = vec![uploaded_to_reference(&uploaded)];
+        for id in extra_file_ids {
+            let id = id.trim();
+            if id.is_empty() {
+                continue;
+            }
+            references.push(ImageReference {
+                file_id: id.to_string(),
+                width: 1024,
+                height: 1024,
+                file_size: 0,
+                mime_type: "image/png".into(),
+                file_name: "reference.png".into(),
+            });
+        }
         if let Some(mask) = mask_bytes {
             let mask_upload = upload_image_bytes(self.client(), mask, "mask.png").await?;
             references.push(uploaded_to_reference(&mask_upload));
         }
-        self.run_image_with_references(prompt, model, &references).await
+        self.run_image_with_references_inner(prompt, model, &references).await
     }
 
-    async fn run_image_with_references(
+    async fn run_image_with_references_inner(
         &mut self,
         prompt: &str,
         model: &str,

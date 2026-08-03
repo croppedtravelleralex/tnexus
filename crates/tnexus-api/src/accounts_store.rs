@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use tnexus_accounts_db::AccountsDb;
+use tnexus_accounts_db::{AccountsBackend, AccountsDb};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
@@ -108,7 +108,7 @@ pub struct AccountsStore {
     inner: Arc<RwLock<HashMap<String, AccountFile>>>,
     scheduling: Arc<RwLock<HashMap<String, String>>>,
     scheduling_path: PathBuf,
-    db: AccountsDb,
+    db: AccountsBackend,
 }
 
 impl Default for AccountsStore {
@@ -117,9 +117,11 @@ impl Default for AccountsStore {
             inner: Arc::new(RwLock::new(HashMap::new())),
             scheduling: Arc::new(RwLock::new(HashMap::new())),
             scheduling_path: scheduling_state_path(),
-            db: AccountsDb::open("data/accounts.db").unwrap_or_else(|_| {
-                AccountsDb::open(std::env::temp_dir().join("tnexus-accounts-missing.db"))
-                    .expect("temp accounts db")
+            db: AccountsBackend::from_env(None).unwrap_or_else(|_| {
+                AccountsBackend::Sqlite(
+                    AccountsDb::open(std::env::temp_dir().join("tnexus-accounts-missing.db"))
+                        .expect("temp accounts db"),
+                )
             }),
         })
     }
@@ -127,8 +129,12 @@ impl Default for AccountsStore {
 
 impl AccountsStore {
     pub fn from_env() -> Result<Self> {
+        Self::from_env_with_pool(None)
+    }
+
+    pub fn from_env_with_pool(pool: Option<sqlx::PgPool>) -> Result<Self> {
         let scheduling_path = scheduling_state_path();
-        let db = AccountsDb::from_env()?;
+        let db = AccountsBackend::from_env(pool)?;
         let scheduling = load_scheduling_state(&scheduling_path)?;
         let mut map = HashMap::new();
         for value in db.list_account_values()? {
@@ -779,7 +785,7 @@ pub fn activity_daily(days: usize) -> Value {
     build_activity_daily(days, &HashMap::new())
 }
 
-fn persist_account_row(db: &AccountsDb, row: &AccountFile) -> Result<()> {
+fn persist_account_row(db: &AccountsBackend, row: &AccountFile) -> Result<()> {
     db.upsert_account_value(&row.to_value())
 }
 

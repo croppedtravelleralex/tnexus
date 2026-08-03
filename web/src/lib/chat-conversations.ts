@@ -20,7 +20,10 @@ export const CHAT_ACTIVE_SESSION_KEY = "tnexus-chat-active-id";
 export const CHAT_TEXT_CHANNEL = "gpt-4o-mini";
 
 export const CHAT_CHANNEL_LABEL = "文本对话";
-export const CHAT_CHANNEL_HINT = "走号池 ChatGPT 上游通道";
+
+/** 对话页默认：流式输出 + 生图模式（UI 不再展示开关） */
+export const CHAT_STREAM_DEFAULT = true;
+export const CHAT_IMAGE_MODE_DEFAULT = true;
 
 export const EMPTY_CHAT_STATE: ChatConversationState = {
   kind: "chat",
@@ -63,8 +66,8 @@ export function repairLegacyMessages(messages: ChatMessage[], title?: string): C
 }
 
 export const CHAT_MODEL_HINTS: Record<string, string> = {
-  [CHAT_TEXT_CHANNEL]: CHAT_CHANNEL_HINT,
-  "gpt-image-2": "生图通道（生图模式自动使用）",
+  [CHAT_TEXT_CHANNEL]: "",
+  "gpt-image-2": "生图通道",
 };
 
 /** @deprecated UI 不再展示网关型号列表 */

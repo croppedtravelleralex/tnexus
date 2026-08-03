@@ -5,6 +5,7 @@ services:
     image: ${TNEXUS_GATEWAY_IMAGE:-ghcr.io/croppedtravelleralex/tnexus-gateway:latest}
     network_mode: host
     env_file:
+      - /opt/tnexus/.env
       - /root/gptimage-gateway-rs/secrets/gateway.env
     environment:
       ACCOUNTS_DB: /gptimage/data/accounts.db

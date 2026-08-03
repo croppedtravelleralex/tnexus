@@ -5,7 +5,6 @@ import {
   ChevronLeft,
   ChevronRight,
   Download,
-  ImageIcon,
   LoaderCircle,
   Pencil,
   Plus,
@@ -21,13 +20,13 @@ import { chatApi, conversationsApi } from "@/lib/api";
 import type { Conversation } from "@/lib/conversations";
 import {
   CHAT_ACTIVE_SESSION_KEY,
-  CHAT_CHANNEL_HINT,
   CHAT_CHANNEL_LABEL,
+  CHAT_IMAGE_MODE_DEFAULT,
+  CHAT_STREAM_DEFAULT,
   CHAT_TEXT_CHANNEL,
   chatConversationTitle,
   createChatMessage,
   downloadTextFile,
-  EMPTY_CHAT_STATE,
   exportChatAsMarkdown,
   exportChatAsText,
   estimateBase64Bytes,
@@ -55,8 +54,6 @@ export function ChatWorkbench() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
-  const [stream, setStream] = useState(EMPTY_CHAT_STATE.stream);
-  const [imageMode, setImageMode] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [switchingId, setSwitchingId] = useState<string | null>(null);
   const [error, setError] = useState("");
@@ -126,7 +123,6 @@ export function ChatWorkbench() {
     setConversationId(c.id);
     sessionStorage.setItem(CHAT_ACTIVE_SESSION_KEY, c.id);
     setMessages(repairLegacyMessages(c.state.messages, c.title));
-    setStream(c.state.stream ?? true);
     setError("");
   }, []);
 
@@ -240,10 +236,10 @@ export function ChatWorkbench() {
         kind: "chat",
         messages: nextMessages,
         model: CHAT_TEXT_CHANNEL,
-        stream,
+        stream: CHAT_STREAM_DEFAULT,
       });
     },
-    [persistState, stream],
+    [persistState],
   );
 
   const deleteConversation = async (id: string) => {
@@ -346,10 +342,10 @@ export function ChatWorkbench() {
         kind: "chat",
         messages: finalMessages,
         model: CHAT_TEXT_CHANNEL,
-        stream,
+        stream: CHAT_STREAM_DEFAULT,
       });
     },
-    [persistState, stream],
+    [persistState],
   );
 
   const onSend = useCallback(async () => {
@@ -359,7 +355,6 @@ export function ChatWorkbench() {
     let activeId = conversationId;
     const userMsg = createChatMessage("user", text);
     const nextMessages: ChatMessage[] = [...messages, userMsg];
-    const useImageMode = imageMode;
 
     setError("");
     setInput("");
@@ -371,7 +366,12 @@ export function ChatWorkbench() {
       if (!activeId) {
         const created = await conversationsApi.create({
           title: chatConversationTitle(nextMessages),
-          state: { kind: "chat", messages: nextMessages, model: CHAT_TEXT_CHANNEL, stream },
+          state: {
+            kind: "chat",
+            messages: nextMessages,
+            model: CHAT_TEXT_CHANNEL,
+            stream: CHAT_STREAM_DEFAULT,
+          },
         });
         activeId = created.id;
         setConversationId(activeId);
@@ -382,14 +382,14 @@ export function ChatWorkbench() {
           kind: "chat",
           messages: nextMessages,
           model: CHAT_TEXT_CHANNEL,
-          stream,
+          stream: CHAT_STREAM_DEFAULT,
         });
       }
 
-      await runCompletion(activeId, nextMessages, stream, useImageMode);
+      await runCompletion(activeId, nextMessages, CHAT_STREAM_DEFAULT, CHAT_IMAGE_MODE_DEFAULT);
     } catch (err) {
       setError(err instanceof Error ? err.message : "对话失败");
-      if (stream) {
+      if (CHAT_STREAM_DEFAULT) {
         setMessages((prev) =>
           prev[prev.length - 1]?.role === "assistant" && !prev[prev.length - 1]?.content
             ? prev.slice(0, -1)
@@ -403,8 +403,6 @@ export function ChatWorkbench() {
     input,
     streaming,
     messages,
-    stream,
-    imageMode,
     conversationId,
     mergeConversation,
     persistState,
@@ -423,9 +421,14 @@ export function ChatWorkbench() {
         kind: "chat",
         messages: truncated,
         model: CHAT_TEXT_CHANNEL,
-        stream,
+        stream: CHAT_STREAM_DEFAULT,
       });
-      await runCompletion(conversationId, truncated, stream, imageMode);
+      await runCompletion(
+        conversationId,
+        truncated,
+        CHAT_STREAM_DEFAULT,
+        CHAT_IMAGE_MODE_DEFAULT,
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "重发失败");
     } finally {
@@ -442,8 +445,6 @@ export function ChatWorkbench() {
       downloadTextFile(`${safe || "chat"}.md`, exportChatAsMarkdown(messages), "text/markdown;charset=utf-8");
     }
   };
-
-  const modelHint = CHAT_CHANNEL_HINT;
 
   return (
     <div className="flex h-full min-h-0 bg-[var(--neo-surface)]">
@@ -523,18 +524,8 @@ export function ChatWorkbench() {
 
       <div className="flex min-h-0 flex-1 flex-col">
         <div className="border-b border-[var(--neo-border)] px-4 py-2">
-          <div className="mx-auto flex max-w-3xl flex-wrap items-center gap-3">
+          <div className="mx-auto max-w-3xl">
             <span className="text-sm font-medium text-[var(--neo-ink)]">{CHAT_CHANNEL_LABEL}</span>
-            <span className="text-[10px] text-[var(--neo-muted)]">{modelHint}</span>
-            <label className="ml-auto flex items-center gap-1.5 text-xs text-[var(--neo-muted)]">
-              <input type="checkbox" checked={imageMode} onChange={(e) => setImageMode(e.target.checked)} />
-              <ImageIcon className="size-3.5" />
-              生图模式
-            </label>
-            <label className="flex items-center gap-1.5 text-xs text-[var(--neo-muted)]">
-              <input type="checkbox" checked={stream} onChange={(e) => setStream(e.target.checked)} />
-              流式
-            </label>
           </div>
         </div>
 
@@ -544,7 +535,7 @@ export function ChatWorkbench() {
               <div className="py-16 text-center">
                 <p className="text-lg font-medium text-[var(--neo-ink)]">开始对话</p>
                 <p className="mt-2 text-sm text-[var(--neo-muted)]">
-                  直接输入文字聊天；开启「生图模式」或发送「海边日落」「画一张猫」即可生图。
+                  输入文字聊天；描述画面（如「海边日落」）或「画一张猫」即可生图。
                 </p>
               </div>
             ) : null}
@@ -647,7 +638,7 @@ export function ChatWorkbench() {
                 ref={inputRef}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                placeholder={imageMode ? "描述要生成的画面，例如：海边日落" : "输入消息，Shift+Enter 换行"}
+                placeholder="输入消息或描述画面，Shift+Enter 换行"
                 rows={1}
                 className="min-h-[44px] max-h-40 flex-1 resize-none bg-transparent px-2 py-2 text-[15px] leading-relaxed outline-none"
                 onKeyDown={(e) => {
@@ -667,9 +658,6 @@ export function ChatWorkbench() {
                 发送
               </Button>
             </div>
-            <p className="mt-2 text-center text-[10px] text-[var(--neo-muted)]">
-              {CHAT_CHANNEL_HINT}。生图请开启「生图模式」。
-            </p>
           </div>
         </div>
       </div>

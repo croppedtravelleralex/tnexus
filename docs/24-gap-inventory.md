@@ -31,7 +31,7 @@
 
 | 方法+路径 | 职责 | Rust 状态 | 优先级 |
 |-----------|------|----------|--------|
-| POST `/v1/images/edits` | 图生图，multipart + asset_ids + mask | **缺失** —— 恒返 501 `image_edits_deferred` | P0 |
+| POST `/v1/images/edits` | 图生图，multipart + asset_ids + mask | **部分** —— 单图 base64 upstream 已上线 `1ab5d25`；mask/multipart 仍缺 | P1 |
 | POST `/v1/images/generations` | 文生图，同步/流式/异步隧道/任务轮询 | 部分，14 项字段差异见 §1.2 | P0 |
 | POST `/v1/chat/completions` | 对话补全，含对话生图 | 部分 —— 只取最后一条 user 文本，丢弃多轮/system/多模态；usage 恒 0；SSE 纯字节透传不解析 | P0 |
 | GET `/v1/models` | 静态 7 模型 + 按号池动态派生 | 部分 —— 硬编码 2 个，无动态派生，缺 created/permission/root/parent | P0 |

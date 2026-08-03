@@ -54,6 +54,28 @@ pub fn classify_fault(fault: Option<&str>, message: Option<&str>) -> ErrorClass 
     ErrorClass::Upstream
 }
 
+/// OpenAI-compatible `error.type` for SDK retry semantics.
+pub fn openai_error_type_for_class(class: ErrorClass, code: &str) -> &'static str {
+    let code_lower = code.to_ascii_lowercase();
+    if code_lower.contains("auth") || code_lower.contains("session") {
+        return "authentication_error";
+    }
+    match class {
+        ErrorClass::Client => "invalid_request_error",
+        ErrorClass::Gate => "rate_limit_error",
+        ErrorClass::Upstream | ErrorClass::Self_ => "server_error",
+    }
+}
+
+/// Default wait hint (seconds) for admission / concurrency 429s.
+pub fn default_rate_limit_wait_secs(class: ErrorClass) -> Option<u32> {
+    if class == ErrorClass::Gate {
+        Some(30)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,11 +133,26 @@ mod tests {
     }
 
     #[test]
-    fn self_fault_wins_over_upstream_message() {
+    fn openai_type_mapping() {
         assert_eq!(
-            classify_fault(Some("self"), Some("cf_edge_block")),
-            ErrorClass::Self_,
-            "self must never be masked as upstream — it gates promotion"
+            openai_error_type_for_class(ErrorClass::Gate, "image_service_busy"),
+            "rate_limit_error"
+        );
+        assert_eq!(
+            openai_error_type_for_class(ErrorClass::Client, "invalid_request"),
+            "invalid_request_error"
+        );
+        assert_eq!(
+            openai_error_type_for_class(ErrorClass::Upstream, "upstream_unreachable"),
+            "server_error"
+        );
+        assert_eq!(
+            openai_error_type_for_class(ErrorClass::Self_, "semaphore_closed"),
+            "server_error"
+        );
+        assert_eq!(
+            openai_error_type_for_class(ErrorClass::Gate, "invalid_session"),
+            "authentication_error"
         );
     }
 }

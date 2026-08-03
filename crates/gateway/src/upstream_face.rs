@@ -2,6 +2,7 @@
 
 use anyhow::Result;
 use helper_client::PinAccount as HelperPinAccount;
+use upstream::conversation::ImageReference;
 use upstream::{OpenAiSseStream, PinAccount as UpstreamPinAccount, UpstreamRuntime};
 
 fn to_upstream(account: &HelperPinAccount) -> UpstreamPinAccount {
@@ -13,6 +14,22 @@ fn to_upstream(account: &HelperPinAccount) -> UpstreamPinAccount {
         user_agent: account.user_agent.clone().unwrap_or_default(),
         impersonate: String::new(),
     }
+}
+
+pub fn file_ids_to_references(file_ids: &[String]) -> Vec<ImageReference> {
+    file_ids
+        .iter()
+        .map(|id| id.trim())
+        .filter(|id| !id.is_empty())
+        .map(|id| ImageReference {
+            file_id: id.to_string(),
+            width: 1024,
+            height: 1024,
+            file_size: 0,
+            mime_type: "image/png".into(),
+            file_name: "reference.png".into(),
+        })
+        .collect()
 }
 
 pub async fn run_text(account: &HelperPinAccount, prompt: String, model: String) -> Result<String> {
@@ -34,9 +51,11 @@ pub async fn run_image(
     account: &HelperPinAccount,
     prompt: String,
     model: String,
+    asset_ids: &[String],
 ) -> Result<(Vec<u8>, upstream::ImageRunMetrics)> {
+    let refs = file_ids_to_references(asset_ids);
     let mut runtime = UpstreamRuntime::new(to_upstream(account))?;
-    runtime.run_image_with_metrics(&prompt, &model).await
+    runtime.run_image_with_references(&prompt, &model, &refs).await
 }
 
 pub async fn run_image_edit(
@@ -46,11 +65,19 @@ pub async fn run_image_edit(
     image_bytes: Vec<u8>,
     file_name: String,
     mask_bytes: Option<Vec<u8>>,
+    extra_asset_ids: &[String],
 ) -> Result<(Vec<u8>, upstream::ImageRunMetrics)> {
     let mut runtime = UpstreamRuntime::new(to_upstream(account))?;
     let mask_ref = mask_bytes.as_deref();
     runtime
-        .run_image_edit_with_metrics(&prompt, &model, &image_bytes, &file_name, mask_ref)
+        .run_image_edit_with_metrics_and_assets(
+            &prompt,
+            &model,
+            &image_bytes,
+            &file_name,
+            mask_ref,
+            extra_asset_ids,
+        )
         .await
 }
 
@@ -72,5 +99,12 @@ mod tests {
         assert_eq!(up.access_token, "tok");
         assert!(up.device_id.is_empty());
         assert!(up.proxy.is_empty());
+    }
+
+    #[test]
+    fn file_ids_skip_empty() {
+        let refs = file_ids_to_references(&["file-abc".into(), "".into(), "  ".into()]);
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].file_id, "file-abc");
     }
 }

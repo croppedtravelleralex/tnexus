@@ -1,6 +1,6 @@
 # 37 — gptimage（Python :8012）与 TNexus 横向对比
 
-最后更新：**2026-08-01**
+最后更新：**2026-08-02**
 
 对照基准：Panda 生产 `chatgpt2api-local :8012` vs `tnexus.relai.asia`（`:9000` API + `:8014` gateway）。
 
@@ -29,7 +29,8 @@
 | `POST /v1/images/generations` n=1 b64/url | ✅ | ✅ gateway | ✅ 基础生图 |
 | 异步队列 + `image_task_id` | ✅ | ❌ 同步 job 队列 | ❌ |
 | `response_format=url` 上游 CDN 直链 | ✅ 默认异步 | ⚠️ Gateway 内存 asset URL | ⚠️ 语义不同 |
-| edits / inpainting | ✅ | ❌ 501 | ❌ |
+| edits / inpainting（单图 base64） | ✅ | ✅ upstream `1ab5d25` | ✅ 基础图生图 |
+| edits mask / 多图 | ✅ | ❌ | ❌ |
 | n>1 同请求多图 | ✅ | ❌ MVP n=1 | ❌ |
 | humanlike 调度 / dispatch_gate | ✅ | ❌ | ❌ |
 | CF 探活 / 背压 / b64 回传窗口 | ✅ | ❌ | ❌ |
@@ -38,9 +39,9 @@
 | Studio 多演员并行 | N/A | ✅ casting 10–40 槽 | ✅ TNexus 独有 |
 | OpenAI 兼容 API Key 鉴权 | ✅ | JWT / member | ⚠️ 鉴权模型不同 |
 
-**加权替代进度**：约 **42%**（[35-tnexus-gptimage-gap.md](35-tnexus-gptimage-gap.md)）。
+**加权替代进度**：约 **50%**（[35-tnexus-gptimage-gap.md](35-tnexus-gptimage-gap.md)）。
 
-**若「完全替代」定义 = 任意客户端拿 API Key 调 `:8012` 全功能无缝迁移**：**不行**（缺 edits、异步 url 语义、humanlike、背压）。
+**若「完全替代」定义 = 任意客户端拿 API Key 调 `:8012` 全功能无缝迁移**：**仍不行**（缺 mask/多图 edits、异步 url 语义、humanlike、背压、对话生图）。
 
 **若定义 = TNexus Studio + 号池 + 并行 casting + 基础生图上线**：**已可生产使用**；与 `:8012` **并行**，非替换。
 
@@ -99,10 +100,11 @@
 
 | 需求 | 选 |
 |------|-----|
-| 外部 OpenAI 兼容 API + API Key + 异步 url + edits | **Python :8012** |
+| 外部 OpenAI 兼容 API + API Key + 异步 url + edits（含 mask/多图） | **Python :8012** |
+| 外部 API 基础文生图 + 单图 base64 edits | **TNexus gateway `:8014`** |
 | 导演台 / casting 并行 / 号池 UI / 运维 account-ops | **TNexus** |
 | 省 Panda 对用户出口带宽 | TNexus + **WebP/AVIF thumb** + **R2**（[36](36-image-delivery-bandwidth-strategy.md)） |
-| 彻底下线 :8012 | **未就绪**（~42%；缺调度/edits/背压） |
+| 彻底下线 :8012 | **未就绪**（~50%；缺调度/背压/对话生图/mask edits） |
 
 ---
 

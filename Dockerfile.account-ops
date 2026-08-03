@@ -1,14 +1,15 @@
 # syntax=docker/dockerfile:1
-FROM python:3.12-slim-bookworm
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends gcc libssl-dev git \
+FROM rust:1.94-bookworm AS builder
+WORKDIR /app
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+RUN cargo build --release -p tnexus-account-ops
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-COPY helper/requirements.txt ./helper/
-RUN pip install --no-cache-dir -r helper/requirements.txt
-COPY helper/ ./helper/
-ENV PYTHONPATH=/gptimage:/app/helper
+COPY --from=builder /app/target/release/tnexus-account-ops /usr/local/bin/tnexus-account-ops
 ENV ACCOUNT_OPS_LISTEN=127.0.0.1:9011
-WORKDIR /app/helper
 EXPOSE 9011
-CMD ["python", "account_ops_face.py"]
+CMD ["tnexus-account-ops"]

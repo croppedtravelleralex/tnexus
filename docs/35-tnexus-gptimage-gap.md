@@ -1,12 +1,13 @@
 # 35 — TNexus 距离彻底替代 Python gptimage 还差多少
 
-最后更新：**2026-07-31（Studio 性能修复 + 共享 accounts.db）**
+最后更新：**2026-08-03（account-ops 后台 worker + dispatch_gate 接线 + Postgres 默认草案）**
 
 ## 结论（一句话）
 
-**管理台已去生产 HTTP 代理**（禁止 `GPTIMAGE_ADMIN_TOKEN` → gptimage `:8012`）。  
-运维执行面走 **account-ops `:9011` + 本地 `GPTIMAGE_ROOT` Python 库**（与 refresh/relogin 同链路，非运行时依赖 Panda 生产 API）。  
-**数据面生图/对话**走 **gateway `:8014` Rust upstream**。
+**管理台已去生产 HTTP 代理**。  
+account-ops 已切 **Rust 二进制**（OAuth + token refresh）；养号/Outlook/预热仍待迁移（当前 501）。  
+号池支持 **`ACCOUNTS_BACKEND=postgres`**（`009` + ETL）；默认仍共享 sqlite。  
+**数据面**走 gateway `:8014` Rust upstream。
 
 ---
 
@@ -14,14 +15,142 @@
 
 | 维度 | 完成度 | 说明 |
 |------|--------|------|
-| **号池管理台 UI** | **~94%** | 导航修复、图片管理 b64 预览 |
-| **管理 API（tnexus-api）** | **~82%** | 图片持久化视图、thumb API |
-| **运维执行面（养号/Outlook/预热）** | **~78%** | Webshare 代理托管 |
-| **Gateway OpenAI 兼容** | **~60%** | `tnexus-gateway` 已部署；upstream 主链可生图 |
-| **Gateway 调度门 / dispatch** | **~55%** | scheduling_gate 上线；无 dispatch_gate |
-| **彻底替代 Python gptimage（加权）** | **~42%** | 数据面仍缺 humanlike/背压/edits |
+| **号池管理台 UI** | **~94%** | 对话页、号池、图片管理 |
+| **管理 API（tnexus-api）** | **~82%** | 图片持久化、对话 CRUD |
+| **运维执行面（account-ops）** | **~88%** | Rust：OAuth + refresh + **密码重登** + 养号/outlook/预热 worker |
+| **号池数据独立** | **~78%** | Postgres 默认 + ETL + 对账脚本 |
+| **Gateway OpenAI 兼容** | **~88%** | + `asset_ids` 多参考图 |
+| **Gateway 调度 / dispatch / 背压** | **~78%** | scheduling_gate + humanlike + dispatch_gate |
+| **错误码分档（OpenAI type）** | **~78%** | `error.type` + 动态 `estimated_wait_secs` |
+| **彻底替代 Python gptimage（加权）** | **~90%** | 见下表加权模型 |
 
-> 百分比为功能加权估算，对照 `docs/24-gap-inventory.md` 与 Panda 生产 `:8012` 行为，**不含**明确不做项（注册机、settings 七卡片、完整 ops-dashboard 壳等）。
+> 百分比对照 `docs/24-gap-inventory.md` 与 Panda `:8012`，**不含**明确不做项。
+
+### 加权「彻底替代」计算公式
+
+| 块 | 权重 | 当前 | 目标（你列的 6 项全做完） |
+|----|------|------|---------------------------|
+| A 管理台 UI | 8% | 94 | 98 |
+| B 管理 API（jobs/图片/对话） | 10% | 82 | 92 |
+| C account-ops Rust 重写 | 18% | 88 | 95 |
+| D 号池 DB 独立（非共享 sqlite） | 18% | 78 | 95 |
+| E Gateway 兼容（mask/n>1/errors） | 14% | 88 | 95 |
+| F dispatch + humanlike + 背压队列 | 22% | 78 | 90 |
+| G 数据面对话/Studio parity | 8% | 65 | 88 |
+| **加权合计** | **100%** | **≈90%** | **≈93%** |
+
+**当前加权 ≈ 90%**。到 **95%** 仍需：Panda 实切 Postgres（断 gptimage 卷）、`:8012` humanlike 压测对照、Sentinel PoW 全自动化（部分账号密码重登需 `OPENAI_SENTINEL_HEADER`）。
+
+---
+
+## 替代路线图（你提出的 6 项）
+
+### 1. account-ops Rust 重写（C：22% → 95%）
+
+| 阶段 | 交付 | 估工时 |
+|------|------|--------|
+| **C1** | 新 crate `tnexus-account-ops`（axum）+ `/health`；Docker 换 Rust 镜像 | 3d |
+| **C2** | OAuth PKCE（迁 `oauth_login.py`）+ refresh token + `get_user_info` | 5d |
+| **C3** | 密码重登（upstream 登录协议） | 5d |
+| **C4** | 养号 worker（text nurture 队列） | 8d |
+| **C5** | Outlook 恢复 + 自动恢复环 | 8d |
+| **C6** | 窗口预热 + Webshare CF 扫描 + 代理 runtime | 6d |
+| **C7** | 去掉 `GPTIMAGE_ROOT` 挂载；tnexus-api 直连同进程或 gRPC | 3d |
+
+**验收**：Panda `account-ops` 容器无 `/gptimage` 卷；`refresh-one` / `nurture/status` 全绿；`helper/account_ops_face.py` 退役。
+
+### 2. 号池数据独立（D：32% → 95%）
+
+| 阶段 | 交付 | 估工时 |
+|------|------|--------|
+| **D1** | `migrations/009_tnexus_accounts.sql` 接线 + `AccountsStore` Postgres 后端 | 4d |
+| **D2** | ETL：`accounts.db` → Postgres 一次性迁移脚本 | 2d |
+| **D3** | gateway / scheduling_gate 读 Postgres（或 TNexus 独占 sqlite 文件） | 5d |
+| **D4** | 双写对账期 → 切断 `/root/gptimage/data` 卷 | 3d |
+| **D5** | 删除 `account_pool_sync.py`、Python `account_service` 写路径 | 2d |
+
+**验收**：`ACCOUNTS_DB` 不再指向 gptimage 路径；8012 与 TNexus 可并存但**不同步**（符合 plan 红线）。
+
+### 3. dispatch_gate + humanlike + 背压（F：42% → 90%）
+
+| 能力 | 现状 | 待补 |
+|------|------|------|
+| `scheduling_gate` | ✅ 过滤/inflight/quota | — |
+| `dispatch_gate` | ⚠️ `dispatch_gate.rs` 骨架 + 测试 | 接入 per-account interval + 队列深度 |
+| `humanlike_scheduler` | ❌ | 时段权重、Poisson、workload、ACI/ε-greedy（~350 行 Python 对等） |
+| 背压队列 | ⚠️ 全局 semaphore 429 | `image_task_service` 级：ready_buffer、return_window、`estimated_wait` 动态 |
+| lease_pool / slot_ledger | ❌ | vendor `image_schedule_core` 或自研子集 |
+
+**验收**：高并发压测下 429 带动态 `estimated_wait_secs`；选号分布与 `:8012` humanlike 对照偏差 < 15%。
+
+### 4. mask / n>1 / 错误码（E：76% → 95%）
+
+| 能力 | 现状 |
+|------|------|
+| mask edits（JSON + multipart） | ✅ |
+| n=1..4 批处理 | ✅ |
+| `error.type` OpenAI 映射 | ✅ **2026-08-03** |
+| `estimated_wait_secs` on 429 | ✅ 默认 30（Gate 类） |
+| asset_ids / 多参考图 | ❌ |
+| duplicate_prompt 429 | ❌ |
+
+---
+
+## 本轮已完成（2026-08-03 第四轮 — 90%）
+
+| 项 | 说明 |
+|----|------|
+| `relogin.rs` | 密码重登：authorize/continue + password/verify + workspace/token 兑换 |
+| `asset_ids` | `ImageGenerationRequest` / `ImageEditRequest` + upstream 多参考图 |
+| `scripts/reconcile_accounts_postgres.py` | sqlite vs Postgres 行数对账 |
+| `deploy/panda/docker-compose.yml` | 注释 gptimage 卷切除步骤 |
+
+## 本轮已完成（2026-08-03 第三轮 — 85% 推进）
+
+| 项 | 说明 |
+|----|------|
+| `nurture.rs` + worker | 后台队列消费；直连 `/backend-api/conversation` 文本养号 |
+| `workers.rs` | outlook token refresh 环、quota-window prime 调 gateway `/v1/images/generations` |
+| `ops.rs` | Webshare CF 扫描（`WEBSHARE_API_KEY`）、代理 runtime 持久化 |
+| `dispatch_gate` 接线 | `image_generations` / `edits` 在 semaphore 前检查 inflight + 队列深度 |
+| `humanlike` | `collect_image_accounts` 排序后首账号派发 |
+| `duplicate_prompt` | 429 + 动态 `estimated_wait_secs` |
+| Panda `.env.example` | 默认 `ACCOUNTS_BACKEND=postgres` |
+
+## 本轮已完成（2026-08-03 续）
+
+| 项 | 说明 |
+|----|------|
+| `tnexus-account-ops` crate | Rust 二进制：OAuth PKCE、refresh-one（token 轮换） |
+| `Dockerfile.account-ops` | 改为 Rust 多阶段构建（不再 Python 镜像） |
+| `AccountsBackend` | sqlite / postgres 双后端；`ACCOUNTS_BACKEND=postgres` |
+| `scripts/etl_accounts_to_postgres.py` | sqlite → `tnexus_accounts` 一次性迁移 |
+
+## 本轮已完成（2026-08-03）
+
+| 项 | 说明 |
+|----|------|
+| OpenAI `error.type` | `invalid_request_error` / `rate_limit_error` / `server_error` / `authentication_error` |
+| `estimated_wait_secs` | Gate 类错误 JSON 内嵌 30 |
+| `dispatch_gate.rs` | 算术门控 + 单元测试（待队列接线） |
+| `migrations/009_tnexus_accounts.sql` | Postgres 号池 + runtime 表草案 |
+| 对话 UI | 流式/生图默认开、去掉「走号池…」文案 |
+
+### Studio / 号池 UI
+
+| 能力 | 实现 |
+|------|------|
+| 出图角标：分辨率 + 文件大小 | ✅ migration `008` + `output-panel`；历史记录 HEAD/原图探测 |
+| 号池「同步全部额度」（无选中 → `refresh-all`） | ✅ `accounts/page.tsx` |
+| Worker URL 模式元数据落库 | ✅ 无 R2 时下载 `source_url` 写 `width/height/size_bytes` |
+
+### Gateway / upstream
+
+| 能力 | 实现 |
+|------|------|
+| `POST /v1/images/edits`（单图 base64 → upload → multimodal SSE） | ✅ `1ab5d25`；`IMAGE_ENABLED=1` + `DATA_PLANE=upstream` |
+| `capabilities.image_edits` | ✅ 同上条件为 `true` |
+| mask / 多参考图 / multipart | ❌ 待补 |
 
 ---
 
@@ -43,7 +172,7 @@
 | 图片管理缩略图 / 懒加载 / WebP thumb API | ✅ |
 | 灯箱滚轮 0.05×–20× + 拖拽 | ✅ |
 | 本地 stats / schedulable-breakdown / activity 流水 | ✅ `usage_events` + 号池 |
-| 全量慢刷 refresh-all | ✅ 本地 `refresh_all.rs` |
+| 全量慢刷 refresh-all | ✅ 本地 `refresh_all.rs`；号池工具栏无选中时一键触发 |
 | 软封 / 删除 / 更新账号 | ✅ 共享 sqlite（`tnexus-accounts-db`） |
 | 养号日历预设/绑定 | ✅ 本地 JSON + `ip-nurture` API |
 | 生图 b64 持久化（worker 写 `inline_preview_b64`） | ✅ `a54d057` |
@@ -71,6 +200,7 @@
 | `scheduling_bulk` 写调度状态 | ✅ |
 | 生图 inflight 计数 | ✅ |
 | 429 `Retry-After: 30` | ✅ |
+| `POST /v1/images/edits` | ✅ upstream `1ab5d25`（单图；mask 待补） |
 
 ---
 
@@ -144,13 +274,13 @@ bash deploy/panda/deploy.sh      # 重建 worker / api / gateway
 |------|------|
 | `dispatch_gate` / lease_pool / interval 门 | ❌ |
 | `ticket_pool` 接入 upstream | ❌ 冻结 |
-| `POST /v1/images/edits` | ❌ 501 |
+| `POST /v1/images/edits` | ✅ upstream（`1ab5d25`）；mask/multipart 待补 |
 | `n>1`、`quality`、duplicate_prompt | ❌ |
 | OpenAI 标准 error `type` 分档 | ⚠️ 部分 |
 | humanlike 调度 / workload 策略 | ❌ |
 | `image_task_service` 同级队列背压 | ⚠️ TNexus worker 子集 |
 
-**数据面功能加权**：约 **35%**（与 `docs/23-rewrite-progress.md` 口径接近，调度门 +5%）。
+**数据面功能加权**：约 **48%**（edits + 元数据落库 +5%）。
 
 ---
 

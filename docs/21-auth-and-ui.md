@@ -10,7 +10,9 @@
 > panda `:8013` 实测 `/api/auth/*` 等 **全部 404**（二进制仍为 2026-07-21 旧版）。
 > 代码已进 git（`80fc447`+），待走 git 链路发布。
 
-最后更新：2026-07-27
+> **2026-08-02 生产态补充**：TNexus 合并仓 `tnexus-gateway`（`:8014`）已部署；`/v1/images/edits` 在 `IMAGE_ENABLED=1` + `DATA_PLANE=upstream` 时可用。静态 UI 由 **tnexus-api** 托管。下文「未部署 / 404」多指 **2026-07 旧 gateway 二进制**，以 [HANDOFF.md](../HANDOFF.md) 为准。
+
+最后更新：2026-08-02
 
 ## 分支状态
 
@@ -59,16 +61,16 @@
 - **仅管理员**：`/v1/accounts/candidates`、`/v1/quota*`、`/api/admin/*`
 - 开发：`AUTH_DISABLE=1` 跳过 JWT（默认关）
 
-### 生图两条路由行为不同
+### 生图两条路由（2026-08-02 现行）
 
-| 路由 | 受 `IMAGE_ENABLED` 控制 | 返回 | code |
-|------|------------------------|------|------|
-| `/v1/images/generations` | 是（`main.rs:400-407`） | 501 | `image_deferred` |
-| `/v1/images/edits` | **否** | 501 | `image_edits_deferred` |
+| 路由 | 受 `IMAGE_ENABLED` 控制 | 额外条件 | 行为 |
+|------|------------------------|----------|------|
+| `/v1/images/generations` | 是 | `DATA_PLANE=upstream` 推荐 | 文生图 upstream SSE |
+| `/v1/images/edits` | 是 | **`DATA_PLANE=upstream` 必填** | 单图 base64 → upload → multimodal 编辑 |
 
-`image_edits`（`main.rs:532-542`）把 State 解构为 `_st`，**完全不读 `image_enabled`**，
-无条件返回 501；即使 `IMAGE_ENABLED=1` 也一样。
-另外，当前 panda 生产二进制里**这条路由根本不存在，实测 404**（不是 501）。
+`GET /api/backend/capabilities` → `features.image_edits` 仅在 generations 与 upstream 同时开启时为 `true`。
+
+> 历史（2026-07-26 审计）：`image_edits` 曾无条件 501；生产旧二进制曾 404。均已过时。
 
 ## Web UI
 
@@ -132,7 +134,7 @@
 | `GATEWAY_LISTEN` | `0.0.0.0:8013` | 监听地址（`config.rs:37`） |
 | `HELPER_URL` | `http://127.0.0.1:19001` | Helper 地址（`config.rs:38`） |
 | `ACCOUNTS_DB` | — | 共享 gptimage sqlite 号池，与 pin 账号合并（`config.rs` / `tnexus-accounts-db`） |
-| `IMAGE_ENABLED` | **`0`** | `1` 开启 `/v1/images/generations`；对 `/v1/images/edits` 无效 |
+| `IMAGE_ENABLED` | **`0`** | `1` 开启 `/v1/images/generations` 与 `/v1/images/edits`（edits 另需 `DATA_PLANE=upstream`） |
 | `IMAGE_GLOBAL_CONCURRENCY` | `3` | 全局生图并发（`config.rs:44`） |
 | `MVP_MIN_IMAGE_QUOTA` | `1` | 最低生图配额（`config.rs:39`） |
 | `GATEWAY_STATIC_DIR` | — | 托管 `web/out`；目录不存在时静默降级 |

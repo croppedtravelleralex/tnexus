@@ -33,6 +33,11 @@ set +a
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" pull
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --force-recreate api worker account-ops
 
+# Postgres pool: api/worker no longer need gptimage sqlite when ACCOUNTS_BACKEND=postgres
+if grep -q '^ACCOUNTS_BACKEND=postgres' "$ENV_FILE" 2>/dev/null; then
+  echo "ACCOUNTS_BACKEND=postgres — ensure api compose dropped /gptimage/data mount in docker-compose.yml"
+fi
+
 sleep 4
 curl -fsS http://127.0.0.1:9000/health
 echo

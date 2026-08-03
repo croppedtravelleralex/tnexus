@@ -1,6 +1,6 @@
 # TNexus 文档索引
 
-最后更新：**2026-07-30**（gateway-rs 文档同步入仓）
+最后更新：**2026-08-03**（新增 grok2api Rust 移植规划）
 
 ## 合并施工（先看）
 
@@ -34,6 +34,9 @@
 
 | 文档 | 说明 |
 |------|------|
+| [39-grok2api-rust-migration.md](39-grok2api-rust-migration.md) | **grok2api 完整 Rust 移植** — 号池/API/运维/OCR、crate 拆分、Phase 0–7 |
+| [35-tnexus-gptimage-gap.md](35-tnexus-gptimage-gap.md) | ChatGPT gptimage 替代差距（加权 ≈85%） |
+| [38-tnexus-production-cutover.md](38-tnexus-production-cutover.md) | gptimage 生产切流 |
 | [R2.md](R2.md) | R2 存储配置 |
 | [../TNexus.md](../TNexus.md) | 产品愿景 |
 

@@ -62,6 +62,18 @@
 
 ---
 
+## Grok / grok2api 对照源（独立于 gptimage）
+
+| 环境 | 路径 | 角色 |
+|------|------|------|
+| **grok2api Go 仓** | `D:\SelfMadeTool\AutoRegister\grokImage\` | Grok 网关 + 号池 + Admin；**Rust 全量移植源** |
+| **移植规划** | [39-grok2api-rust-migration.md](39-grok2api-rust-migration.md) | crate 拆分、Phase、schema、工时 |
+| **生产（已停）** | Panda `/opt/grok2api/` | compose + `data/backend.db`；ETL 源 |
+
+与 gptimage **不共用**号池 schema；TNexus worker 当前仅 `GROK2API_BASE` HTTP 客户端（生图）。
+
+---
+
 ## 与 TNexus 原有模块关系
 
 | 模块 | 合并后职责 |

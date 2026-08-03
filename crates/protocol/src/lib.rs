@@ -3,7 +3,9 @@
 mod error_class;
 mod image_contract;
 
-pub use error_class::{classify_fault, ErrorClass};
+pub use error_class::{
+    classify_fault, default_rate_limit_wait_secs, openai_error_type_for_class, ErrorClass,
+};
 pub use image_contract::{
     assert_json_matches_except, build_client_contextual_info, build_estuary_download_headers,
     build_image_prepare_body, build_image_prepare_body_opts, build_image_start_body,
@@ -114,6 +116,52 @@ pub fn chat_message_requests_image(text: &str) -> bool {
     KEYWORDS.iter().any(|k| t.contains(k))
 }
 
+/// Obvious text / Q&A intents — skip image path when `image_mode` is default-on.
+pub fn chat_message_prefers_text(text: &str) -> bool {
+    let t = text.trim();
+    if t.is_empty() {
+        return true;
+    }
+    if t.contains('?') || t.contains('？') {
+        return true;
+    }
+    const TEXT_HINTS: [&str; 14] = [
+        "什么",
+        "怎么",
+        "如何",
+        "为什么",
+        "为何",
+        "是不是",
+        "能不能",
+        "可以吗",
+        "介绍",
+        "解释",
+        "翻译",
+        "代码",
+        "帮我写",
+        "写一个",
+    ];
+    if TEXT_HINTS.iter().any(|k| t.contains(k)) {
+        return true;
+    }
+    let lower = t.to_lowercase();
+    if lower == "hi" || lower == "hello" || t == "你好" || t == "嗨" {
+        return true;
+    }
+    if lower.starts_with("你好") || lower.starts_with("hello") || lower.starts_with("hi ") {
+        return true;
+    }
+    false
+}
+
+/// Whether chat should route to inline image generation.
+pub fn chat_should_use_image_path(text: &str, image_mode: bool) -> bool {
+    if chat_message_requests_image(text) {
+        return true;
+    }
+    image_mode && !chat_message_prefers_text(text)
+}
+
 /// Extract image prompt from chat text (`@Create image`, `/image …`, or plain prompt).
 pub fn extract_chat_image_prompt(text: &str) -> String {
     let t = text.trim();
@@ -212,6 +260,8 @@ pub struct ImageGenerationRequest {
     pub quality: Option<String>,
     #[serde(default)]
     pub background: Option<String>,
+    #[serde(default)]
+    pub asset_ids: Vec<String>,
     #[serde(default = "default_response_format")]
     pub response_format: String,
 }
@@ -261,14 +311,20 @@ pub fn openai_error(
     code: impl Into<String>,
     fault: Option<&str>,
 ) -> Value {
-    json!({
-        "error": {
-            "message": message.into(),
-            "type": "gateway_error",
-            "code": code.into(),
-            "fault": fault,
-        }
-    })
+    let message = message.into();
+    let code = code.into();
+    let class = classify_fault(fault, Some(&message));
+    let error_type = openai_error_type_for_class(class, &code);
+    let mut error = json!({
+        "message": message,
+        "type": error_type,
+        "code": code,
+        "fault": fault,
+    });
+    if let Some(wait) = default_rate_limit_wait_secs(class) {
+        error["estimated_wait_secs"] = json!(wait);
+    }
+    json!({ "error": error })
 }
 
 pub fn chat_completion_response(model: &str, content: &str) -> Value {

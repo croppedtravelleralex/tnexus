@@ -55,6 +55,8 @@ pub struct ImageEditRequest {
     pub mask: Option<String>,
     #[serde(default = "default_n")]
     pub n: u32,
+    #[serde(default)]
+    pub asset_ids: Vec<String>,
     #[serde(default = "default_size")]
     pub size: String,
 }

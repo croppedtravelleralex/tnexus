@@ -59,7 +59,7 @@ impl AppState {
             .timeout(std::time::Duration::from_secs(300))
             .build()?;
 
-        let accounts = AccountsStore::from_env().unwrap_or_default();
+        let accounts = AccountsStore::from_env_with_pool(Some(pool.clone())).unwrap_or_default();
 
         Ok(Self {
             config,

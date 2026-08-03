@@ -2,6 +2,9 @@
 
 mod pipeline_telemetry;
 mod scheduling_gate;
+mod dispatch_gate;
+mod humanlike;
+mod duplicate_prompt;
 mod accounts_routes;
 mod auth_routes;
 mod backend_routes;
@@ -10,6 +13,7 @@ mod image_assets;
 mod state;
 mod upstream_face;
 
+use tnexus_accounts_db::AccountsBackend;
 use crate::scheduling_gate::SchedulingGate;
 use crate::image_assets::ImageAssetStore;
 use anyhow::Context;
@@ -37,7 +41,7 @@ use helper_client::{
 };
 use protocol::{
     chat_completion_response, chat_completion_response_with_image_b64, classify_fault,
-    chat_message_requests_image, extract_chat_image_prompt, fold_chat_messages_for_upstream,
+    chat_should_use_image_path, extract_chat_image_prompt, fold_chat_messages_for_upstream,
     image_generation_b64_multi_response,
     image_generation_b64_multi_response_with_pipeline,
     image_generation_response, image_generation_url_multi_response,
@@ -151,6 +155,24 @@ async fn main() -> anyhow::Result<()> {
         image_assets::asset_ttl_secs_from_env(),
     ));
 
+    let pg_pool = if std::env::var("ACCOUNTS_BACKEND").ok().as_deref() == Some("postgres") {
+        let url = std::env::var("DATABASE_URL").context("DATABASE_URL for postgres accounts")?;
+        Some(
+            sqlx::postgres::PgPoolOptions::new()
+                .max_connections(5)
+                .connect(&url)
+                .await
+                .context("connect postgres for accounts backend")?,
+        )
+    } else {
+        None
+    };
+    let scheduling_gate = if let Some(pool) = pg_pool.clone() {
+        SchedulingGate::from_backend(AccountsBackend::from_env(Some(pool))?)
+    } else {
+        SchedulingGate::from_env()
+    };
+
     let state = Arc::new(AppState {
         helper,
         data_plane: cfg.data_plane,
@@ -165,8 +187,10 @@ async fn main() -> anyhow::Result<()> {
         static_dir: static_dir.clone(),
         image_assets,
         public_base_url: cfg.public_base_url.clone(),
-        scheduling_gate: SchedulingGate::from_env(),
+        scheduling_gate,
         image_account_rr: AtomicUsize::new(0),
+        image_queue_depth: AtomicUsize::new(0),
+        duplicate_prompt: duplicate_prompt::DuplicatePromptGate::new(),
     });
 
     let auth_public = Router::new()
@@ -414,6 +438,36 @@ async fn collect_image_accounts(
             Some("client"),
         ));
     }
+
+    if accounts.len() > 1 {
+        let inputs: Vec<AccountScoreInput> = accounts
+            .iter()
+            .map(|a| {
+                let (quota, unknown, inflight, soft) = st
+                    .scheduling_gate
+                    .account_metrics(&a.email)
+                    .unwrap_or((0, false, 0, 0));
+                AccountScoreInput {
+                    email: a.email.clone(),
+                    quota,
+                    image_quota_unknown: unknown,
+                    image_inflight: inflight,
+                    soft_band_percent: soft,
+                }
+            })
+            .collect();
+        let start = pick_account_index(
+            &inputs,
+            st.image_account_rr.fetch_add(1, Ordering::Relaxed),
+        );
+        if start > 0 {
+            let mut rotated = Vec::with_capacity(accounts.len());
+            for i in 0..accounts.len() {
+                rotated.push(accounts[(start + i) % accounts.len()].clone());
+            }
+            accounts = rotated;
+        }
+    }
     Ok(accounts)
 }
 
@@ -432,6 +486,7 @@ async fn run_upstream_image(
     size: String,
     quality: Option<String>,
     transparent_bg: bool,
+    asset_ids: &[String],
 ) -> Result<(helper_client::BridgeOk, upstream::ImageRunMetrics), anyhow::Error> {
     let prompt = tnexus_domain::append_image_generation_hints(
         &prompt,
@@ -439,7 +494,7 @@ async fn run_upstream_image(
         quality.as_deref().unwrap_or("auto"),
         transparent_bg,
     );
-    upstream_face::run_image(account, prompt, model)
+    upstream_face::run_image(account, prompt, model, asset_ids)
         .await
         .map(|(bytes, metrics)| {
             let b64 = BASE64.encode(&bytes);
@@ -569,21 +624,57 @@ async fn quota_refresh(
     }
 }
 
-fn try_acquire_image_permit(st: &AppState) -> Result<tokio::sync::OwnedSemaphorePermit, Response> {
-    match st.image_sem.clone().try_acquire_owned() {
-        Ok(permit) => Ok(permit),
-        Err(TryAcquireError::NoPermits) => Err(err(
+fn check_dispatch_backpressure(st: &AppState, email: &str) -> Option<Response> {
+    let interval_ms = std::env::var("IMAGE_DISPATCH_INTERVAL_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(800);
+    let cap = st.scheduling_gate.account_inflight_cap();
+    let inflight = st
+        .scheduling_gate
+        .account_metrics(email)
+        .map(|(_, _, inflight, _)| inflight)
+        .unwrap_or(0);
+    let queued = st.image_queue_depth() as u64;
+    if crate::dispatch_gate::should_wait(interval_ms, inflight as u64, cap, queued) {
+        return Some(err_wait(
             StatusCode::TOO_MANY_REQUESTS,
-            "image_service_busy: global concurrency limit reached",
-            "image_service_busy",
+            "dispatch_gate: defer image until inflight drains",
+            "dispatch_gate",
             Some("gate"),
-        )),
-        Err(TryAcquireError::Closed) => Err(err(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "image semaphore closed",
-            "semaphore_closed",
-            Some("self"),
-        )),
+            st.estimated_image_wait_secs(),
+        ));
+    }
+    None
+}
+
+fn try_acquire_image_permit(st: &AppState) -> Result<tokio::sync::OwnedSemaphorePermit, Response> {
+    st.image_queue_depth.fetch_add(1, Ordering::Relaxed);
+    match st.image_sem.clone().try_acquire_owned() {
+        Ok(permit) => {
+            st.image_queue_depth.fetch_sub(1, Ordering::Relaxed);
+            Ok(permit)
+        }
+        Err(TryAcquireError::NoPermits) => {
+            let wait = st.estimated_image_wait_secs();
+            st.image_queue_depth.fetch_sub(1, Ordering::Relaxed);
+            Err(err_wait(
+                StatusCode::TOO_MANY_REQUESTS,
+                "image_service_busy: global concurrency limit reached",
+                "image_service_busy",
+                Some("gate"),
+                wait,
+            ))
+        }
+        Err(TryAcquireError::Closed) => {
+            st.image_queue_depth.fetch_sub(1, Ordering::Relaxed);
+            Err(err(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "image semaphore closed",
+                "semaphore_closed",
+                Some("self"),
+            ))
+        }
     }
 }
 
@@ -630,6 +721,7 @@ async fn chat_image_completions(
         "1024x1024".into(),
         None,
         false,
+        &[],
     )
     .await;
     let elapsed_ms = t0.elapsed().as_millis();
@@ -721,7 +813,7 @@ async fn chat_completions(
             Err(r) => return r,
         };
 
-    if chat_message_requests_image(&last_user) || req.image_mode {
+    if chat_should_use_image_path(&last_user, req.image_mode) {
         return chat_image_completions(&st, &req, &account, &last_user).await;
     }
 
@@ -897,6 +989,7 @@ async fn generate_one_image(
                 req.size.clone(),
                 req.quality.clone(),
                 req.transparent_bg(),
+                &req.asset_ids,
             )
             .await;
             match attempt_result {
@@ -997,6 +1090,7 @@ async fn generate_one_image_edit(
             req.size.clone(),
             image_bytes.to_vec(),
             mask_bytes.map(|m| m.to_vec()),
+            &req.asset_ids,
         )
         .await;
         match attempt_result {
@@ -1114,11 +1208,24 @@ async fn image_generations(
             Ok(c) => c,
             Err(r) => return r,
         };
-    let start_idx = st
-        .image_account_rr
-        .fetch_add(1, Ordering::Relaxed)
-        % candidates.len();
-    let account = candidates[start_idx].clone();
+
+    if st.duplicate_prompt.check(
+        candidates.first().map(|a| a.email.as_str()).unwrap_or(""),
+        &req.prompt,
+    ) {
+        return err_wait(
+            StatusCode::TOO_MANY_REQUESTS,
+            "duplicate-prompt: identical image prompt recently submitted",
+            "duplicate_prompt",
+            Some("gate"),
+            st.estimated_image_wait_secs(),
+        );
+    }
+    let account = candidates[0].clone();
+
+    if let Some(r) = check_dispatch_backpressure(&st, &account.email) {
+        return r;
+    }
 
     let permit = match try_acquire_image_permit(&st) {
         Ok(p) => p,
@@ -1316,6 +1423,7 @@ async fn run_upstream_image_edit(
     size: String,
     image_bytes: Vec<u8>,
     mask_bytes: Option<Vec<u8>>,
+    asset_ids: &[String],
 ) -> Result<(helper_client::BridgeOk, upstream::ImageRunMetrics), anyhow::Error> {
     let prompt = tnexus_domain::append_image_generation_hints(&prompt, &size, "auto", false);
     upstream_face::run_image_edit(
@@ -1325,6 +1433,7 @@ async fn run_upstream_image_edit(
         image_bytes,
         "edit.png".into(),
         mask_bytes,
+        asset_ids,
     )
         .await
         .map(|(bytes, metrics)| {
@@ -1407,6 +1516,7 @@ async fn parse_image_edit_multipart(mut multipart: Multipart) -> Result<ImageEdi
     let mut n = 1u32;
     let mut image_bytes: Option<Vec<u8>> = None;
     let mut mask_bytes: Option<Vec<u8>> = None;
+    let mut asset_ids: Vec<String> = Vec::new();
 
     while let Some(field) = multipart
         .next_field()
@@ -1458,6 +1568,21 @@ async fn parse_image_edit_multipart(mut multipart: Multipart) -> Result<ImageEdi
                         .to_vec(),
                 );
             }
+            "asset_ids" => {
+                let text = field
+                    .text()
+                    .await
+                    .map_err(|e| format!("asset_ids field: {e}"))?;
+                if let Ok(ids) = serde_json::from_str::<Vec<String>>(&text) {
+                    asset_ids = ids;
+                } else {
+                    asset_ids = text
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                }
+            }
             _ => {}
         }
     }
@@ -1471,6 +1596,7 @@ async fn parse_image_edit_multipart(mut multipart: Multipart) -> Result<ImageEdi
         mask,
         n,
         size,
+        asset_ids,
     })
 }
 
@@ -1562,6 +1688,10 @@ async fn image_edits_json(
         Ok(c) => c,
         Err(r) => return r,
     };
+
+    if let Some(r) = check_dispatch_backpressure(&st, &candidates[0].email) {
+        return r;
+    }
 
     let permit = match try_acquire_image_permit(&st) {
         Ok(p) => p,
@@ -1659,10 +1789,20 @@ fn err(
     code: &str,
     fault: Option<&str>,
 ) -> Response {
+    err_wait(status, message, code, fault, 30)
+}
+
+fn err_wait(
+    status: StatusCode,
+    message: impl Into<String>,
+    code: &str,
+    fault: Option<&str>,
+    retry_after_secs: u32,
+) -> Response {
     let body: Value = openai_error(message, code, fault);
     let mut resp = (status, Json(body)).into_response();
     if status == StatusCode::TOO_MANY_REQUESTS {
-        if let Ok(val) = header::HeaderValue::from_str("30") {
+        if let Ok(val) = header::HeaderValue::from_str(&retry_after_secs.to_string()) {
             resp.headers_mut().insert(header::RETRY_AFTER, val);
         }
     }
@@ -1743,6 +1883,8 @@ mod auth_integration {
             public_base_url: "http://127.0.0.1:8014".into(),
             scheduling_gate: SchedulingGate::from_env().expect("ACCOUNTS_DB for gateway tests"),
             image_account_rr: AtomicUsize::new(0),
+            image_queue_depth: AtomicUsize::new(0),
+            duplicate_prompt: duplicate_prompt::DuplicatePromptGate::new(),
         })
     }
 
@@ -1785,6 +1927,8 @@ mod auth_integration {
             public_base_url: "http://127.0.0.1:8014".into(),
             scheduling_gate: SchedulingGate::from_env().expect("ACCOUNTS_DB for gateway tests"),
             image_account_rr: AtomicUsize::new(0),
+            image_queue_depth: AtomicUsize::new(0),
+            duplicate_prompt: duplicate_prompt::DuplicatePromptGate::new(),
         });
         let app = Router::new()
             .route("/guarded", get(|| async { "ok" }))
@@ -1900,6 +2044,8 @@ mod auth_integration {
             public_base_url: "http://127.0.0.1:8014".into(),
             scheduling_gate: SchedulingGate::from_env().expect("ACCOUNTS_DB for gateway tests"),
             image_account_rr: AtomicUsize::new(0),
+            image_queue_depth: AtomicUsize::new(0),
+            duplicate_prompt: duplicate_prompt::DuplicatePromptGate::new(),
         });
         let me_app = Router::new()
             .route("/me", get(me))
