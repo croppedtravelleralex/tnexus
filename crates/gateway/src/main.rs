@@ -572,7 +572,7 @@ async fn quota_refresh(
 fn try_acquire_image_permit(st: &AppState) -> Result<tokio::sync::OwnedSemaphorePermit, Response> {
     match st.image_sem.clone().try_acquire_owned() {
         Ok(permit) => Ok(permit),
-        Err(TryAcquireError::NoPermitsAvailable) => Err(err(
+        Err(TryAcquireError::NoPermits) => Err(err(
             StatusCode::TOO_MANY_REQUESTS,
             "image_service_busy: global concurrency limit reached",
             "image_service_busy",
@@ -674,7 +674,7 @@ async fn chat_image_completions(
                     .into_response()
             }
         }
-        Ok(bridge) => {
+        Ok((bridge, _)) => {
             let msg = bridge
                 .error
                 .unwrap_or_else(|| "chat image bridge failed".into());
