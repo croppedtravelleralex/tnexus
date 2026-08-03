@@ -98,21 +98,43 @@ def extract_gptimage_from_logs(
 ) -> str | None:
     task_id = str(data.get("task_id") or "").strip()
     prompt = prompt.strip()
+    marker = prompt
+    if "#" in prompt:
+        marker = prompt.split("#", 1)[1].strip()
+
     for line in reversed(tail_json_lines(log_path, since_pos)):
-        try:
-            rec = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if rec.get("type") != "call":
-            continue
-        detail = rec.get("detail") or {}
-        if task_id and str(detail.get("task_id") or "") == task_id:
-            return pick_email_from_detail(detail)
-        req = str(detail.get("request_text") or "")
-        if prompt and prompt in req:
-            email = pick_email_from_detail(detail)
-            if email:
-                return email
+        email = _match_gptimage_log_line(line, task_id, prompt, marker)
+        if email:
+            return email
+
+    # Late-written logs: scan recent tail (gptimage worker may flush after HTTP returns).
+    for line in reversed(tail_json_lines(log_path, max(0, file_size(log_path) - 2_000_000))):
+        email = _match_gptimage_log_line(line, task_id, prompt, marker)
+        if email:
+            return email
+    return None
+
+
+def _match_gptimage_log_line(
+    line: str,
+    task_id: str,
+    prompt: str,
+    marker: str,
+) -> str | None:
+    try:
+        rec = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    if rec.get("type") != "call":
+        return None
+    detail = rec.get("detail") or {}
+    if task_id and str(detail.get("task_id") or "") == task_id:
+        return pick_email_from_detail(detail)
+    req = str(detail.get("request_text") or "")
+    if prompt and prompt in req:
+        return pick_email_from_detail(detail)
+    if marker and marker in req:
+        return pick_email_from_detail(detail)
     return None
 
 
@@ -169,10 +191,19 @@ def post_image(
         return "error", str(e)
 
     email = extract_from_response(data)
-    if not email and gptimage_logs:
-        email = extract_gptimage_from_logs(data, prompt, log_since, gptimage_logs)
+    if gptimage_logs:
+        for attempt in range(12):
+            if not email:
+                email = extract_gptimage_from_logs(data, prompt, log_since, gptimage_logs)
+            if email:
+                break
+            time.sleep(2.0 if attempt < 4 else 3.0)
     if not email and tnexus_pipeline:
-        email = extract_tnexus_from_pipeline(pipe_since, tnexus_pipeline)
+        for attempt in range(6):
+            email = extract_tnexus_from_pipeline(pipe_since, tnexus_pipeline)
+            if email:
+                break
+            time.sleep(1.0)
     return "ok", email or "unknown"
 
 
