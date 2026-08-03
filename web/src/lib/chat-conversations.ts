@@ -37,8 +37,25 @@ export function normalizeChatMessages(raw: ChatMessage[]): ChatMessage[] {
     ...m,
     id: m.id ?? `legacy-${i}-${m.role}`,
     createdAt: m.createdAt ?? 0,
+    role: m.role === "assistant" ? "assistant" : "user",
   }));
 }
+
+/** Old sessions stored title from user text but omitted user rows in state.messages. */
+export function repairLegacyMessages(messages: ChatMessage[], title?: string): ChatMessage[] {
+  const normalized = normalizeChatMessages(messages);
+  if (normalized.some((m) => m.role === "user")) return normalized;
+  const t = String(title ?? "").trim();
+  if (!t || t === "新对话") return normalized;
+  return [createChatMessage("user", t), ...normalized];
+}
+
+export const CHAT_MODEL_HINTS: Record<string, string> = {
+  "gpt-4o-mini": "文本对话（上游 ChatGPT 通道，非官网模型名）",
+  "gpt-image-2": "生图专用",
+};
+
+export const DEFAULT_CHAT_MODELS = ["gpt-4o-mini", "gpt-image-2"] as const;
 
 export function chatConversationTitle(messages: ChatMessage[]): string {
   const lastUser = [...messages].reverse().find((m) => m.role === "user");

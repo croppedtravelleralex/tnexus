@@ -10,7 +10,7 @@ export function apiAssetUrl(path: string | null | undefined): string | undefined
   return path;
 }
 
-import type { ChatConversationState } from "@/lib/chat-conversations";
+import { type ChatConversationState, DEFAULT_CHAT_MODELS } from "@/lib/chat-conversations";
 import type { Conversation, ConversationState } from "@/lib/conversations";
 import type { GenConfig } from "@/lib/gen-config";
 
@@ -721,8 +721,34 @@ async function readChatStream(
 }
 
 export const chatApi = {
+  listModels: async (): Promise<string[]> => {
+    const urls = [
+      `${API_BASE}/api/chat/models`,
+      `${GATEWAY_BASE}/v1/models`,
+    ];
+    for (const url of urls) {
+      try {
+        const res = await fetch(url, {
+          credentials: "include",
+          headers: GATEWAY_KEY ? { Authorization: `Bearer ${GATEWAY_KEY}` } : {},
+        });
+        if (!res.ok) continue;
+        const data = (await res.json()) as { data?: Array<{ id?: string }> };
+        const ids = (data.data ?? []).map((m) => m.id).filter(Boolean) as string[];
+        if (ids.length > 0) return ids;
+      } catch {
+        // try next
+      }
+    }
+    return [...DEFAULT_CHAT_MODELS];
+  },
   streamCompletion: async (
-    body: { model: string; messages: Array<{ role: string; content: string }>; stream?: boolean },
+    body: {
+      model: string;
+      messages: Array<{ role: string; content: string }>;
+      stream?: boolean;
+      image_mode?: boolean;
+    },
     onDelta: (text: string) => void,
     onImageB64?: (b64: string) => void,
   ) => {

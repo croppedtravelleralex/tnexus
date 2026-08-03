@@ -24,6 +24,9 @@ pub struct ChatCompletionRequest {
     pub messages: Vec<ChatMessage>,
     #[serde(default)]
     pub stream: bool,
+    /// When true, treat the last user message as an image generation prompt (plain text).
+    #[serde(default)]
+    pub image_mode: bool,
 }
 
 fn default_chat_model() -> String {
@@ -84,16 +87,60 @@ pub fn fold_chat_messages_for_upstream(messages: &[ChatMessage]) -> String {
 /// User explicitly requested inline image generation in chat.
 pub fn chat_message_requests_image(text: &str) -> bool {
     let t = text.trim();
+    if t.is_empty() {
+        return false;
+    }
     let lower = t.to_lowercase();
-    lower.starts_with("@create image")
-        || t.starts_with("@Create image")
-        || lower.starts_with("/image ")
-        || lower.starts_with("/img ")
+    if lower.starts_with("@create image") || t.starts_with("@Create image") {
+        return true;
+    }
+    if lower.starts_with("/image") || lower.starts_with("/img") {
+        return true;
+    }
+    // Natural-language image intents (Chinese)
+    const KEYWORDS: &[&str] = [
+        "画一张",
+        "画一幅",
+        "画个",
+        "帮我画",
+        "生成图片",
+        "生成一张图",
+        "生成图像",
+        "生图",
+        "绘制",
+        "出一张图",
+        "画出来",
+    ];
+    KEYWORDS.iter().any(|k| t.contains(k))
 }
 
-/// Extract image prompt from chat text (`@Create image`, `/image …`).
+/// Extract image prompt from chat text (`@Create image`, `/image …`, or plain prompt).
 pub fn extract_chat_image_prompt(text: &str) -> String {
     let t = text.trim();
+    let lower = t.to_lowercase();
+    if lower.starts_with("/image") {
+        let rest = t
+            .chars()
+            .skip_while(|c| *c == '/')
+            .collect::<String>();
+        let rest = rest
+            .trim_start_matches("image")
+            .trim_start_matches("IMAGE")
+            .trim_start();
+        return if rest.is_empty() {
+            t.to_string()
+        } else {
+            rest.to_string()
+        };
+    }
+    if lower.starts_with("/img") {
+        let rest = t.chars().skip(4).collect::<String>().trim_start().to_string();
+        return if rest.is_empty() {
+            t.to_string()
+        } else {
+            rest
+        };
+    }
     if let Some(rest) = t
         .strip_prefix("/image ")
         .or_else(|| t.strip_prefix("/img "))
@@ -101,7 +148,6 @@ pub fn extract_chat_image_prompt(text: &str) -> String {
     {
         return rest.trim().to_string();
     }
-    let lower = t.to_lowercase();
     if lower.starts_with("@create image") {
         let rest = t
             .chars()
@@ -129,6 +175,26 @@ pub fn extract_chat_image_prompt(text: &str) -> String {
         } else {
             rest
         };
+    }
+    // Strip common Chinese command prefixes for natural-language image requests
+    for prefix in [
+        "画一张",
+        "画一幅",
+        "画个",
+        "帮我画",
+        "生成图片",
+        "生成一张图",
+        "生成图像",
+        "生图",
+        "绘制",
+        "出一张图",
+    ] {
+        if let Some(rest) = t.strip_prefix(prefix) {
+            let cleaned = rest.trim_start_matches(['：', ':', '，', ',', ' ']);
+            if !cleaned.is_empty() {
+                return cleaned.to_string();
+            }
+        }
     }
     t.to_string()
 }

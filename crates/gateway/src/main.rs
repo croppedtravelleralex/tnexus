@@ -721,7 +721,7 @@ async fn chat_completions(
             Err(r) => return r,
         };
 
-    if chat_message_requests_image(&last_user) {
+    if chat_message_requests_image(&last_user) || req.image_mode {
         return chat_image_completions(&st, &req, &account, &last_user).await;
     }
 

@@ -8,7 +8,7 @@ use axum::{
     extract::State,
     http::{header, StatusCode},
     response::{IntoResponse, Response},
-    routing::post,
+    routing::{get, post},
     Json, Router,
 };
 use chrono::Utc;
@@ -17,7 +17,35 @@ use serde_json::Value;
 use std::sync::Arc;
 
 pub fn routes() -> Router<Arc<AppState>> {
-    Router::new().route("/completions", post(chat_completions))
+    Router::new()
+        .route("/completions", post(chat_completions))
+        .route("/models", get(chat_models))
+}
+
+async fn chat_models(State(st): State<Arc<AppState>>) -> Result<Json<Value>, (StatusCode, String)> {
+    let url = format!(
+        "{}/v1/models",
+        st.config.gateway_base.trim_end_matches('/')
+    );
+    let client = reqwest::Client::new();
+    let mut req = client.get(&url);
+    if let Some(token) = &st.config.gateway_internal_token {
+        req = req.bearer_auth(token);
+    }
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("gateway unreachable: {e}")))?;
+    let status = resp.status();
+    if !status.is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        return Err((status, text));
+    }
+    let json: Value = resp
+        .json()
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
+    Ok(Json(json))
 }
 
 async fn chat_completions(
@@ -26,7 +54,11 @@ async fn chat_completions(
     Json(body): Json<Value>,
 ) -> Result<Response, (StatusCode, String)> {
     let stream = body.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
-    let wants_image = chat_body_requests_image(&body);
+    let wants_image = body
+        .get("image_mode")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+        || chat_body_requests_image(&body);
     let url = format!(
         "{}/v1/chat/completions",
         st.config.gateway_base.trim_end_matches('/')
@@ -103,8 +135,16 @@ fn chat_body_requests_image(body: &Value) -> bool {
         let lower = trimmed.to_lowercase();
         lower.starts_with("@create image")
             || trimmed.starts_with("@Create image")
-            || lower.starts_with("/image ")
-            || lower.starts_with("/img ")
+            || lower.starts_with("/image")
+            || lower.starts_with("/img")
+            || trimmed.contains("画一张")
+            || trimmed.contains("画一幅")
+            || trimmed.contains("画个")
+            || trimmed.contains("帮我画")
+            || trimmed.contains("生成图片")
+            || trimmed.contains("生成一张图")
+            || trimmed.contains("生图")
+            || trimmed.contains("绘制")
     })
     .unwrap_or(false)
 }

@@ -5,6 +5,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Download,
+  ImageIcon,
   LoaderCircle,
   Pencil,
   Plus,
@@ -13,15 +14,17 @@ import {
   Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { ImageLightbox, type LightboxImage } from "@/components/image-lightbox";
 import { ChatImageThumb } from "@/components/chat/chat-image-thumb";
+import { ChatMessageContent } from "@/components/chat/chat-message-content";
 import { chatApi, conversationsApi } from "@/lib/api";
 import type { Conversation } from "@/lib/conversations";
 import {
   CHAT_ACTIVE_SESSION_KEY,
+  CHAT_MODEL_HINTS,
   chatConversationTitle,
   createChatMessage,
+  DEFAULT_CHAT_MODELS,
   downloadTextFile,
   EMPTY_CHAT_STATE,
   exportChatAsMarkdown,
@@ -29,7 +32,7 @@ import {
   estimateBase64Bytes,
   formatBytes,
   isChatConversationState,
-  normalizeChatMessages,
+  repairLegacyMessages,
   type ChatConversationState,
   type ChatMessage,
 } from "@/lib/chat-conversations";
@@ -51,7 +54,9 @@ export function ChatWorkbench() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [model, setModel] = useState(EMPTY_CHAT_STATE.model);
+  const [modelOptions, setModelOptions] = useState<string[]>([...DEFAULT_CHAT_MODELS]);
   const [stream, setStream] = useState(EMPTY_CHAT_STATE.stream);
+  const [imageMode, setImageMode] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -60,6 +65,8 @@ export function ChatWorkbench() {
   const [imgDimensions, setImgDimensions] = useState<Record<string, string>>({});
   const loadedImgKeys = useRef<Set<string>>(new Set());
   const listRef = useRef<HTMLDivElement>(null);
+  const bootedRef = useRef(false);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const scrollToBottom = () => {
     requestAnimationFrame(() => {
@@ -89,11 +96,23 @@ export function ChatWorkbench() {
     if (!isChatConversationState(c.state)) return;
     setConversationId(c.id);
     sessionStorage.setItem(CHAT_ACTIVE_SESSION_KEY, c.id);
-    setMessages(normalizeChatMessages(c.state.messages));
+    setMessages(repairLegacyMessages(c.state.messages, c.title));
     setModel(c.state.model ?? EMPTY_CHAT_STATE.model);
     setStream(c.state.stream ?? true);
     setError("");
   }, []);
+
+  const selectConversation = useCallback(
+    async (id: string) => {
+      try {
+        const c = await conversationsApi.get(id);
+        applyConversation(c);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "加载对话失败");
+      }
+    },
+    [applyConversation],
+  );
 
   const createConversation = useCallback(async () => {
     const created = await conversationsApi.create({
@@ -102,10 +121,16 @@ export function ChatWorkbench() {
     });
     await loadConversations();
     applyConversation(created);
+    setInput("");
   }, [applyConversation, loadConversations]);
 
   useEffect(() => {
+    if (bootedRef.current) return;
+    bootedRef.current = true;
     void (async () => {
+      void chatApi.listModels().then((ids) => {
+        if (ids.length > 0) setModelOptions(ids);
+      });
       const list = await loadConversations();
       const stored = sessionStorage.getItem(CHAT_ACTIVE_SESSION_KEY);
       if (stored) {
@@ -132,7 +157,7 @@ export function ChatWorkbench() {
         if (loadedImgKeys.current.has(key)) continue;
         loadedImgKeys.current.add(key);
         const b64 = m.images![j];
-        const img = new Image();
+        const img = new window.Image();
         img.onload = () => {
           setImgDimensions((prev) => ({
             ...prev,
@@ -213,10 +238,11 @@ export function ChatWorkbench() {
     setInput(m.content);
     const next = messages.slice(0, index);
     if (conversationId) await updateAndPersist(conversationId, next);
+    inputRef.current?.focus();
   };
 
   const runCompletion = useCallback(
-    async (activeId: string, apiMessages: ChatMessage[], withStream: boolean) => {
+    async (activeId: string, apiMessages: ChatMessage[], withStream: boolean, withImageMode: boolean) => {
       const started = Date.now();
       let assistantText = "";
 
@@ -240,6 +266,7 @@ export function ChatWorkbench() {
         {
           model,
           stream: withStream,
+          image_mode: withImageMode,
           messages: toApiMessages(apiMessages),
         },
         (delta) => {
@@ -298,6 +325,7 @@ export function ChatWorkbench() {
     let activeId = conversationId;
     const userMsg = createChatMessage("user", text);
     const nextMessages: ChatMessage[] = [...messages, userMsg];
+    const useImageMode = imageMode;
 
     setError("");
     setInput("");
@@ -324,7 +352,7 @@ export function ChatWorkbench() {
         });
       }
 
-      await runCompletion(activeId, nextMessages, stream);
+      await runCompletion(activeId, nextMessages, stream, useImageMode);
     } catch (err) {
       setError(err instanceof Error ? err.message : "对话失败");
       if (stream) {
@@ -343,6 +371,7 @@ export function ChatWorkbench() {
     messages,
     model,
     stream,
+    imageMode,
     conversationId,
     loadConversations,
     persistState,
@@ -363,7 +392,7 @@ export function ChatWorkbench() {
         model,
         stream,
       });
-      await runCompletion(conversationId, truncated, stream);
+      await runCompletion(conversationId, truncated, stream, imageMode);
     } catch (err) {
       setError(err instanceof Error ? err.message : "重发失败");
     } finally {
@@ -381,8 +410,10 @@ export function ChatWorkbench() {
     }
   };
 
+  const modelHint = CHAT_MODEL_HINTS[model] ?? "上游网关模型别名";
+
   return (
-    <div className="flex h-full min-h-0">
+    <div className="flex h-full min-h-0 bg-[var(--neo-surface)]">
       {sidebarOpen ? (
         <aside className="flex w-56 shrink-0 flex-col border-r border-[var(--neo-border)] bg-[var(--neo-surface-muted)]">
           <div className="flex items-center justify-between border-b border-[var(--neo-border)] px-3 py-2">
@@ -425,7 +456,7 @@ export function ChatWorkbench() {
               >
                 <button
                   type="button"
-                  onClick={() => applyConversation(c)}
+                  onClick={() => void selectConversation(c.id)}
                   className="min-w-0 flex-1 text-left text-sm"
                 >
                   <p className="line-clamp-2 font-medium text-[var(--neo-ink)]">{c.title}</p>
@@ -441,18 +472,6 @@ export function ChatWorkbench() {
               </div>
             ))}
           </div>
-          {messages.length > 0 ? (
-            <div className="border-t border-[var(--neo-border)] p-2">
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-7 w-full text-xs"
-                onClick={() => onExport("md")}
-              >
-                导出 Markdown
-              </Button>
-            </div>
-          ) : null}
         </aside>
       ) : (
         <div className="flex w-10 shrink-0 flex-col border-r border-[var(--neo-border)] bg-[var(--neo-surface-muted)]">
@@ -469,122 +488,164 @@ export function ChatWorkbench() {
       )}
 
       <div className="flex min-h-0 flex-1 flex-col">
-        <div className="flex flex-wrap items-center gap-3 border-b border-[var(--neo-border)] px-4 py-2">
-          <label className="text-xs text-[var(--neo-muted)]">模型</label>
-          <select
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            className="neo-input h-8 rounded-lg px-2 text-sm"
-          >
-            <option value="gpt-4o">gpt-4o</option>
-            <option value="gpt-4o-mini">gpt-4o-mini</option>
-            <option value="o4-mini">o4-mini</option>
-          </select>
-          <label className="ml-auto flex items-center gap-1.5 text-xs text-[var(--neo-muted)]">
-            <input type="checkbox" checked={stream} onChange={(e) => setStream(e.target.checked)} />
-            流式 SSE
-          </label>
-        </div>
-        <div ref={listRef} className="flex-1 space-y-3 overflow-y-auto p-4">
-          {messages.length === 0 ? (
-            <p className="py-8 text-center text-sm text-[var(--neo-muted)]">
-              发送消息开始多轮对话。支持 <code className="text-xs">@Create image</code> 或{" "}
-              <code className="text-xs">/image 提示词</code> 对话内生图。
-            </p>
-          ) : null}
-          {messages.map((m, i) => (
-            <div
-              key={m.id}
-              className={cn(
-                "group max-w-[85%]",
-                m.role === "user" ? "ml-auto" : "mr-auto",
-              )}
+        <div className="border-b border-[var(--neo-border)] px-4 py-2">
+          <div className="mx-auto flex max-w-3xl flex-wrap items-center gap-3">
+            <label className="text-xs text-[var(--neo-muted)]">通道</label>
+            <select
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              className="neo-input h-8 rounded-lg px-2 text-sm"
             >
-              <div
-                className={
-                  m.role === "user"
-                    ? "whitespace-pre-wrap rounded-2xl rounded-br-md bg-[var(--neo-primary-gradient)] px-4 py-2.5 text-sm text-white"
-                    : "whitespace-pre-wrap rounded-2xl rounded-bl-md border border-[var(--neo-border)] bg-[var(--neo-surface-muted)] px-4 py-2.5 text-sm text-[var(--neo-ink)]"
-                }
-              >
-                <div className="mb-1 flex items-center justify-between gap-2 text-[10px] font-medium opacity-70">
-                  <span>{m.role === "user" ? "你" : "助手"}</span>
-                  {m.elapsedMs ? (
-                    <span className="tabular-nums">耗时 {formatElapsed(m.elapsedMs)}</span>
-                  ) : streaming && i === messages.length - 1 && m.role === "assistant" ? (
-                    <span>生成中…</span>
-                  ) : null}
-                </div>
-                {m.content || (streaming && i === messages.length - 1 && m.role === "assistant" ? "…" : "")}
-                {m.images?.map((b64, j) => (
-                  <ChatImageThumb key={j} b64={b64} onOpen={() => openLightboxAt(m.id, j)} />
-                ))}
+              {modelOptions.map((id) => (
+                <option key={id} value={id}>{id}</option>
+              ))}
+            </select>
+            <span className="text-[10px] text-[var(--neo-muted)]">{modelHint}</span>
+            <label className="ml-auto flex items-center gap-1.5 text-xs text-[var(--neo-muted)]">
+              <input type="checkbox" checked={imageMode} onChange={(e) => setImageMode(e.target.checked)} />
+              <ImageIcon className="size-3.5" />
+              生图模式
+            </label>
+            <label className="flex items-center gap-1.5 text-xs text-[var(--neo-muted)]">
+              <input type="checkbox" checked={stream} onChange={(e) => setStream(e.target.checked)} />
+              流式
+            </label>
+          </div>
+        </div>
+
+        <div ref={listRef} className="flex-1 overflow-y-auto px-4 py-6">
+          <div className="mx-auto max-w-3xl space-y-6">
+            {messages.length === 0 ? (
+              <div className="py-16 text-center">
+                <p className="text-lg font-medium text-[var(--neo-ink)]">开始对话</p>
+                <p className="mt-2 text-sm text-[var(--neo-muted)]">
+                  直接输入文字聊天；开启「生图模式」或发送「海边日落」「画一张猫」即可生图。
+                </p>
               </div>
+            ) : null}
+            {messages.map((m, i) => (
               <div
-                className={cn(
-                  "mt-1 flex flex-wrap gap-1 opacity-0 transition-opacity group-hover:opacity-100",
-                  m.role === "user" ? "justify-end" : "justify-start",
-                )}
+                key={m.id}
+                className={cn("group flex gap-3", m.role === "user" ? "justify-end" : "justify-start")}
               >
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="h-6 px-2 text-[10px]"
-                  disabled={streaming}
-                  onClick={() => void deleteMessage(i)}
-                >
-                  <Trash2 className="mr-1 size-3" />
-                  删除
-                </Button>
+                {m.role === "assistant" ? (
+                  <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-stone-200 text-xs font-semibold text-stone-600">
+                    AI
+                  </div>
+                ) : null}
+                <div className={cn("min-w-0 max-w-[85%]", m.role === "user" ? "order-first" : "")}>
+                  <div
+                    className={cn(
+                      "rounded-2xl px-4 py-3 shadow-sm",
+                      m.role === "user"
+                        ? "bg-[var(--neo-primary)] text-white"
+                        : "border border-[var(--neo-border)] bg-white",
+                    )}
+                  >
+                    {m.role === "assistant" && m.elapsedMs ? (
+                      <p className="mb-2 text-[10px] tabular-nums text-[var(--neo-muted)]">
+                        耗时 {formatElapsed(m.elapsedMs)}
+                      </p>
+                    ) : null}
+                    {streaming && i === messages.length - 1 && m.role === "assistant" && !m.content ? (
+                      <p className="text-sm text-[var(--neo-muted)]">生成中…</p>
+                    ) : (
+                      <ChatMessageContent content={m.content} role={m.role} />
+                    )}
+                    {m.images?.map((b64, j) => (
+                      <ChatImageThumb key={j} b64={b64} onOpen={() => openLightboxAt(m.id, j)} />
+                    ))}
+                  </div>
+                  <div
+                    className={cn(
+                      "mt-1 flex flex-wrap gap-1 opacity-0 transition-opacity group-hover:opacity-100",
+                      m.role === "user" ? "justify-end" : "justify-start",
+                    )}
+                  >
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 px-2 text-[10px]"
+                      disabled={streaming}
+                      onClick={() => void deleteMessage(i)}
+                    >
+                      <Trash2 className="mr-1 size-3" />
+                      删除
+                    </Button>
+                    {m.role === "user" ? (
+                      <>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 px-2 text-[10px]"
+                          disabled={streaming}
+                          onClick={() => void editMessage(i)}
+                        >
+                          <Pencil className="mr-1 size-3" />
+                          编辑
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 px-2 text-[10px]"
+                          disabled={streaming}
+                          onClick={() => void resendFrom(i)}
+                        >
+                          <RotateCcw className="mr-1 size-3" />
+                          重发
+                        </Button>
+                      </>
+                    ) : null}
+                  </div>
+                </div>
                 {m.role === "user" ? (
-                  <>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="h-6 px-2 text-[10px]"
-                      disabled={streaming}
-                      onClick={() => void editMessage(i)}
-                    >
-                      <Pencil className="mr-1 size-3" />
-                      编辑
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="h-6 px-2 text-[10px]"
-                      disabled={streaming}
-                      onClick={() => void resendFrom(i)}
-                    >
-                      <RotateCcw className="mr-1 size-3" />
-                      重发
-                    </Button>
-                  </>
+                  <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-[var(--neo-primary)] text-xs font-semibold text-white">
+                    你
+                  </div>
                 ) : null}
               </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
-        {error ? <p className="px-4 text-sm text-red-600">{error}</p> : null}
-        <div className="flex gap-2 border-t border-[var(--neo-border)] p-3">
-          <Input
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="输入消息…（/image 日落海边）"
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                void onSend();
-              }
-            }}
-            disabled={streaming}
-          />
-          <Button className="shrink-0 gap-1.5" disabled={streaming || !input.trim()} onClick={() => void onSend()}>
-            {streaming ? <LoaderCircle className="size-4 animate-spin" /> : <Send className="size-4" />}
-            发送
-          </Button>
+
+        {error ? (
+          <p className="mx-auto max-w-3xl px-4 pb-2 text-sm text-red-600">{error}</p>
+        ) : null}
+
+        <div className="border-t border-[var(--neo-border)] bg-[var(--neo-surface-muted)] px-4 py-3">
+          <div className="mx-auto max-w-3xl">
+            <div className="flex items-end gap-2 rounded-2xl border border-[var(--neo-border)] bg-white p-2 shadow-sm">
+              <textarea
+                ref={inputRef}
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                placeholder={imageMode ? "描述要生成的画面，例如：海边日落" : "输入消息，Shift+Enter 换行"}
+                rows={1}
+                className="min-h-[44px] max-h-40 flex-1 resize-none bg-transparent px-2 py-2 text-[15px] leading-relaxed outline-none"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    void onSend();
+                  }
+                }}
+                disabled={streaming}
+              />
+              <Button
+                className="shrink-0 gap-1.5 rounded-xl"
+                disabled={streaming || !input.trim()}
+                onClick={() => void onSend()}
+              >
+                {streaming ? <LoaderCircle className="size-4 animate-spin" /> : <Send className="size-4" />}
+                发送
+              </Button>
+            </div>
+            <p className="mt-2 text-center text-[10px] text-[var(--neo-muted)]">
+              TNexus 对话走号池上游，模型名是网关别名，不是 ChatGPT 网页版的模型列表。
+            </p>
+          </div>
         </div>
       </div>
 
