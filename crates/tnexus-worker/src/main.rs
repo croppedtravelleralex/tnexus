@@ -241,9 +241,12 @@ async fn process_job(
                     img_opts_base.quality.as_deref().unwrap_or("auto"),
                     img_opts_base.transparent_bg,
                 );
+                // Parallel slots share the same director prompt — tag each slot so gateway
+                // duplicate_prompt gate does not 429 casting batches.
+                let slot_prompt = format!("{}\n[tnexus-slot:{}]", hinted_prompt.trim_end(), variant_index);
                 gen_tasks.push(SlotGenerateTask {
                     img_provider: img_provider.clone(),
-                    prompt: hinted_prompt,
+                    prompt: slot_prompt,
                     ps_enabled: actor.ps_enabled,
                     opts: img_opts_base.clone(),
                 });
