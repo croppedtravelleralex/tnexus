@@ -10,6 +10,7 @@ export function apiAssetUrl(path: string | null | undefined): string | undefined
   return path;
 }
 
+import type { ChatConversationState } from "@/lib/chat-conversations";
 import type { Conversation, ConversationState } from "@/lib/conversations";
 import type { GenConfig } from "@/lib/gen-config";
 
@@ -296,21 +297,23 @@ export const authApi = {
     }),
 };
 
+export type ConversationStatePayload = ConversationState | ChatConversationState;
+
 export const conversationsApi = {
   list: () =>
     api<
       {
         id: string;
         title: string;
-        state: ConversationState;
+        state: ConversationStatePayload;
         created_at: string;
         updated_at: string;
       }[]
     >("/api/conversations"),
-  create: (body?: { title?: string; state?: ConversationState }) =>
+  create: (body?: { title?: string; state?: ConversationStatePayload }) =>
     api<Conversation>("/api/conversations", { method: "POST", body: JSON.stringify(body ?? {}) }),
   get: (id: string) => api<Conversation>(`/api/conversations/${id}`),
-  patch: (id: string, body: { title?: string; state?: ConversationState }) =>
+  patch: (id: string, body: { title?: string; state?: ConversationStatePayload }) =>
     api<Conversation>(`/api/conversations/${id}`, {
       method: "PATCH",
       body: JSON.stringify(body),

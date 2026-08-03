@@ -12,6 +12,7 @@ import {
   EMPTY_CONVERSATION_STATE,
   type ConversationState,
 } from "@/lib/conversations";
+import { isChatConversationState } from "@/lib/chat-conversations";
 import { DEFAULT_GEN_CONFIG, snappedGenConfig, type GenConfig } from "@/lib/gen-config";
 import { saveColumnRatios } from "@/lib/studio-layout";
 import type { TextModelId } from "@/lib/models";
@@ -135,10 +136,11 @@ export default function StudioPage() {
 
   const ensureConversation = async () => {
     const list = await conversationsApi.list();
-    if (list.length > 0) {
-      const c = list[0];
+    const studioList = list.filter((c) => !isChatConversationState(c.state));
+    if (studioList.length > 0) {
+      const c = studioList[0];
       setConversationId(c.id);
-      applyState(c.state ?? EMPTY_CONVERSATION_STATE);
+      applyState((c.state as ConversationState) ?? EMPTY_CONVERSATION_STATE);
       return;
     }
     const created = await conversationsApi.create({ state: EMPTY_CONVERSATION_STATE });

@@ -4,6 +4,7 @@ import { Plus } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { conversationsApi } from "@/lib/api";
+import { isChatConversationState } from "@/lib/chat-conversations";
 import type { Conversation } from "@/lib/conversations";
 import { cn } from "@/lib/utils";
 
@@ -18,7 +19,10 @@ export function ConversationPanel({ activeId, onSelect, onNew, refreshKey }: Pro
   const [items, setItems] = useState<Conversation[]>([]);
 
   useEffect(() => {
-    void conversationsApi.list().then(setItems).catch(() => undefined);
+    void conversationsApi
+      .list()
+      .then((list) => setItems(list.filter((c) => !isChatConversationState(c.state)) as Conversation[]))
+      .catch(() => undefined);
   }, [refreshKey]);
 
   return (
