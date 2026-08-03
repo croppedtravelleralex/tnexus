@@ -18,9 +18,9 @@ use auth_routes::{
     list_users, login, logout, me, register, require_admin, require_auth, require_member,
     set_user_disabled,
 };
-use axum::extract::FromRequest;
+use axum::{
     body::Body,
-    extract::{Multipart, Path, Query, State},
+    extract::{FromRequest, Multipart, Path, Query, State},
     http::{header, HeaderMap, Method, Request, StatusCode},
     middleware,
     response::{IntoResponse, Response},
