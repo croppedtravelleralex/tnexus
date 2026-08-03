@@ -98,7 +98,7 @@ pub fn chat_message_requests_image(text: &str) -> bool {
         return true;
     }
     // Natural-language image intents (Chinese)
-    const KEYWORDS: &[&str] = [
+    const KEYWORDS: [&str; 11] = [
         "画一张",
         "画一幅",
         "画个",
