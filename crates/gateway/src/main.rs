@@ -14,6 +14,7 @@ mod state;
 mod upstream_face;
 
 use tnexus_accounts_db::AccountsBackend;
+use crate::humanlike::{AccountScoreInput, pick_account_index};
 use crate::scheduling_gate::SchedulingGate;
 use crate::image_assets::ImageAssetStore;
 use anyhow::Context;
