@@ -174,6 +174,16 @@ async fn main() -> anyhow::Result<()> {
         SchedulingGate::from_env()
     };
 
+    for pin in scheduling_gate.list_all_pins() {
+        accounts.insert(pin.email.to_lowercase(), pin);
+    }
+    info!(
+        n = accounts.len(),
+        schedulable = scheduling_gate.schedulable_count(),
+        pool = scheduling_gate.pool_account_count(),
+        "accounts hydrated from pool backend"
+    );
+
     let reconcile_gate = scheduling_gate.clone();
     let state = Arc::new(AppState {
         helper,
@@ -288,7 +298,8 @@ async fn helper_liveness(st: &AppState) -> bool {
 
 async fn health(State(st): State<Arc<AppState>>) -> impl IntoResponse {
     let helper_ok = helper_liveness(&st).await;
-    let n_accounts = st.accounts.lock().await.len();
+    let pool_total = st.scheduling_gate.pool_account_count();
+    let n_accounts = st.scheduling_gate.schedulable_count();
     // Unauthenticated endpoint: report liveness and shape, never pool identities.
     Json(json!({
         "ok": true,
@@ -298,6 +309,7 @@ async fn health(State(st): State<Arc<AppState>>) -> impl IntoResponse {
         "proto_bridge": true,
         "helper_ok": helper_ok,
         "accounts": n_accounts,
+        "pool_total": pool_total,
         "image_enabled": st.image_enabled,
         "auth_disabled": st.auth.config().auth_disabled(),
         "auth_mode": st.auth.config().mode.as_str(),
@@ -414,23 +426,30 @@ async fn collect_image_accounts(
     }
 
     if is_admin {
-        if let Ok(list) = st.helper.list_candidates(30).await {
-            let mut guard = st.accounts.lock().await;
-            for a in list {
-                guard.insert(a.email.to_lowercase(), a.to_pin());
+        for pin in st.scheduling_gate.list_schedulable_pins() {
+            if seen.insert(pin.email.to_lowercase()) {
+                accounts.push(pin);
             }
         }
-        let guard = st.accounts.lock().await;
-        let mut keys: Vec<_> = guard.keys().cloned().collect();
-        keys.sort();
-        for key in keys {
-            if seen.insert(key.clone()) {
-                if let Some(acc) = guard.get(&key) {
-                    if st
-                        .scheduling_gate
-                        .is_email_schedulable(&acc.email, &acc.access_token)
-                    {
-                        accounts.push(acc.clone());
+        if accounts.len() <= 1 {
+            if let Ok(list) = st.helper.list_candidates(30).await {
+                let mut guard = st.accounts.lock().await;
+                for a in list {
+                    guard.insert(a.email.to_lowercase(), a.to_pin());
+                }
+            }
+            let guard = st.accounts.lock().await;
+            let mut keys: Vec<_> = guard.keys().cloned().collect();
+            keys.sort();
+            for key in keys {
+                if seen.insert(key.clone()) {
+                    if let Some(acc) = guard.get(&key) {
+                        if st
+                            .scheduling_gate
+                            .is_email_schedulable(&acc.email, &acc.access_token)
+                        {
+                            accounts.push(acc.clone());
+                        }
                     }
                 }
             }

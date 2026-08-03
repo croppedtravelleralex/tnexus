@@ -82,9 +82,12 @@ def main() -> int:
     if ok and isinstance(body, dict) and body.get("image_enabled"):
         helper = body.get("helper_ok", False)
         acc = body.get("accounts", 0)
+        pool = body.get("pool_total", acc)
         score = 90 if helper else 85
+        if acc >= 10:
+            score = min(95, score + 5)
         checks.append(
-            Check("gateway_image", 14, score, f"accounts={acc} helper_ok={helper}")
+            Check("gateway_image", 14, score, f"schedulable={acc} pool={pool} helper_ok={helper}")
         )
     else:
         checks.append(Check("gateway_image", 14, 30, str(body)))

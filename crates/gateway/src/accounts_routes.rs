@@ -95,8 +95,7 @@ pub async fn list_accounts(
     State(st): State<Arc<AppState>>,
     Query(q): Query<ListQuery>,
 ) -> Json<Value> {
-    let guard = st.accounts.lock().await;
-    let all_items: Vec<Value> = guard.values().map(pin_to_account).collect();
+    let all_items = st.scheduling_gate.list_account_items_for_api();
     let stats = compute_stats(&all_items);
     let total = all_items.len();
     let page = if q.limit == 0 {
@@ -104,7 +103,6 @@ pub async fn list_accounts(
     } else {
         all_items.into_iter().skip(q.offset).take(q.limit).collect()
     };
-    drop(guard);
     Json(json!({
         "items": page,
         "total": total,
@@ -157,7 +155,13 @@ pub async fn scheduling_bulk(
 }
 
 pub async fn reload_from_storage(State(st): State<Arc<AppState>>) -> Json<Value> {
-    let count = st.accounts.lock().await.len();
+    let pins = st.scheduling_gate.list_all_pins();
+    let count = pins.len();
+    let mut guard = st.accounts.lock().await;
+    guard.clear();
+    for pin in pins {
+        guard.insert(pin.email.to_lowercase(), pin);
+    }
     Json(json!({
         "ok": true,
         "total": count,

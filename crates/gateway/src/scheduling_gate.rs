@@ -1,5 +1,6 @@
 //! Scheduling gate — shared with tnexus-api via `SCHEDULING_STATE_FILE` + live `ACCOUNTS_DB`.
 
+use helper_client::PinAccount;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -217,6 +218,126 @@ impl SchedulingGate {
             .unwrap_or(0);
         Some((quota, unknown, inflight, soft))
     }
+
+    /// All pool rows as API-shaped JSON (postgres or sqlite backend).
+    pub fn list_account_items_for_api(&self) -> Vec<Value> {
+        let accounts = self.load_accounts_by_email();
+        let mut items: Vec<Value> = accounts
+            .values()
+            .map(|row| self.row_to_api_item(row))
+            .collect();
+        items.sort_by(|a, b| {
+            let ae = a.get("email").and_then(|v| v.as_str()).unwrap_or("");
+            let be = b.get("email").and_then(|v| v.as_str()).unwrap_or("");
+            ae.cmp(be)
+        });
+        items
+    }
+
+    pub fn pool_account_count(&self) -> usize {
+        self.load_accounts_by_email().len()
+    }
+
+    pub fn schedulable_count(&self) -> usize {
+        self.list_schedulable_pins().len()
+    }
+
+    /// Pin accounts eligible for image dispatch (humanlike pool).
+    pub fn list_schedulable_pins(&self) -> Vec<PinAccount> {
+        let accounts = self.load_accounts_by_email();
+        let mut out: Vec<PinAccount> = accounts
+            .values()
+            .filter_map(|row| {
+                let pin = value_to_pin(row)?;
+                if self.is_email_schedulable(&pin.email, &pin.access_token) {
+                    Some(pin)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        out.sort_by(|a, b| a.email.cmp(&b.email));
+        out
+    }
+
+    /// All pool rows as pins (admin list / reload).
+    pub fn list_all_pins(&self) -> Vec<PinAccount> {
+        let accounts = self.load_accounts_by_email();
+        let mut out: Vec<PinAccount> = accounts.values().filter_map(value_to_pin).collect();
+        out.sort_by(|a, b| a.email.cmp(&b.email));
+        out
+    }
+
+    fn row_to_api_item(&self, row: &Value) -> Value {
+        let email = row
+            .get("email")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .unwrap_or("");
+        let token = row
+            .get("access_token")
+            .or_else(|| row.get("accessToken"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .unwrap_or("");
+        let status = row
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or(if token.is_empty() { "异常" } else { "正常" });
+        let schedulable = self.is_email_schedulable(email, token);
+        let mut obj = match row.clone() {
+            Value::Object(map) => map,
+            _ => serde_json::Map::new(),
+        };
+        obj.insert("email".into(), Value::String(email.to_string()));
+        obj.insert("access_token".into(), Value::String(token.to_string()));
+        if !obj.contains_key("status") {
+            obj.insert("status".into(), Value::String(status.to_string()));
+        }
+        obj.insert("image_schedulable".into(), Value::Bool(schedulable));
+        Value::Object(obj)
+    }
+}
+
+fn value_to_pin(row: &Value) -> Option<PinAccount> {
+    let email = row
+        .get("email")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)?;
+    let access_token = row
+        .get("access_token")
+        .or_else(|| row.get("accessToken"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .unwrap_or("")
+        .to_string();
+    let device_id = row
+        .get("device_id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let proxy = row
+        .get("proxy")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let user_agent = row
+        .get("user_agent")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    Some(PinAccount {
+        email,
+        access_token,
+        device_id,
+        proxy,
+        user_agent,
+    })
 }
 
 pub struct InflightGuard<'a> {
