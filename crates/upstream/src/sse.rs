@@ -58,13 +58,13 @@ static REAL_IMAGE_FILE_ID_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::
 static SEDIMENT_ID_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
 static CONVERSATION_ID_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
 
-fn file_service_re() -> &'static Regex {
+pub fn file_service_re() -> &'static Regex {
     FILE_SERVICE_ID_RE.get_or_init(|| Regex::new(r"file-service://([A-Za-z0-9_-]+)").unwrap())
 }
-fn real_image_file_re() -> &'static Regex {
+pub fn real_image_file_re() -> &'static Regex {
     REAL_IMAGE_FILE_ID_RE.get_or_init(|| Regex::new(r"\bfile_00000000[a-f0-9]{24}\b").unwrap())
 }
-fn sediment_re() -> &'static Regex {
+pub fn sediment_re() -> &'static Regex {
     SEDIMENT_ID_RE.get_or_init(|| Regex::new(r"sediment://([A-Za-z0-9_-]+)").unwrap())
 }
 fn conversation_id_re() -> &'static Regex {
@@ -542,6 +542,16 @@ pub async fn consume_sse_until(
         }
         SseConsumeMode::Image => {
             if parser.image_ready().is_some() {
+                return Ok(ConsumedSse { parser, bytes_in });
+            }
+            // ChatGPT often closes SSE before file_id appears; poll conversation/tasks afterward
+            // (aligned with gptimage `image_resolve_poll_needed`).
+            if !parser.state().conversation_id.is_empty() {
+                tracing::info!(
+                    conversation_id = %parser.state().conversation_id,
+                    events = parser.event_count(),
+                    "image SSE ended without file_id; deferring to conversation poll"
+                );
                 return Ok(ConsumedSse { parser, bytes_in });
             }
             bail!("sse ended before image file_id predicate");

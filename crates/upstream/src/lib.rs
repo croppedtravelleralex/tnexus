@@ -22,7 +22,10 @@ pub use image_metrics::ImageRunMetrics;
 pub use account::PinAccount;
 pub use requirements::{ChatRequirements, RequirementsClient};
 pub use openai_stream::{OpenAiSseStream, chat_image_b64_sse_stream};
-pub use poll::{poll_image_ready_from_tasks, query_tasks};
+pub use poll::{
+    extract_image_ids_from_conversation, get_conversation, poll_image_conversation,
+    poll_image_ready_from_tasks, query_tasks, ImagePollConfig, ImagePollOutcome,
+};
 pub use runtime::UpstreamRuntime;
 pub use sse::{
     consume_sse_until, ConsumedSse, ConversationState, ImageSseReady, SseConsumeMode, SseEvent,

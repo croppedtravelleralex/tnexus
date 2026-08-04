@@ -7,7 +7,9 @@ use crate::account::PinAccount;
 use crate::conversation::{build_text_chat_body, ImageReference, DEFAULT_TIMEZONE};
 use crate::estuary::{download_image_bytes, get_attachment_download_url, get_file_download_url};
 use crate::image_metrics::ImageRunMetrics;
-use crate::poll::{poll_image_ready_from_tasks, query_tasks};
+use crate::poll::{
+    poll_image_conversation, poll_image_ready_from_tasks, query_tasks, ImagePollConfig,
+};
 use crate::requirements::{RequirementsClient, BASE_URL};
 use crate::sentinel::build_chat_headers;
 use crate::sse::{consume_sse_until, ImageSseReady, SseConsumeMode};
@@ -188,12 +190,45 @@ impl UpstreamRuntime {
         metrics.sse_ms = t0.elapsed().as_millis() as u64;
         metrics.sse_bytes_in = consumed.bytes_in;
         metrics.sse_events = consumed.parser.event_count() as u32;
-        let ready = consumed
+
+        let state = consumed.parser.state();
+        let mut ready_for_download = consumed
             .parser
             .image_ready()
-            .context("image SSE ended without file_id")?;
+            .unwrap_or(ImageSseReady {
+                conversation_id: state.conversation_id.clone(),
+                file_ids: state.file_ids.clone(),
+                sediment_ids: state.sediment_ids.clone(),
+                event_count: consumed.parser.event_count(),
+            });
 
-        let mut ready_for_download = ready;
+        if ready_for_download.file_ids.is_empty()
+            && ready_for_download.sediment_ids.is_empty()
+            && !ready_for_download.conversation_id.is_empty()
+        {
+            let poll_start = Instant::now();
+            let poll_config = ImagePollConfig::from_env();
+            let polled = poll_image_conversation(
+                self.client.client(),
+                |path| self.client.api_headers(path),
+                &ready_for_download.conversation_id,
+                &poll_config,
+                &ready_for_download.file_ids,
+                &ready_for_download.sediment_ids,
+            )
+            .await?;
+            ready_for_download.file_ids = polled.file_ids;
+            ready_for_download.sediment_ids = polled.sediment_ids;
+            metrics.poll_tasks_ms = poll_start.elapsed().as_millis() as u64;
+        }
+
+        if ready_for_download.file_ids.is_empty() && ready_for_download.sediment_ids.is_empty() {
+            bail!(
+                "image SSE and poll ended without file_id (conversation_id={})",
+                ready_for_download.conversation_id
+            );
+        }
+
         let t0 = Instant::now();
         let download_url = match self.resolve_image_download_url(&ready_for_download).await {
             Ok(url) => url,

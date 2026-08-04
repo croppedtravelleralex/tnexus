@@ -16,6 +16,9 @@ services:
       IMAGE_GLOBAL_CONCURRENCY: "10"
       IMAGE_ACCOUNT_INFLIGHT_MAX: "1"
       IMAGE_ADMIN_RETRY_MAX: "3"
+      UPSTREAM_IMAGE_POLL_TIMEOUT_SECS: "180"
+      UPSTREAM_IMAGE_POLL_INITIAL_WAIT_SECS: "15"
+      UPSTREAM_IMAGE_POLL_INTERVAL_SECS: "8"
       DATA_PLANE: upstream
     volumes:
       - /opt/tnexus/data/pool:/data/pool:rw
