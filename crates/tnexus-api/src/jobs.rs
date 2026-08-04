@@ -356,6 +356,8 @@ pub async fn result_to_view(_state: &AppState, r: JobResultRecord) -> Result<Job
         generation_ms,
     })
 }
+
+fn row_to_job(row: sqlx::postgres::PgRow) -> Result<JobRecord> {
     let director_factors: serde_json::Value = row.get("director_factors");
     let ps_factors: serde_json::Value = row.get("ps_factors");
     let director_models: serde_json::Value = row.get("director_models");
