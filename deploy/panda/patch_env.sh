@@ -34,6 +34,9 @@ ensure_kv GATEWAY_BASE http://127.0.0.1:8014
 ensure_kv GPTIMAGE_BASE http://127.0.0.1:8014
 ensure_kv IMAGE_RESPONSE_FORMAT url
 ensure_kv IMAGE_PARALLEL_CONCURRENCY 8
+if grep -q '^IMAGE_PARALLEL_CONCURRENCY=0' "$ENV" 2>/dev/null; then
+  sed -i 's/^IMAGE_PARALLEL_CONCURRENCY=0/IMAGE_PARALLEL_CONCURRENCY=8/' "$ENV"
+fi
 ensure_kv IMAGE_STORE_PATH /data/images
 
 echo "env patched (ACCOUNT_OPS_TOKEN set if new)"

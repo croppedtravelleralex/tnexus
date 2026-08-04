@@ -1274,8 +1274,10 @@ async fn image_generations(
     }
     let account = candidates[0].clone();
 
-    if let Some(r) = check_dispatch_backpressure(&st, &account.email) {
-        return r;
+    if !is_admin {
+        if let Some(r) = check_dispatch_backpressure(&st, &account.email) {
+            return r;
+        }
     }
 
     let permit = match try_acquire_image_permit(&st) {
@@ -1742,8 +1744,10 @@ async fn image_edits_json(
         Err(r) => return r,
     };
 
-    if let Some(r) = check_dispatch_backpressure(&st, &candidates[0].email) {
-        return r;
+    if !is_admin {
+        if let Some(r) = check_dispatch_backpressure(&st, &candidates[0].email) {
+            return r;
+        }
     }
 
     let permit = match try_acquire_image_permit(&st) {
