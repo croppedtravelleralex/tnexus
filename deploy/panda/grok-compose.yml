@@ -1,0 +1,35 @@
+# Grok sidecar stack (draft) — see docs/39-grok2api-rust-migration.md §8
+# Panda: pull-only deploy; never docker build on Panda.
+
+services:
+  grok2api-rs:
+    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-local}/grok2api-rs:latest
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: ${GROK_DATABASE_URL}
+      REDIS_URL: ${GROK_REDIS_URL:-}
+      GROK2API_BROWSER_BRIDGE_URL: http://browser-bridge:8192
+      # Statsig signer often external — set Provider.Web.StatsigSignerURL in config
+    depends_on:
+      - browser-bridge
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8000/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  browser-bridge:
+    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-local}/grok-browser-bridge:latest
+    restart: unless-stopped
+    ports:
+      - "8192:8192"
+    environment:
+      LOG_LEVEL: INFO
+
+  # signer: not in default grok2api compose — uncomment if self-hosted
+  # grok-signer:
+  #   image: ...
+  #   ports:
+  #     - "8788:8788"
