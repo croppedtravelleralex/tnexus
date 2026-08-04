@@ -274,11 +274,12 @@ async fn process_job(
         upstream.image_parallel_concurrency
     };
     let sem = Arc::new(Semaphore::new(parallel_cap));
+    let redis_slots = redis.clone();
     let slot_futs = gen_tasks.into_iter().zip(persist_plan).enumerate().map(|(slot_index, (task, plan))| {
         let sem = sem.clone();
         let upstream = upstream.clone();
         let pool = pool.clone();
-        let redis_cm = redis.clone();
+        let redis_cm = redis_slots.clone();
         let image_store = image_store.cloned();
         let user_id = job.user_id;
         let (result_label, variant_index, agent_prompt, keywords) = plan;
@@ -342,7 +343,7 @@ async fn process_job(
             )
             .await?;
 
-            Ok((slot_index, generation_ms))
+            Ok::<(usize, u64), anyhow::Error>((slot_index, generation_ms))
         }
     });
     let slot_outcomes = try_join_all(slot_futs).await?;
