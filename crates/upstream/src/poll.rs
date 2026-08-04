@@ -369,7 +369,7 @@ where
             timeout_secs = config.timeout.as_secs_f64(),
             "image poll start (post-SSE)"
         );
-        await cancel_aware_sleep(deadline, config.initial_wait);
+        cancel_aware_sleep(deadline, config.initial_wait).await;
     }
 
     while Instant::now() < deadline {
