@@ -25,7 +25,7 @@ use auth_routes::{
 };
 use axum::{
     body::Body,
-    extract::{FromRequest, Multipart, Path, Query, State},
+    extract::{DefaultBodyLimit, FromRequest, Multipart, Path, Query, State},
     http::{header, HeaderMap, Method, Request, StatusCode},
     middleware,
     response::{IntoResponse, Response},
@@ -65,6 +65,9 @@ use tower_http::{
 };
 use tracing::{error, info, warn};
 use uuid::Uuid;
+
+/// Axum default is 2MB; image edits multipart must accept large PNG uploads (nginx allows 256m).
+const MAX_REQUEST_BODY_BYTES: usize = 32 * 1024 * 1024;
 
 /// Build the CORS layer from a comma-separated origin allowlist.
 ///
@@ -262,6 +265,7 @@ async fn main() -> anyhow::Result<()> {
         .nest("/api/admin", admin_api)
         .nest("/api/accounts", admin_accounts)
         .nest("/v1", member_api.merge(admin_v1))
+        .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
         .layer(cors_layer())
         .layer(TraceLayer::new_for_http())
         .with_state(state.clone());
@@ -1538,7 +1542,7 @@ async fn image_edits(
             Err(msg) => err(StatusCode::BAD_REQUEST, msg, "multipart_invalid", Some("client")),
         }
     } else {
-        let bytes = match axum::body::to_bytes(request.into_body(), 32 * 1024 * 1024).await {
+        let bytes = match axum::body::to_bytes(request.into_body(), MAX_REQUEST_BODY_BYTES).await {
             Ok(b) => b,
             Err(e) => {
                 return err(
