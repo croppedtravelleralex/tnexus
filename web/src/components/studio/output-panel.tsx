@@ -360,7 +360,7 @@ export function OutputPanel({
                       <SuccessTile
                         key={slot.id}
                         image={slot.image}
-                        generationMs={slot.generationMs ?? slot.image?.generation_ms}
+                        generationMs={slot.generationMs ?? slot.image?.generation_ms ?? undefined}
                         onPreview={(url, downloadUrl) => setPreview({ url, downloadUrl })}
                       />
                     );
