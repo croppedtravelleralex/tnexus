@@ -1656,6 +1656,49 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 
 [[package]]
+name = "grok-domain"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "grok-storage"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "grok-domain",
+ "serde",
+ "sqlx",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
+name = "grok2api-rs"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "chrono",
+ "dotenvy",
+ "grok-domain",
+ "grok-storage",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "group"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

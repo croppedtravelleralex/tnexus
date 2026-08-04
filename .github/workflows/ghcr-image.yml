@@ -44,3 +44,40 @@ jobs:
           tags: |
             ghcr.io/croppedtravelleralex/tnexus-gateway:latest
             ghcr.io/croppedtravelleralex/tnexus-gateway:${{ github.sha }}
+
+      # Grok subsystem (grok2api-rs) — built only once crates/grok2api-rs exists
+      # (hashFiles is '' until the crate lands, so this step is a no-op pre-G0-P6).
+      - name: Build and push grok2api-rs image
+        if: hashFiles('crates/grok2api-rs/Cargo.toml') != ''
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.grok
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/grok2api-rs:latest
+            ghcr.io/${{ github.repository_owner }}/grok2api-rs:${{ github.sha }}
+
+  grok-gate:
+    # Grok migration gate (docs/39c §7 CI): cargo tests for grok crates + gate g0.
+    # Graceful when grok crates are absent (pre-G0), matching grok_migration_gate.sh.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.94.0
+      - name: Cargo test grok crates (when present)
+        run: |
+          set -euo pipefail
+          pkgs=""
+          for p in grok-domain grok-storage grok2api-rs; do
+            if [ -f "crates/$p/Cargo.toml" ]; then pkgs="$pkgs -p $p"; fi
+          done
+          if [ -n "$pkgs" ]; then
+            cargo test $pkgs
+          else
+            echo "No grok crates yet (pre-G0) — skipping cargo test"
+          fi
+      - name: Grok migration gate g0
+        run: bash ./scripts/grok_migration_gate.sh g0

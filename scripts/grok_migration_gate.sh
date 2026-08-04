@@ -17,24 +17,39 @@ fail() { echo "[grok-gate:$phase] FAIL: $*" >&2; exit 1; }
 gate_g0() {
   log "cargo fmt check (grok crates when present)"
   if ls crates/grok2api-rs/Cargo.toml >/dev/null 2>&1; then
-    cargo fmt --all -- --check
+    # 仅检查 grok crate 的格式；cargo fmt --all 会带上 pre-existing 的
+    # upstream 等 crate 格式差异（与 grok 无关），故 scoped 到 grok crates。
+    cargo fmt -p grok-domain -p grok-storage -p grok2api-rs -- --check
     cargo build -p grok2api-rs
-    cargo test -p grok-domain -p grok-storage 2>/dev/null || cargo test -p grok-domain 2>/dev/null || true
+    cargo test -p grok-domain
+    cargo test -p grok-storage
   else
     log "SKIP build: grok2api-rs not yet in workspace (expected pre-G0-1)"
   fi
 
-  for f in migrations/010_grok_core.sql migrations/011_grok_quota_models.sql; do
+  for f in migrations/010_grok_core.sql migrations/011_grok_quota_models.sql migrations/012_grok_routing_keys.sql migrations/013_grok_inference.sql migrations/014_grok_media_egress.sql migrations/015_grok_pipeline_ops.sql; do
     if [[ ! -f "$f" ]]; then
       log "WARN: missing $f (create per docs/39b-grok-schema.md)"
     fi
   done
 
   if [[ -f scripts/grok_etl_sqlite_to_pg.py ]]; then
-    if command -v python3 >/dev/null 2>&1; then
-      python3 -m py_compile scripts/grok_etl_sqlite_to_pg.py
+    # 多环境解释器探测：优先 Windows `py` launcher，其次真实 python3/python。
+    # 跳过 WindowsApps 的 Store 中。如果 `py` 存在则用 `py`，避免 python3 stub。
+    local pycmd=""
+    if command -v py >/dev/null 2>&1; then
+      pycmd="py"
+    elif command -v python3 >/dev/null 2>&1 && ! python3 --version >/dev/null 2>&1; then
+      : # python3 是死的 WindowsApps stub，忽略
+    elif command -v python3 >/dev/null 2>&1; then
+      pycmd="python3"
     elif command -v python >/dev/null 2>&1; then
-      python -m py_compile scripts/grok_etl_sqlite_to_pg.py
+      pycmd="python"
+    fi
+    if [[ -n "$pycmd" ]] && "$pycmd" -m py_compile scripts/grok_etl_sqlite_to_pg.py >/dev/null 2>&1; then
+      log "ETL py_compile OK ($pycmd)"
+    elif [[ -n "$pycmd" ]]; then
+      log "WARN: py_compile via $pycmd failed"
     else
       log "WARN: python not found, skip ETL py_compile"
     fi

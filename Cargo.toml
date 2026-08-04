@@ -14,6 +14,9 @@ members = [
     "crates/upstream",
     "crates/upstream-probe",
     "crates/gateway",
+    "crates/grok-domain",
+    "crates/grok-storage",
+    "crates/grok2api-rs",
 ]
 
 [workspace.package]
