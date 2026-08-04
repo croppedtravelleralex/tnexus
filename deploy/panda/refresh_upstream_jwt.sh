@@ -46,3 +46,8 @@ printf 'GATEWAY_AUTH_KEY=%s\n' "$GW_TOKEN" >>"$tmp"
 mv "$tmp" "$ENV_FILE"
 chmod 600 "$ENV_FILE"
 echo "refreshed UPSTREAM_API_KEY + GATEWAY_AUTH_KEY (len=${#GW_TOKEN})"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -x "$SCRIPT_DIR/newapi_grayd_tnexus.sh" ]]; then
+  bash "$SCRIPT_DIR/newapi_grayd_tnexus.sh" sync-key || true
+fi

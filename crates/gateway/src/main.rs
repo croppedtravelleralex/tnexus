@@ -514,6 +514,20 @@ fn upstream_image_retryable(err: &anyhow::Error) -> bool {
         || msg.contains("upstream_unreachable")
 }
 
+/// Cap admin upstream retries — full-pool rotation caused 200s+ tails when API-key/JWT callers
+/// retried dozens of accounts sequentially (worker parallel batches use admin auth).
+fn image_max_attempts(is_admin: bool, data_plane: DataPlane, candidates_len: usize) -> usize {
+    if !is_admin || data_plane != DataPlane::Upstream {
+        return 1;
+    }
+    let retry_cap = std::env::var("IMAGE_ADMIN_RETRY_MAX")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(3)
+        .max(1);
+    candidates_len.max(1).min(retry_cap)
+}
+
 async fn run_upstream_image(
     account: &PinAccount,
     prompt: String,
@@ -999,22 +1013,21 @@ async fn generate_one_image(
     is_admin: bool,
     req: &ImageGenerationRequest,
 ) -> Result<ImageBatchItem, Result<helper_client::BridgeOk, anyhow::Error>> {
-    let max_attempts = if is_admin && st.data_plane == DataPlane::Upstream {
-        candidates.len().max(1)
-    } else {
-        1
-    };
+    let max_attempts = image_max_attempts(is_admin, st.data_plane, candidates.len());
     let t0 = Instant::now();
     let mut result: Result<helper_client::BridgeOk, anyhow::Error> =
         Err(anyhow::anyhow!("image generation not attempted"));
     let mut upstream_metrics: Option<upstream::ImageRunMetrics> = None;
     let mut used_account = candidates[start_idx].clone();
-    let _inflight_guard = st.scheduling_gate.begin_inflight(&used_account.email);
+    let mut inflight_guard = st.scheduling_gate.begin_inflight(&used_account.email);
 
     for try_no in 0..max_attempts {
         let i = (start_idx + try_no) % candidates.len();
         let cand = &candidates[i];
         used_account = cand.clone();
+        if cand.email != inflight_guard.email() {
+            inflight_guard = st.scheduling_gate.begin_inflight(&used_account.email);
+        }
         if st.data_plane == DataPlane::Upstream {
             info!(email=%cand.email, attempt=try_no + 1, max_attempts, "upstream image attempt");
             let attempt_result = run_upstream_image(
@@ -1105,18 +1118,21 @@ async fn generate_one_image_edit(
     image_bytes: &[u8],
     mask_bytes: Option<&[u8]>,
 ) -> Result<ImageBatchItem, Result<helper_client::BridgeOk, anyhow::Error>> {
-    let max_attempts = if is_admin { candidates.len().max(1) } else { 1 };
+    let max_attempts = image_max_attempts(is_admin, st.data_plane, candidates.len());
     let t0 = Instant::now();
     let mut result: Result<helper_client::BridgeOk, anyhow::Error> =
         Err(anyhow::anyhow!("image edit not attempted"));
     let mut upstream_metrics: Option<upstream::ImageRunMetrics> = None;
     let mut used_account = candidates[start_idx].clone();
-    let _inflight_guard = st.scheduling_gate.begin_inflight(&used_account.email);
+    let mut inflight_guard = st.scheduling_gate.begin_inflight(&used_account.email);
 
     for try_no in 0..max_attempts {
         let i = (start_idx + try_no) % candidates.len();
         let cand = &candidates[i];
         used_account = cand.clone();
+        if cand.email != inflight_guard.email() {
+            inflight_guard = st.scheduling_gate.begin_inflight(&used_account.email);
+        }
         info!(email=%cand.email, attempt=try_no + 1, max_attempts, "upstream image edit attempt");
         let attempt_result = run_upstream_image_edit(
             cand,
@@ -1398,8 +1414,9 @@ async fn image_generations(
             if let Some(obj) = p.as_object_mut() {
                 obj.insert("batch_n".into(), json!(batch_n));
                 if let Some(timings) = obj.get_mut("timings_ms").and_then(|v| v.as_object_mut()) {
-                    timings.insert("gateway_wall_ms".into(), json!(elapsed_ms));
+                    timings.insert("gateway_wall_ms".into(), json!(last.elapsed_ms));
                     timings.insert("asset_store_ms".into(), json!(total_asset_store_ms));
+                    timings.insert("handler_wall_ms".into(), json!(elapsed_ms));
                 }
             }
             p
@@ -1428,7 +1445,8 @@ async fn image_generations(
         if let Some(obj) = p.as_object_mut() {
             obj.insert("batch_n".into(), json!(batch_n));
             if let Some(timings) = obj.get_mut("timings_ms").and_then(|v| v.as_object_mut()) {
-                timings.insert("gateway_wall_ms".into(), json!(elapsed_ms));
+                timings.insert("gateway_wall_ms".into(), json!(last.elapsed_ms));
+                timings.insert("handler_wall_ms".into(), json!(elapsed_ms));
             }
         }
         p
@@ -1787,7 +1805,8 @@ async fn image_edits_json(
         if let Some(obj) = p.as_object_mut() {
             obj.insert("batch_n".into(), json!(batch_n));
             if let Some(timings) = obj.get_mut("timings_ms").and_then(|v| v.as_object_mut()) {
-                timings.insert("gateway_wall_ms".into(), json!(elapsed_ms));
+                timings.insert("gateway_wall_ms".into(), json!(last.elapsed_ms));
+                timings.insert("handler_wall_ms".into(), json!(elapsed_ms));
             }
         }
         p

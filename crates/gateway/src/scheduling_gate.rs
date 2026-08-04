@@ -345,6 +345,12 @@ pub struct InflightGuard<'a> {
     email: String,
 }
 
+impl InflightGuard<'_> {
+    pub fn email(&self) -> &str {
+        &self.email
+    }
+}
+
 impl Drop for InflightGuard<'_> {
     fn drop(&mut self) {
         self.gate.touch_inflight(&self.email, -1);
