@@ -399,7 +399,7 @@ where
                     error = %err,
                     "image poll conversation GET failed"
                 );
-                await cancel_aware_sleep(deadline, Duration::from_secs(2));
+                cancel_aware_sleep(deadline, Duration::from_secs(2)).await;
                 continue;
             }
         }
@@ -425,7 +425,7 @@ where
             remaining_secs = deadline.saturating_duration_since(Instant::now()).as_secs_f64(),
             "image poll check: no ids yet"
         );
-        await cancel_aware_sleep(deadline, config.interval);
+        cancel_aware_sleep(deadline, config.interval).await;
     }
 
     bail!(
