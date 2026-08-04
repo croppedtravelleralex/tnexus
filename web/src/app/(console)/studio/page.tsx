@@ -1,11 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GenerationRecordsPanel } from "@/components/studio/generation-records-panel";
 import { GenConfigPanel } from "@/components/studio/gen-config-panel";
 import { OutputPanel, type OutputSlot } from "@/components/studio/output-panel";
 import { ResizableStudioLayout, DEFAULT_COLUMN_WIDTHS } from "@/components/studio/resizable-layout";
-import { conversationsApi, jobsApi, type FactorPoint, type JobDetail, type JobListItem } from "@/lib/api";
+import { conversationsApi, jobsApi, type FactorPoint, type JobDetail, type JobListItem, type JobResult } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import {
   conversationTitle,
@@ -65,11 +65,38 @@ export default function StudioPage() {
   const [progress, setProgress] = useState(0);
   const [stage, setStage] = useState("");
   const [result, setResult] = useState<JobDetail | null>(null);
-  const [outputSlots, setOutputSlots] = useState<OutputSlot[]>([]);
+  const [completedSlots, setCompletedSlots] = useState<OutputSlot[]>([]);
+  const [totalSlotCount, setTotalSlotCount] = useState(0);
   const [jobStatus, setJobStatus] = useState<"idle" | "running" | "done" | "failed">("idle");
   const [startedAt, setStartedAt] = useState(0);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [refreshKey, setRefreshKey] = useState(0);
+  const displaySlots = useMemo(() => {
+    const pending = Math.max(totalSlotCount - completedSlots.length, 0);
+    const pendingTiles: OutputSlot[] = Array.from({ length: pending }, (_, i) => ({
+      id: `pending-${completedSlots.length + i}`,
+      status: "pending" as const,
+    }));
+    return [...completedSlots, ...pendingTiles];
+  }, [completedSlots, totalSlotCount]);
+
+  const mergePartialResults = useCallback((results: JobResult[]) => {
+    setCompletedSlots((prev) => {
+      const seen = new Set(prev.map((s) => s.id));
+      const next = [...prev];
+      for (const img of results) {
+        if (seen.has(img.id)) continue;
+        seen.add(img.id);
+        next.push({
+          id: img.id,
+          status: "success" as const,
+          image: img,
+          generationMs: img.generation_ms ?? undefined,
+        });
+      }
+      return next;
+    });
+  }, []);
   const [error, setError] = useState("");
 
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -175,7 +202,8 @@ export default function StudioPage() {
     setActiveJobId(job.id);
     setPrompt(job.input_prompt);
     setError("");
-    setOutputSlots([]);
+    setCompletedSlots([]);
+    setTotalSlotCount(0);
     if (job.status === "done") {
       setJobStatus("done");
       setElapsedMs(new Date(job.updated_at).getTime() - new Date(job.created_at).getTime());
@@ -190,7 +218,15 @@ export default function StudioPage() {
       .then((d) => {
         setResult(d);
         if (d.status === "done" && d.results.length > 0) {
-          setOutputSlots(d.results.map((img) => ({ id: img.id, status: "success" as const, image: img })));
+          setTotalSlotCount(d.results.length);
+          setCompletedSlots(
+            d.results.map((img) => ({
+              id: img.id,
+              status: "success" as const,
+              image: img,
+              generationMs: img.generation_ms ?? undefined,
+            })),
+          );
         }
       })
       .catch(() => setResult(null));
@@ -202,7 +238,8 @@ export default function StudioPage() {
     applyState(EMPTY_CONVERSATION_STATE);
     setActiveJobId(null);
     setResult(null);
-    setOutputSlots([]);
+    setCompletedSlots([]);
+    setTotalSlotCount(0);
     setJobStatus("idle");
     setElapsedMs(0);
     setError("");
@@ -247,12 +284,8 @@ export default function StudioPage() {
     const startTime = Date.now();
     setStartedAt(startTime);
     setElapsedMs(0);
-    setOutputSlots(
-      Array.from({ length: Math.max(totalImages, 1) }, (_, i) => ({
-        id: `slot-${i}`,
-        status: "pending" as const,
-      })),
-    );
+    setTotalSlotCount(totalImages);
+    setCompletedSlots([]);
 
     let pollTimer: ReturnType<typeof setInterval> | null = null;
     let queuedTimer: ReturnType<typeof setTimeout> | null = null;
@@ -285,19 +318,20 @@ export default function StudioPage() {
 
         if (d.status === "done" && d.results.length > 0) {
           setJobStatus("done");
-          setOutputSlots(
+          setTotalSlotCount(d.results.length);
+          setCompletedSlots(
             d.results.map((img, i) => ({
               id: img.id,
               status: "success" as const,
               image: img,
               label: `slot-${i}`,
+              generationMs: img.generation_ms ?? undefined,
             })),
           );
         } else if (d.status === "failed") {
           setJobStatus("failed");
           const errMsg = formatJobError(failedError ?? d.error_message ?? "生成失败");
           setError(errMsg);
-          setOutputSlots((prev) => prev.map((s) => ({ ...s, status: "failed" as const, error: errMsg })));
         }
 
         if (conversationId) {
@@ -307,7 +341,6 @@ export default function StudioPage() {
         setJobStatus("failed");
         const errMsg = formatJobError(err instanceof Error ? err.message : "获取结果失败");
         setError(errMsg);
-        setOutputSlots((prev) => prev.map((s) => ({ ...s, status: "failed" as const, error: errMsg })));
       } finally {
         setBusy(false);
       }
@@ -350,6 +383,12 @@ export default function StudioPage() {
             setStage(d.status);
             setProgress(d.progress);
             if (d.status !== "queued") markStarted();
+            if (d.status === "generating" || d.status === "uploading") {
+              void jobsApi
+                .get(job_id)
+                .then((j) => mergePartialResults(j.results))
+                .catch(() => undefined);
+            }
             if (d.status === "done" || d.status === "failed") {
               void finishJob(job_id, d.error_message ?? undefined);
             }
@@ -359,10 +398,46 @@ export default function StudioPage() {
 
       es = new EventSource(jobsApi.eventsUrl(job_id), { withCredentials: true });
       es.onmessage = (ev) => {
-        const data = JSON.parse(ev.data) as { stage: string; progress: number; error?: string };
+        const data = JSON.parse(ev.data) as {
+          event?: string;
+          stage: string;
+          progress: number;
+          error?: string;
+          result_id?: string;
+          generation_ms?: number;
+          preview_url?: string;
+          thumb_url?: string;
+          download_url?: string;
+        };
         setStage(data.stage);
         setProgress(data.progress);
         if (data.stage !== "queued") markStarted();
+        if (data.event === "slot_done" && data.result_id) {
+          const partial: JobResult = {
+            id: data.result_id,
+            provider: "",
+            preview_url: data.preview_url,
+            thumb_url: data.thumb_url,
+            download_url: data.download_url,
+            generation_ms: data.generation_ms,
+          };
+          setCompletedSlots((prev) => {
+            if (prev.some((s) => s.id === data.result_id)) return prev;
+            return [
+              ...prev,
+              {
+                id: data.result_id!,
+                status: "success" as const,
+                image: partial,
+                generationMs: data.generation_ms,
+              },
+            ];
+          });
+          void jobsApi
+            .get(job_id)
+            .then((j) => mergePartialResults(j.results))
+            .catch(() => undefined);
+        }
         if (data.stage === "done" || data.stage === "failed") {
           void finishJob(job_id, data.error);
         }
@@ -379,7 +454,6 @@ export default function StudioPage() {
       const errMsg = formatJobError(err instanceof Error ? err.message : "生成失败");
       setError(errMsg);
       setJobStatus("failed");
-      setOutputSlots((prev) => prev.map((s) => ({ ...s, status: "failed" as const, error: errMsg })));
       setBusy(false);
     }
   };
@@ -435,7 +509,7 @@ export default function StudioPage() {
           onGenerate={onGenerate}
         />
         <OutputPanel
-          slots={outputSlots}
+          slots={displaySlots}
           results={result?.results ?? []}
           busy={busy}
           stageLabel={stageLabel}

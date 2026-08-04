@@ -12,13 +12,14 @@ services:
       SCHEDULING_STATE_FILE: /data/pool/scheduling_state.json
       PIPELINE_EVENTS_FILE: /data/pool/pipeline_events.ndjson
       GATEWAY_LISTEN: 0.0.0.0:8014
+      AUTH_DB_PATH: /data/pool/gateway_auth.db
       IMAGE_ENABLED: "1"
       IMAGE_GLOBAL_CONCURRENCY: "10"
       IMAGE_ACCOUNT_INFLIGHT_MAX: "1"
-      IMAGE_ADMIN_RETRY_MAX: "3"
-      UPSTREAM_IMAGE_POLL_TIMEOUT_SECS: "180"
-      UPSTREAM_IMAGE_POLL_INITIAL_WAIT_SECS: "15"
-      UPSTREAM_IMAGE_POLL_INTERVAL_SECS: "8"
+      IMAGE_ADMIN_RETRY_MAX: "2"
+      UPSTREAM_IMAGE_POLL_TIMEOUT_SECS: "90"
+      UPSTREAM_IMAGE_POLL_INITIAL_WAIT_SECS: "5"
+      UPSTREAM_IMAGE_POLL_INTERVAL_SECS: "3"
       DATA_PLANE: upstream
     volumes:
       - /opt/tnexus/data/pool:/data/pool:rw

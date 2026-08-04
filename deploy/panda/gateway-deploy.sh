@@ -27,3 +27,11 @@ docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --force-recreate
 sleep 2
 curl -fsS http://127.0.0.1:8014/health
 echo
+
+# Gateway recreate wipes ephemeral /data/auth.db; refresh worker JWT to match bootstrap user.
+if [[ -x "$TNEXUS_ROOT/deploy/panda/refresh_upstream_jwt.sh" ]]; then
+  bash "$TNEXUS_ROOT/deploy/panda/refresh_upstream_jwt.sh"
+fi
+if [[ -f "$TNEXUS_ROOT/deploy/panda/docker-compose.yml" ]]; then
+  docker compose --env-file "$ENV_FILE" -f "$TNEXUS_ROOT/deploy/panda/docker-compose.yml" up -d worker api
+fi

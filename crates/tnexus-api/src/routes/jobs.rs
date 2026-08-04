@@ -1,3 +1,4 @@
+use crate::config::JOB_EVENTS_PREFIX;
 use crate::config::JOB_QUEUE_KEY;
 use crate::jobs::{create_job, delete_jobs, get_job_detail, get_job_status, list_job_summaries, list_jobs};
 use crate::middleware::AuthUser;
@@ -12,7 +13,7 @@ use axum::{
     routing::{delete, get, post},
     Json, Router,
 };
-use futures::stream::Stream;
+use futures::{stream::Stream, StreamExt};
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
@@ -218,7 +219,18 @@ async fn job_events_handler(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or((StatusCode::NOT_FOUND, "not found".into()))?;
 
-    let state_clone = state.clone();
+    let channel = format!("{JOB_EVENTS_PREFIX}{id}");
+    let mut pubsub = state
+        .redis_client
+        .get_async_pubsub()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    pubsub
+        .subscribe(&channel)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let mut msg_stream = pubsub.on_message();
+
     let initial = serde_json::json!({
         "job_id": id,
         "stage": job.status,
@@ -227,26 +239,31 @@ async fn job_events_handler(
 
     let stream = async_stream::stream! {
         yield Ok(Event::default().data(initial.to_string()));
-        let mut last_status = job.status.clone();
-        if last_status == "done" || last_status == "failed" {
+        if job.status == "done" || job.status == "failed" {
             return;
         }
-        for _ in 0..300 {
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            let current = crate::jobs::get_job(&state_clone, id, Some(user_id)).await;
-            if let Ok(Some(j)) = current {
-                if j.status != last_status {
-                    last_status = j.status.clone();
-                    let payload = serde_json::json!({
-                        "job_id": id,
-                        "stage": j.status,
-                        "progress": progress_for_status(&j.status),
-                        "error": j.error_message,
-                    });
-                    yield Ok(Event::default().data(payload.to_string()));
-                    if j.status == "done" || j.status == "failed" {
-                        break;
+        loop {
+            tokio::select! {
+                msg = msg_stream.next() => {
+                    match msg {
+                        Some(m) => {
+                            let payload = match m.get_payload::<String>() {
+                                Ok(p) => p,
+                                Err(_) => continue,
+                            };
+                            yield Ok(Event::default().data(payload.clone()));
+                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&payload) {
+                                let stage = v.get("stage").and_then(|s| s.as_str()).unwrap_or("");
+                                if stage == "done" || stage == "failed" {
+                                    break;
+                                }
+                            }
+                        }
+                        None => break,
                     }
+                }
+                _ = tokio::time::sleep(Duration::from_secs(900)) => {
+                    break;
                 }
             }
         }

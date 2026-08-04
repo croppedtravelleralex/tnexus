@@ -16,6 +16,7 @@ pub struct AppState {
     pub pool: PgPool,
     pub auth: AuthService,
     pub redis: ConnectionManager,
+    pub redis_client: redis::Client,
     pub image_store: Option<SharedImageStore>,
     pub http: reqwest::Client,
     pub accounts: AccountsStore,
@@ -51,7 +52,7 @@ impl AppState {
         }
 
         let redis_client = redis::Client::open(config.redis_url.as_str())?;
-        let redis = ConnectionManager::new(redis_client).await?;
+        let redis = ConnectionManager::new(redis_client.clone()).await?;
 
         let image_store = tnexus_storage::ImageStore::from_env().await?.map(Arc::new);
 
@@ -66,6 +67,7 @@ impl AppState {
             pool,
             auth,
             redis,
+            redis_client,
             image_store,
             http,
             accounts,

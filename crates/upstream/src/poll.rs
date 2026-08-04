@@ -10,11 +10,11 @@ use wreq::Client;
 use crate::requirements::{RequirementsClient, BASE_URL};
 use crate::sse::{extract_conversation_ids, real_image_file_re, sediment_re, file_service_re};
 
-const DEFAULT_POLL_TIMEOUT_SECS: u64 = 180;
-const DEFAULT_POLL_INITIAL_WAIT_SECS: f64 = 15.0;
-const DEFAULT_POLL_INTERVAL_SECS: f64 = 8.0;
-const DEFAULT_POLL_MAX_TASKS_GETS: u32 = 4;
-const DEFAULT_POLL_TASKS_EVERY_N: u32 = 4;
+const DEFAULT_POLL_TIMEOUT_SECS: u64 = 90;
+const DEFAULT_POLL_INITIAL_WAIT_SECS: f64 = 5.0;
+const DEFAULT_POLL_INTERVAL_SECS: f64 = 3.0;
+const DEFAULT_POLL_MAX_TASKS_GETS: u32 = 8;
+const DEFAULT_POLL_TASKS_EVERY_N: u32 = 2;
 const SKIP_FILE_IDS: &[&str] = &["file_upload"];
 
 /// Wall-clock poll budget for post-SSE image resolution (aligned with gptimage `image_task_queue`).

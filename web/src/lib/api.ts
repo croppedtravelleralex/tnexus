@@ -220,6 +220,7 @@ export type JobResult = {
   width?: number | null;
   height?: number | null;
   size_bytes?: number | null;
+  generation_ms?: number | null;
 };
 
 export type JobDetail = JobRecord & { results: JobResult[] };

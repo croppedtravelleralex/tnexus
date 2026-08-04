@@ -4,6 +4,8 @@ mod upstream;
 use anyhow::{Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use futures::future::try_join_all;
+use std::sync::Arc;
+use tokio::sync::Semaphore;
 use image::GenericImageView;
 use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
@@ -265,79 +267,109 @@ async fn process_job(
     set_status(pool, job_id, JobStatus::Generating, None).await?;
 
     let generate_start = Instant::now();
-    let generated_list = upstream.generate_slots_parallel(gen_tasks).await?;
-    phase_timings.insert(
-        "sse_stream_ms".into(),
-        serde_json::json!(generate_start.elapsed().as_millis() as u64),
-    );
+    let total_slots = gen_tasks.len().max(1);
+    let parallel_cap = if upstream.image_parallel_concurrency == 0 {
+        total_slots
+    } else {
+        upstream.image_parallel_concurrency
+    };
+    let sem = Arc::new(Semaphore::new(parallel_cap));
+    let slot_futs = gen_tasks.into_iter().zip(persist_plan).enumerate().map(|(slot_index, (task, plan))| {
+        let sem = sem.clone();
+        let upstream = upstream.clone();
+        let pool = pool.clone();
+        let redis_cm = redis.clone();
+        let image_store = image_store.cloned();
+        let user_id = job.user_id;
+        let (result_label, variant_index, agent_prompt, keywords) = plan;
+        async move {
+            let _permit = sem
+                .acquire()
+                .await
+                .map_err(|_| anyhow::anyhow!("parallel semaphore closed"))?;
+            let slot_start = Instant::now();
+            let generated = upstream.generate_slot(&task).await?;
+            let generation_ms = slot_start.elapsed().as_millis() as u64;
 
-    let slot_metrics = collect_slot_pipeline_metrics(&generated_list, job_id);
-    if !slot_metrics.is_empty() {
-        phase_timings.insert("slots".into(), serde_json::Value::Array(slot_metrics.clone()));
-    }
-    if let Some(bw) = aggregate_bandwidth(&slot_metrics) {
-        phase_timings.insert("bandwidth".into(), bw);
-    }
-    if let Some(lat) = aggregate_latency_percentiles(&slot_metrics) {
-        phase_timings.insert("latency_percentiles_ms".into(), lat);
-    }
+            if let Some(pipeline) = &generated.pipeline {
+                let email = pipeline
+                    .get("account_email")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                record_usage_event(email, "", "images_api", true);
+                pipeline_telemetry::append_event(&pipeline_telemetry::PipelineEvent {
+                    ts: pipeline_telemetry::now_rfc3339(),
+                    kind: "worker_slot".into(),
+                    email: email.to_string(),
+                    job_id: Some(job_id.to_string()),
+                    slot_index: Some(slot_index as i32),
+                    ok: true,
+                    quota_before: pipeline.get("quota_before").and_then(|v| v.as_i64()),
+                    quota_after: pipeline.get("quota_after").and_then(|v| v.as_i64()),
+                    timings_ms: pipeline.get("timings_ms").cloned(),
+                    bytes: pipeline.get("bytes").cloned(),
+                    extra: None,
+                });
+            }
 
-    if generated_list.len() != persist_plan.len() {
-        anyhow::bail!(
-            "generated {} images but expected {}",
-            generated_list.len(),
-            persist_plan.len()
-        );
-    }
-
-    for (idx, generated) in generated_list.iter().enumerate() {
-        if let Some(pipeline) = &generated.pipeline {
-            let email = pipeline
-                .get("account_email")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
-            record_usage_event(email, "", "images_api", true);
-            pipeline_telemetry::append_event(&pipeline_telemetry::PipelineEvent {
-                ts: pipeline_telemetry::now_rfc3339(),
-                kind: "worker_slot".into(),
-                email: email.to_string(),
-                job_id: Some(job_id.to_string()),
-                slot_index: Some(idx as i32),
-                ok: true,
-                quota_before: pipeline.get("quota_before").and_then(|v| v.as_i64()),
-                quota_after: pipeline.get("quota_after").and_then(|v| v.as_i64()),
-                timings_ms: pipeline.get("timings_ms").cloned(),
-                bytes: pipeline.get("bytes").cloned(),
-                extra: None,
-            });
-        }
-    }
-
-    publish_event(redis, job_id, JobStatus::Uploading, 85, None, None).await?;
-    set_status(pool, job_id, JobStatus::Uploading, None).await?;
-
-    let upload_start = Instant::now();
-    let persist_tasks: Vec<SlotPersistTask> = persist_plan
-        .into_iter()
-        .zip(generated_list)
-        .map(
-            |(plan, generated)| {
-                let (result_label, variant_index, agent_prompt, keywords) = plan;
+            let result_id = persist_slot(
+                &pool,
+                image_store.as_ref(),
+                user_id,
+                job_id,
                 SlotPersistTask {
                     result_label,
                     variant_index,
                     agent_prompt,
                     keywords,
                     generated,
-                }
-            },
-        )
-        .collect();
+                },
+                generation_ms,
+            )
+            .await?;
 
-    let persist_futs = persist_tasks.into_iter().map(|task| {
-        persist_slot(pool, image_store, job.user_id, job_id, task)
+            let completed = slot_index + 1;
+            let progress = 55 + ((30 * completed) / total_slots) as u8;
+            let mut redis_pub = redis_cm.clone();
+            publish_slot_done(
+                &mut redis_pub,
+                job_id,
+                slot_index,
+                variant_index,
+                result_id,
+                generation_ms,
+                progress,
+            )
+            .await?;
+
+            Ok((slot_index, generation_ms))
+        }
     });
-    try_join_all(persist_futs).await?;
+    let slot_outcomes = try_join_all(slot_futs).await?;
+    phase_timings.insert(
+        "sse_stream_ms".into(),
+        serde_json::json!(generate_start.elapsed().as_millis() as u64),
+    );
+
+    let mut slot_metrics: Vec<serde_json::Value> = Vec::new();
+    for (slot_index, generation_ms) in &slot_outcomes {
+        slot_metrics.push(serde_json::json!({
+            "slot_index": slot_index,
+            "job_id": job_id.to_string(),
+            "generation_ms": generation_ms,
+        }));
+    }
+    if !slot_metrics.is_empty() {
+        phase_timings.insert("slots".into(), serde_json::Value::Array(slot_metrics));
+    }
+    if let Some(lat) = aggregate_latency_percentiles_from_slot_ms(&slot_outcomes) {
+        phase_timings.insert("latency_percentiles_ms".into(), lat);
+    }
+
+    publish_event(redis, job_id, JobStatus::Uploading, 85, None, None).await?;
+    set_status(pool, job_id, JobStatus::Uploading, None).await?;
+
+    let upload_start = Instant::now();
     phase_timings.insert(
         "download_ms".into(),
         serde_json::json!(upload_start.elapsed().as_millis() as u64),
@@ -359,7 +391,8 @@ async fn persist_slot(
     user_id: Uuid,
     job_id: Uuid,
     task: SlotPersistTask,
-) -> Result<()> {
+    generation_ms: u64,
+) -> Result<Uuid> {
     let SlotPersistTask {
         result_label,
         variant_index,
@@ -425,9 +458,10 @@ async fn persist_slot(
         })
         .unwrap_or((None, None, None));
 
-    sqlx::query(
-        r#"INSERT INTO job_results (job_id, provider, variant_index, r2_key_original, r2_key_preview, r2_key_thumb, agent_prompt, revised_prompt, keywords, inline_preview_b64, source_url, width, height, size_bytes)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)"#,
+    let row = sqlx::query(
+        r#"INSERT INTO job_results (job_id, provider, variant_index, r2_key_original, r2_key_preview, r2_key_thumb, agent_prompt, revised_prompt, keywords, inline_preview_b64, source_url, width, height, size_bytes, generation_ms)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+           RETURNING id"#,
     )
     .bind(job_id)
     .bind(&result_label)
@@ -443,9 +477,10 @@ async fn persist_slot(
     .bind(width)
     .bind(height)
     .bind(size_bytes)
-    .execute(pool)
+    .bind(generation_ms as i64)
+    .fetch_one(pool)
     .await?;
-    Ok(())
+    Ok(row.get("id"))
 }
 
 struct JobRow {
@@ -503,67 +538,13 @@ async fn save_phase_timings(
     Ok(())
 }
 
-fn collect_slot_pipeline_metrics(
-    generated_list: &[upstream::GeneratedImage],
-    job_id: Uuid,
-) -> Vec<serde_json::Value> {
-    generated_list
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, g)| {
-            g.pipeline.as_ref().map(|p| {
-                let mut slot = p.clone();
-                if let Some(obj) = slot.as_object_mut() {
-                    obj.insert("slot_index".into(), serde_json::json!(idx));
-                    obj.insert("job_id".into(), serde_json::json!(job_id.to_string()));
-                }
-                slot
-            })
-        })
-        .collect()
-}
-
-fn aggregate_bandwidth(slots: &[serde_json::Value]) -> Option<serde_json::Value> {
-    let mut sse_in: u64 = 0;
-    let mut image_download: u64 = 0;
-    let mut response_out: u64 = 0;
-    for slot in slots {
-        if let Some(bytes) = slot.get("bytes") {
-            sse_in += bytes.get("sse_in").and_then(|v| v.as_u64()).unwrap_or(0);
-            image_download += bytes
-                .get("image_download")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            response_out += bytes
-                .get("response_out")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-        }
-    }
-    if sse_in == 0 && image_download == 0 && response_out == 0 {
+fn aggregate_latency_percentiles_from_slot_ms(
+    slots: &[(usize, u64)],
+) -> Option<serde_json::Value> {
+    if slots.is_empty() {
         return None;
     }
-    Some(serde_json::json!({
-        "sse_in": sse_in,
-        "image_download": image_download,
-        "response_out": response_out,
-        "total": sse_in + image_download + response_out,
-    }))
-}
-
-fn aggregate_latency_percentiles(slots: &[serde_json::Value]) -> Option<serde_json::Value> {
-    let mut walls: Vec<u64> = slots
-        .iter()
-        .filter_map(|s| {
-            s.get("timings_ms")
-                .and_then(|t| t.get("gateway_wall_ms"))
-                .or_else(|| s.get("timings_ms").and_then(|t| t.get("upstream_wall_ms")))
-                .and_then(|v| v.as_u64())
-        })
-        .collect();
-    if walls.is_empty() {
-        return None;
-    }
+    let mut walls: Vec<u64> = slots.iter().map(|(_, ms)| *ms).collect();
     walls.sort_unstable();
     let n = walls.len();
     let p = |pct: f64| -> u64 {
@@ -618,6 +599,35 @@ async fn set_status(
         .bind(status.as_str())
         .bind(error)
         .execute(pool)
+        .await?;
+    Ok(())
+}
+
+async fn publish_slot_done(
+    redis: &mut ConnectionManager,
+    job_id: Uuid,
+    slot_index: usize,
+    variant_index: i32,
+    result_id: Uuid,
+    generation_ms: u64,
+    progress: u8,
+) -> Result<()> {
+    let payload = serde_json::json!({
+        "event": "slot_done",
+        "job_id": job_id,
+        "stage": JobStatus::Generating.as_str(),
+        "progress": progress,
+        "slot_index": slot_index,
+        "variant_index": variant_index,
+        "result_id": result_id,
+        "generation_ms": generation_ms,
+        "preview_url": format!("/api/images/thumb/{result_id}?w=512"),
+        "thumb_url": format!("/api/images/thumb/{result_id}?w=240"),
+        "download_url": format!("/api/images/original/{result_id}"),
+    });
+    let channel = format!("{JOB_EVENTS_PREFIX}{job_id}");
+    redis
+        .publish::<_, _, ()>(channel, payload.to_string())
         .await?;
     Ok(())
 }

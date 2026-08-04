@@ -15,6 +15,7 @@ export type OutputSlot = {
   image?: JobResult;
   error?: string;
   label?: string;
+  generationMs?: number;
 };
 
 function ImageMetaBadge({
@@ -164,9 +165,11 @@ function FailedTile({ error, onRetry }: { error?: string; onRetry?: () => void }
 
 function SuccessTile({
   image,
+  generationMs,
   onPreview,
 }: {
   image: JobResult;
+  generationMs?: number;
   onPreview: (url: string, downloadUrl?: string | null) => void;
 }) {
   const preview = apiAssetUrl(image.preview_url || image.thumb_url);
@@ -176,6 +179,11 @@ function SuccessTile({
   return (
     <div className="group relative h-44 w-44 shrink-0 overflow-hidden rounded-lg border border-zinc-200 bg-zinc-100 shadow-sm">
       <ImageMetaBadge image={image} className="absolute left-1.5 top-1.5 z-10" />
+      {generationMs != null && generationMs > 0 && (
+        <div className="absolute bottom-1.5 left-1.5 z-10 rounded bg-black/55 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-white backdrop-blur-sm">
+          {formatDuration(generationMs)}
+        </div>
+      )}
       {preview ? (
         <button
           type="button"
@@ -352,6 +360,7 @@ export function OutputPanel({
                       <SuccessTile
                         key={slot.id}
                         image={slot.image}
+                        generationMs={slot.generationMs ?? slot.image?.generation_ms}
                         onPreview={(url, downloadUrl) => setPreview({ url, downloadUrl })}
                       />
                     );
