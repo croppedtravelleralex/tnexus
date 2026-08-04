@@ -14,6 +14,7 @@ use axum::{
     Json, Router,
 };
 use futures::{stream::Stream, StreamExt};
+use tokio::sync::mpsc;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
@@ -220,16 +221,22 @@ async fn job_events_handler(
         .ok_or((StatusCode::NOT_FOUND, "not found".into()))?;
 
     let channel = format!("{JOB_EVENTS_PREFIX}{id}");
-    let mut pubsub = state
-        .redis_client
-        .get_async_pubsub()
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    pubsub
-        .subscribe(&channel)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let mut msg_stream = pubsub.on_message();
+    let redis_client = state.redis_client.clone();
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel::<String>();
+    tokio::spawn(async move {
+        if let Ok(mut pubsub) = redis_client.get_async_pubsub().await {
+            if pubsub.subscribe(&channel).await.is_ok() {
+                let mut msg_stream = pubsub.on_message();
+                while let Some(msg) = msg_stream.next().await {
+                    if let Ok(payload) = msg.get_payload::<String>() {
+                        if event_tx.send(payload).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    });
 
     let initial = serde_json::json!({
         "job_id": id,
@@ -244,13 +251,9 @@ async fn job_events_handler(
         }
         loop {
             tokio::select! {
-                msg = msg_stream.next() => {
-                    match msg {
-                        Some(m) => {
-                            let payload = match m.get_payload::<String>() {
-                                Ok(p) => p,
-                                Err(_) => continue,
-                            };
+                payload = event_rx.recv() => {
+                    match payload {
+                        Some(payload) => {
                             yield Ok(Event::default().data(payload.clone()));
                             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&payload) {
                                 let stage = v.get("stage").and_then(|s| s.as_str()).unwrap_or("");
