@@ -1,0 +1,13 @@
+[package]
+name = "grok-storage"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+grok-domain = { path = "../grok-domain" }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+sqlx = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
