@@ -14,4 +14,6 @@ pub mod handlers;
 pub mod router;
 
 pub use error::GatewayError;
-pub use router::{build_app, with_engine, AppState};
+pub use router::{
+    build_app, with_engine, with_engines, with_engines_and_media, AppState,
+};

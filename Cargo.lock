@@ -1715,6 +1715,7 @@ dependencies = [
 name = "grok-gateway"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "axum",
  "bytes",
  "futures",
@@ -1722,6 +1723,7 @@ dependencies = [
  "grok-conversation",
  "grok-domain",
  "grok-egress",
+ "grok-image-pipeline",
  "grok-pool",
  "grok-provider-web",
  "http-body-util",
@@ -1731,6 +1733,23 @@ dependencies = [
  "tokio",
  "tower",
  "tracing",
+]
+
+[[package]]
+name = "grok-image-pipeline"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "grok-domain",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror",
+ "time",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -1750,11 +1769,13 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "base64",
+ "chrono",
  "futures",
  "grok-audit",
  "grok-conversation",
  "grok-domain",
  "grok-egress",
+ "grok-image-pipeline",
  "grok-pool",
  "reqwest",
  "serde",

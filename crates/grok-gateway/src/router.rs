@@ -10,36 +10,72 @@ use std::sync::Arc;
 use axum::routing::{get, post};
 use axum::Router;
 
-use grok_provider_web::ChatEngine;
+use grok_provider_web::{ChatEngine, ImageEngine};
 
-use crate::handlers::{chat_completions, models};
+use crate::handlers::{
+    chat_completions, image_generations, media_images, models, MediaFetcher,
+};
 
 /// 应用共享状态。
 #[derive(Clone)]
 pub struct AppState {
     /// 推理引擎。生产在 `with_engine` 注入；默认 None（未配置时推理请求 500）。
     pub engine: Option<Arc<ChatEngine>>,
+    /// 生图引擎（G2）。None 时 `/v1/images/generations` 返回 503。
+    pub image_engine: Option<Arc<ImageEngine>>,
+    /// 媒体取回器（G2-A4 `/v1/media/images/{id}`）。None 时返回 501。
+    pub media_fetcher: Option<Arc<dyn MediaFetcher>>,
 }
 
 impl AppState {
     /// 空状态（engine 未配置）。
     pub fn empty() -> Self {
-        Self { engine: None }
+        Self {
+            engine: None,
+            image_engine: None,
+            media_fetcher: None,
+        }
     }
 }
 
-/// 构建带 engine 的应用状态。
+/// 构建带 chat engine 的应用状态（image engine 未配置）。
 pub fn with_engine(engine: ChatEngine) -> AppState {
     AppState {
         engine: Some(Arc::new(engine)),
+        image_engine: None,
+        media_fetcher: None,
     }
 }
 
-/// 构建 router（G1 端点）。
+/// 构建带 chat + image 引擎的应用状态。
+pub fn with_engines(engine: ChatEngine, image_engine: ImageEngine) -> AppState {
+    AppState {
+        engine: Some(Arc::new(engine)),
+        image_engine: Some(Arc::new(image_engine)),
+        media_fetcher: None,
+    }
+}
+
+/// 构建带 chat + image 引擎 + 媒体取回器的应用状态（测试注入）。
+pub fn with_engines_and_media(
+    engine: ChatEngine,
+    image_engine: ImageEngine,
+    media_fetcher: Arc<dyn MediaFetcher>,
+) -> AppState {
+    AppState {
+        engine: Some(Arc::new(engine)),
+        image_engine: Some(Arc::new(image_engine)),
+        media_fetcher: Some(media_fetcher),
+    }
+}
+
+/// 构建 router（G1 端点 + G2 生图端点）。
 pub fn build_app(state: AppState) -> Router {
     Router::new()
         .route("/v1/models", get(models))
         .route("/v1/chat/completions", post(chat_completions))
+        .route("/v1/images/generations", post(image_generations))
+        .route("/v1/media/images/{id}", get(media_images))
         .with_state(Arc::new(state))
 }
 

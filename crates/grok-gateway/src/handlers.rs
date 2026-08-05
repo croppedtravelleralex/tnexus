@@ -10,16 +10,19 @@
 
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{Path, State};
+use axum::http::header;
 use axum::response::sse::{Event, Sse};
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use futures::stream;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use grok_conversation::{normalize_chat_input, ChatMessage};
-use grok_provider_web::{public_models, ChatEngine, ChatRequest as ProviderChatRequest, ALIAS_OCR};
+use grok_provider_web::{
+    public_models, ChatEngine, ChatRequest as ProviderChatRequest, ImagineRequest, ALIAS_OCR,
+};
 
 use crate::error::GatewayError;
 use crate::router::AppState;
@@ -34,6 +37,117 @@ pub struct ChatCompletionsRequest {
     /// true → SSE 流式返回。
     #[serde(default)]
     pub stream: bool,
+}
+
+/// `POST /v1/images/generations` 请求（G2：prompt / n / response_format / size / quality）。
+#[derive(Debug, Deserialize)]
+pub struct ImageGenerationRequest {
+    /// 生图提示词。
+    pub prompt: String,
+    /// 生图数量（默认 1，上限 10）。
+    #[serde(default = "default_n")]
+    pub n: usize,
+    /// 输出格式：`url`（默认）或 `b64_json`。
+    #[serde(default)]
+    pub response_format: String,
+    /// 尺寸（本阶段忽略具体尺寸，交给上游）。
+    #[serde(default)]
+    pub size: String,
+    /// 质量（本阶段忽略）。
+    #[serde(default)]
+    pub quality: String,
+}
+
+fn default_n() -> usize {
+    1
+}
+
+/// `POST /v1/images/generations`（G2）。走 `ImageEngine.imagine`。
+pub async fn image_generations(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<ImageGenerationRequest>,
+) -> Result<Response, GatewayError> {
+    if req.n == 0 || req.n > 10 {
+        return Err(GatewayError::InvalidRequest(format!(
+            "n must be in 1..=10, got {}",
+            req.n
+        )));
+    }
+    let image_engine = state
+        .image_engine
+        .as_ref()
+        .ok_or_else(|| GatewayError::Internal("ImageEngine not configured".into()))?;
+
+    let out_format = if req.response_format == "b64_json" {
+        "b64_json".to_string()
+    } else {
+        "url".to_string()
+    };
+    let imagine_req = ImagineRequest {
+        prompt: req.prompt.clone(),
+        n: req.n,
+        response_format: out_format.clone(),
+        lite: false,
+        enhance: false,
+        request_id: new_request_id(),
+    };
+    let result = image_engine.imagine(&imagine_req).await?;
+
+    let data: Vec<Value> = result
+        .items
+        .iter()
+        .map(|item| {
+            if result.b64 {
+                json!({ "b64_json": item })
+            } else {
+                json!({ "url": item })
+            }
+        })
+        .collect();
+
+    Ok(Json(json!({
+        "object": "list",
+        "created": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+        "data": data,
+    }))
+    .into_response())
+}
+
+/// `GET /v1/media/images/{id}`（G2-A4）。Grok 生图返回的是上游 URL，
+/// 这里通过 id 查媒体字节并回传（Content-Type 嗅探）。未配置 `media_fetcher`
+/// 或 id 未命中 → 404。
+pub async fn media_images(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Response {
+    match state.media_fetcher.as_ref() {
+        Some(fetcher) => match fetcher.fetch_bytes(&id).await {
+            Ok((bytes, content_type)) => (
+                [(header::CONTENT_TYPE, content_type)],
+                bytes,
+            )
+                .into_response(),
+            Err(_) => (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": {"message": "media not found"}})),
+            )
+                .into_response(),
+        },
+        None => (
+            StatusCode::NOT_IMPLEMENTED,
+            Json(json!({"error": {"message": "media fetcher not configured"}})),
+        )
+            .into_response(),
+    }
+}
+
+use axum::http::StatusCode;
+
+/// 媒体取回抽象（G2-A4 `GET /v1/media/images/{id}`）。按 id 返回字节与 Content-Type。
+#[async_trait::async_trait]
+pub trait MediaFetcher: Send + Sync {
+    async fn fetch_bytes(&self, id: &str) -> Result<(Vec<u8>, String), GatewayError>;
 }
 
 /// `GET /v1/models` 返回的模型项。

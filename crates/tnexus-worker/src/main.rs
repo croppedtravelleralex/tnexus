@@ -460,8 +460,8 @@ async fn persist_slot(
         .unwrap_or((None, None, None));
 
     let row = sqlx::query(
-        r#"INSERT INTO job_results (job_id, provider, variant_index, r2_key_original, r2_key_preview, r2_key_thumb, agent_prompt, revised_prompt, keywords, inline_preview_b64, source_url, width, height, size_bytes, generation_ms)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+        r#"INSERT INTO job_results (job_id, provider, variant_index, r2_key_original, r2_key_preview, r2_key_thumb, agent_prompt, revised_prompt, keywords, inline_preview_b64, source_url, width, height, size_bytes, generation_ms, pipeline)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
            RETURNING id"#,
     )
     .bind(job_id)
@@ -479,6 +479,7 @@ async fn persist_slot(
     .bind(height)
     .bind(size_bytes)
     .bind(generation_ms as i64)
+    .bind(&generated.pipeline)
     .fetch_one(pool)
     .await?;
     Ok(row.get("id"))
@@ -695,7 +696,7 @@ fn load_config() -> Result<WorkerConfig> {
             .unwrap_or_else(|_| "http://127.0.0.1:8014".into()),
         grok2api_base: std::env::var("GROK2API_BASE")
             .or_else(|_| std::env::var("UPSTREAM_API_BASE"))
-            .unwrap_or_else(|_| "http://127.0.0.1:18000".into()),
+            .unwrap_or_else(|_| "http://127.0.0.1:8000".into()),
         director_model: std::env::var("DIRECTOR_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into()),
         chatgpt_image_model: std::env::var("CHATGPT_IMAGE_MODEL")
             .unwrap_or_else(|_| "gpt-image-2".into()),

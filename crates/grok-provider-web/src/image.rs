@@ -365,8 +365,9 @@ mod tests {
     async fn imagine_lite_uses_lite_model() {
         let pool: SharedPool = Arc::new(grok_pool::SimplifiedPool::new());
         pool.load_in_memory(vec![sample_account(2)]).await;
-        let concrete: Arc<crate::bridge::MockBridgeClient> =
-            Arc::new(crate::bridge::MockBridgeClient::new());
+        let mut mock = crate::bridge::MockBridgeClient::new();
+        mock.imagine_response = serde_json::json!({ "data": [ {"url": "https://x/lite.png"} ] });
+        let concrete: Arc<crate::bridge::MockBridgeClient> = Arc::new(mock);
         let bridge: Arc<dyn BridgeClient> = concrete.clone();
         let e = ImageEngine::new(
             pool,

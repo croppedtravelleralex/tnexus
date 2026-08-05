@@ -7,8 +7,6 @@
 //! G2 实现：通过 [`BridgeClient::fetch_chat`] 发一个标记为 `expand` 的文本对话，
 //! 返回上游文本即为扩写后的 prompt。未接真实 bridge 时用 mock。
 
-use std::sync::Arc;
-
 use grok_domain::egress::Scope;
 use serde_json::{json, Value};
 

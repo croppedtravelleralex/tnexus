@@ -29,6 +29,9 @@ pub trait BridgeClient: Send + Sync {
 
     /// 发送 chat 请求到 bridge，返回上游 SSE 汇总后的文本。
     async fn fetch_chat(&self, payload: &Value) -> Result<String, ProviderError>;
+
+    /// 发送生图（imagine）请求到 bridge，返回上游 JSON（含 data[].url / b64_json）。
+    async fn fetch_imagine(&self, payload: &Value) -> Result<Value, ProviderError>;
 }
 
 /// 基于 `reqwest::Client` 的真实 bridge 客户端。
@@ -113,6 +116,20 @@ impl BridgeClient for HttpBridgeClient {
             .map_err(|e| ProviderError::Bridge(format!("read chat text: {e}")))?;
         parse_chat_text(&text)
     }
+
+    async fn fetch_imagine(&self, payload: &Value) -> Result<Value, ProviderError> {
+        let body = serde_json::json!({
+            "action": "imagine",
+            "payload": payload,
+        });
+        let resp = self.post_fetch(body).await?;
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| ProviderError::Bridge(format!("read imagine json: {e}")))?;
+        serde_json::from_slice(&bytes)
+            .map_err(|e| ProviderError::Bridge(format!("parse imagine json: {e}")))
+    }
 }
 
 /// 从 bridge chat 响应提取纯文本：优先 `{"text": "..."}`，否则整段字符串。
@@ -155,6 +172,10 @@ pub struct MockBridgeClient {
     pub chat_text: String,
     /// fetch_chat 收到的 payload（测试断言 golden）。
     pub last_chat_payload: tokio::sync::Mutex<Option<Value>>,
+    /// fetch_imagine 统一返回的 JSON（默认空对象，空则无 data → 引擎报错）。
+    pub imagine_response: Value,
+    /// fetch_imagine 收到的 payload（测试断言 golden）。
+    pub last_imagine_payload: tokio::sync::Mutex<Option<Value>>,
 }
 
 impl MockBridgeClient {
@@ -163,6 +184,8 @@ impl MockBridgeClient {
             images: std::collections::HashMap::new(),
             chat_text: String::new(),
             last_chat_payload: tokio::sync::Mutex::new(None),
+            imagine_response: serde_json::Value::Null,
+            last_imagine_payload: tokio::sync::Mutex::new(None),
         }
     }
 }
@@ -188,6 +211,11 @@ impl BridgeClient for MockBridgeClient {
     async fn fetch_chat(&self, payload: &Value) -> Result<String, ProviderError> {
         *self.last_chat_payload.lock().await = Some(payload.clone());
         Ok(self.chat_text.clone())
+    }
+
+    async fn fetch_imagine(&self, payload: &Value) -> Result<Value, ProviderError> {
+        *self.last_imagine_payload.lock().await = Some(payload.clone());
+        Ok(self.imagine_response.clone())
     }
 }
 
