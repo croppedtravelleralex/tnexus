@@ -8,6 +8,10 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from test_http_headers import request_headers
 
 
 def png_dims(data: bytes) -> tuple[int, int] | None:
@@ -31,10 +35,12 @@ def one_image(base_url: str, api_key: str, prompt: str, model: str, timeout: flo
     req = urllib.request.Request(
         url,
         data=body,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
+        headers=request_headers(
+            {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            }
+        ),
         method="POST",
     )
     t0 = time.perf_counter()
@@ -47,12 +53,17 @@ def one_image(base_url: str, api_key: str, prompt: str, model: str, timeout: flo
             b64 = item.get("b64_json") or ""
             img = base64.b64decode(b64) if b64 else b""
             dims = png_dims(img)
+            usage = data.get("usage") or {}
+            pipe = data.get("_tnexus_pipeline") or {}
             return {
                 "ok": bool(img),
                 "elapsed_s": round(elapsed, 2),
                 "bytes": len(img),
                 "dims": dims,
                 "status": resp.status,
+                "usage": usage,
+                "email": pipe.get("account_email"),
+                "output_tokens": usage.get("output_tokens"),
             }
     except urllib.error.HTTPError as e:
         elapsed = time.perf_counter() - t0
@@ -62,13 +73,32 @@ def one_image(base_url: str, api_key: str, prompt: str, model: str, timeout: flo
             "elapsed_s": round(elapsed, 2),
             "status": e.code,
             "error": err_body,
+            "retryable": e.code in {408, 429, 500, 502, 503, 524},
         }
     except Exception as e:
+        msg = str(e)
         return {
             "ok": False,
             "elapsed_s": round(time.perf_counter() - t0, 2),
-            "error": str(e),
+            "error": msg,
+            "retryable": "closed connection" in msg.lower()
+            or "timed out" in msg.lower(),
         }
+
+
+def one_image_with_retry(
+    base_url: str, api_key: str, prompt: str, model: str, timeout: float, retries: int
+) -> dict:
+    last: dict = {}
+    for attempt in range(retries + 1):
+        last = one_image(base_url, api_key, prompt, model, timeout)
+        if last.get("ok") or not last.get("retryable") or attempt >= retries:
+            last["attempts"] = attempt + 1
+            return last
+        wait = min(5 * (attempt + 1), 15)
+        print(f"  retry {attempt + 1}/{retries} ({last.get('error', '')[:60]})", flush=True)
+        time.sleep(wait)
+    return last
 
 
 def main() -> int:
@@ -78,6 +108,7 @@ def main() -> int:
     p.add_argument("--model", default="gpt-image-2")
     p.add_argument("--count", type=int, default=10)
     p.add_argument("--timeout", type=float, default=300.0)
+    p.add_argument("--retries", type=int, default=2)
     p.add_argument(
         "--prompt",
         default="A serene mountain lake at sunrise, soft watercolor style, no text",
@@ -88,10 +119,19 @@ def main() -> int:
     for i in range(args.count):
         prompt = f"{args.prompt} (serial test {i + 1})"
         print(f"[{i + 1}/{args.count}] generating...", flush=True)
-        r = one_image(args.base_url, args.api_key, prompt, args.model, args.timeout)
+        r = one_image_with_retry(
+            args.base_url, args.api_key, prompt, args.model, args.timeout, args.retries
+        )
         results.append(r)
         mark = "OK" if r.get("ok") else "FAIL"
-        print(f"  {mark} {r.get('elapsed_s')}s status={r.get('status', '-')} dims={r.get('dims')}", flush=True)
+        extra = ""
+        if r.get("ok"):
+            extra = f" out_tok={r.get('output_tokens')} email={r.get('email')}"
+        print(
+            f"  {mark} {r.get('elapsed_s')}s status={r.get('status', '-')}"
+            f" dims={r.get('dims')}{extra}",
+            flush=True,
+        )
         if not r.get("ok"):
             print(f"  error: {r.get('error', '')[:200]}", flush=True)
 
