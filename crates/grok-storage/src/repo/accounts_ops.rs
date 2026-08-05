@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use grok_domain::{
-    Account, AuthStatus, ModelQuotaBlock, ModelState, Provider, QuotaRecovery,
+    Account, AuthStatus, Billing, ModelQuotaBlock, ModelState, Provider, QuotaRecovery,
     RoutingCandidate,
 };
 use sqlx::{postgres::PgRow, PgPool, Row};
@@ -47,6 +47,14 @@ pub trait AccountOps {
         reset_last_success: bool,
     ) -> Result<(), StorageError>;
 
+    /// 标记账号可删（对齐 Go `markBuildDeletable`）：禁用 + reauthRequired + 去冷却 +
+    /// `deletable: {reason}` 前缀（≤512 字符），供四池 delete 池巡检与 admin 清理。
+    async fn mark_deletable(&self, account_id: i64, reason: &str) -> Result<(), StorageError>;
+
+    /// 记录账号观察到的最新上游模型（对齐 Go `ObserveResponseModel`）：更新
+    /// `grok_accounts.observed_model`（验证池 → 调度池毕业的关键写路径）。
+    async fn observe_model(&self, account_id: i64, model: &str) -> Result<(), StorageError>;
+
     /// 抢占配额探针；返回是否抢占成功（Go `ClaimQuotaProbe`）。
     async fn claim_quota_probe(
         &self,
@@ -64,7 +72,8 @@ pub trait AccountOps {
 
 const ROUTING_COLS: &str = "id, identity_key, provider, enabled, auth_status, priority, \
      observed_model, max_concurrent, minimum_remaining, failure_count, cooldown_until, \
-     last_error, last_used_at, observed_model_at, name, email, user_id, team_id, source_key";
+     last_error, last_used_at, observed_model_at, name, email, user_id, team_id, source_key, \
+     created_at, updated_at";
 
 fn auth_status_from_str_raw(s: &str) -> Result<AuthStatus, StorageError> {
     match s {
@@ -100,8 +109,17 @@ fn map_routing_row(row: &PgRow) -> Result<Account, StorageError> {
         user_id: row.try_get("user_id")?,
         team_id: row.try_get("team_id")?,
         source_key: row.try_get("source_key")?,
+        created_at: row.try_get("created_at")?,
+        updated_at: row.try_get("updated_at")?,
         ..Default::default()
     })
+}
+
+/// `deletable:` 前缀 + 理由，≤512 字符（对齐 Go `markBuildDeletable` 的 last_error 组装）。
+pub fn deletable_reason(reason: &str) -> String {
+    let mut text = format!("deletable: {}", reason.trim());
+    text.truncate(512);
+    text
 }
 
 /// ListEnabled（对齐 Go：provider + enabled + auth_status='active'，priority DESC, id ASC）。
@@ -131,6 +149,42 @@ async fn list_enabled(
 }
 
 impl PgAccountRepository {
+    /// 列出全部 Build 账号（含 disabled/deletable，供四池 delete 池巡检与池汇总）。
+    /// 全列（ROUTING_COLS），优先级降序（对齐 Go `List(provider)`）。
+    pub async fn list_build_accounts(
+        &self,
+    ) -> Result<Vec<Account>, StorageError> {
+        let sql = format!(
+            "SELECT {ROUTING_COLS} FROM grok_accounts WHERE provider = $1 \
+             ORDER BY priority DESC, id ASC"
+        );
+        let rows = sqlx::query(&sql)
+            .bind(Provider::GrokBuild.as_str())
+            .fetch_all(&self.pool)
+            .await?;
+        rows.iter().map(map_routing_row).collect()
+    }
+
+    /// 批量读额度恢复（Go `GetQuotaRecoveries`）。
+    pub async fn recoveries(&self, ids: &[i64]) -> Result<HashMap<i64, QuotaRecovery>, StorageError> {
+        fetch_quota_recoveries(&self.pool, ids).await
+    }
+
+    /// 批量读账单快照（Go `GetBillings`）。
+    pub async fn billings(&self, ids: &[i64]) -> Result<HashMap<i64, Billing>, StorageError> {
+        fetch_billings(&self.pool, ids).await
+    }
+
+    /// 读单个额度恢复；不存在返回 `Ok(None)`。
+    pub async fn recovery(&self, id: i64) -> Result<Option<QuotaRecovery>, StorageError> {
+        Ok(self.recoveries(&[id]).await?.remove(&id))
+    }
+
+    /// 读单个账单快照；不存在返回 `Ok(None)`。
+    pub async fn billing(&self, id: i64) -> Result<Option<Billing>, StorageError> {
+        Ok(self.billings(&[id]).await?.remove(&id))
+    }
+
     /// hydrate 路由候选（对齐 Go `hydrateRoutingCandidates`）。
     pub(crate) async fn hydrate_routing_candidates(
         &self,
@@ -285,6 +339,34 @@ impl AccountOps for PgAccountRepository {
         Ok(())
     }
 
+    async fn mark_deletable(&self, account_id: i64, reason: &str) -> Result<(), StorageError> {
+        // 对齐 Go `markBuildDeletable`：enabled=false、reauthRequired、去冷却、
+        // last_error = "deletable: " + reason（≤512）。
+        let text = deletable_reason(reason);
+        sqlx::query(
+            "UPDATE grok_accounts SET enabled = false, auth_status = 'reauthRequired', \
+             cooldown_until = NULL, last_error = $2, updated_at = now() WHERE id = $1",
+        )
+        .bind(account_id)
+        .bind(text)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn observe_model(&self, account_id: i64, model: &str) -> Result<(), StorageError> {
+        // 对齐 Go `ObserveResponseModel`：observed_model + observed_model_at + updated_at。
+        sqlx::query(
+            "UPDATE grok_accounts SET observed_model = $2, observed_model_at = now(), \
+             updated_at = now() WHERE id = $1",
+        )
+        .bind(account_id)
+        .bind(model)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     async fn claim_quota_probe(
         &self,
         account_id: i64,
@@ -390,5 +472,23 @@ impl AccountOps for PgAccountRepository {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::deletable_reason;
+
+    #[test]
+    fn deletable_reason_prefixes_and_truncates() {
+        assert_eq!(
+            deletable_reason("grok_build chat endpoint access denied"),
+            "deletable: grok_build chat endpoint access denied"
+        );
+        assert_eq!(deletable_reason("  trimmed  "), "deletable: trimmed");
+        let long = "x".repeat(600);
+        let got = deletable_reason(&long);
+        assert!(got.starts_with("deletable: "), "must keep prefix");
+        assert_eq!(got.len(), 512, "truncated to 512");
     }
 }

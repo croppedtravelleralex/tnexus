@@ -5,6 +5,7 @@ edition.workspace = true
 description = "Grok 管理台认证：管理员登录 / JWT access token / refresh session 轮换（对齐 Go adminauth + infra/security）"
 
 [dependencies]
+grok-domain = { path = "../grok-domain" }
 jsonwebtoken = { workspace = true }
 bcrypt = "0.16"
 serde = { workspace = true }

@@ -6,6 +6,8 @@
 //! - [`repos`]：持久化抽象（测试注入内存 fake，SQL 实现后续由 grok-storage 提供）
 //! - [`guard`]：HTTP Bearer 认证 guard 形态
 
+pub mod accounts;
+pub mod admin_router;
 pub mod domain;
 pub mod error;
 pub mod guard;
@@ -13,6 +15,11 @@ pub mod repos;
 pub mod security;
 pub mod service;
 
+pub use accounts::{
+    AccountAdminService, AccountDetail, AccountListFilter, AccountPage, AccountView,
+    AdminStore, QuotaWindowInput, UpdateAccountInput,
+};
+pub use admin_router::{AdminHttpResponse, AdminRouter};
 pub use domain::{Admin, Session};
 pub use error::{AdminError, AdminResult};
 pub use guard::{authenticate_bearer, bearer_token, AuthContext};

@@ -31,6 +31,15 @@ pub enum AdminError {
     /// 令牌随机数生成失败。
     #[error("随机令牌生成失败: {0}")]
     Random(String),
+    /// 资源不存在（账号 / 额度窗口）。
+    #[error("资源不存在: {0}")]
+    NotFound(String),
+    /// 列表筛选参数无效。
+    #[error("筛选参数无效: {0}")]
+    InvalidFilter(String),
+    /// 请求参数无效。
+    #[error("请求参数无效: {0}")]
+    InvalidRequest(String),
 }
 
 pub type AdminResult<T> = Result<T, AdminError>;

@@ -19,6 +19,7 @@ pub mod probe;
 pub mod quota;
 pub mod build_probe;
 pub mod four_pool;
+pub mod pg_ops;
 
 pub use error::{OpsError, OpsResult};
 #[doc(hidden)]
@@ -34,6 +35,11 @@ pub use build_probe::{
 };
 #[doc(hidden)]
 pub use four_pool::{BuildFourPool, BuildProbeOps, TickResult};
+#[doc(hidden)]
+pub use pg_ops::{
+    BuildProbeTransport, CredentialProbeAction, NotWiredTransport, PgBuildProbeOps, ProbeRepo,
+    capability_probe_error, classify_credential_probe, observed_model_from_body,
+};
 
 #[cfg(test)]
 mod ops_tests;
