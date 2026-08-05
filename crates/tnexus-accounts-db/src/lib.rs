@@ -2,6 +2,7 @@
 
 mod backend;
 mod pg;
+pub mod sync_file;
 
 pub use backend::AccountsBackend;
 pub use pg::AccountsPg;

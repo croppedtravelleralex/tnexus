@@ -4,7 +4,6 @@ use helper_client::PinAccount;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::fs;
 use std::path::PathBuf;
 use tnexus_accounts_db::AccountsBackend;
 use tracing::warn;
@@ -68,27 +67,19 @@ impl SchedulingGate {
     }
 
     fn load_scheduling(&self) -> HashMap<String, String> {
-        if !self.scheduling_path.exists() {
-            return HashMap::new();
-        }
-        let raw = fs::read_to_string(&self.scheduling_path).unwrap_or_default();
-        if raw.trim().is_empty() {
-            return HashMap::new();
-        }
-        serde_json::from_str::<SchedulingStateFile>(&raw)
+        tnexus_accounts_db::sync_file::read_json::<SchedulingStateFile>(&self.scheduling_path)
+            .ok()
+            .flatten()
             .map(|f| f.by_email)
             .unwrap_or_default()
     }
 
     fn save_scheduling(&self, map: &HashMap<String, String>) -> std::io::Result<()> {
-        if let Some(parent) = self.scheduling_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
         let payload = SchedulingStateFile {
             by_email: map.clone(),
         };
-        let raw = serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "{}".into());
-        fs::write(&self.scheduling_path, raw)
+        tnexus_accounts_db::sync_file::write_json(&self.scheduling_path, &payload)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("{}", e)))
     }
 
     fn load_accounts_by_email(&self) -> HashMap<String, Value> {
