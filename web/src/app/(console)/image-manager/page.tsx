@@ -339,7 +339,7 @@ export default function ImageManagerPage() {
                   <p className="truncate text-[11px] font-medium text-[var(--neo-ink)]">{img.prompt || img.name}</p>
                   <p className="truncate text-[10px] text-[var(--neo-muted)]">
                     {img.source === "api" ? (
-                      <Badge variant="outline" className="mr-1 h-4 px-1 text-[9px]">
+                      <Badge variant="info" className="mr-1 h-4 px-1 text-[9px]">
                         API
                       </Badge>
                     ) : null}
