@@ -47,7 +47,7 @@ pub fn schedule_gateway_image_archive(
                 usage: Some(usage),
                 attribution: attribution.clone(),
             };
-            if let Err(e) = persist_gateway_image(&pool, store.as_deref(), input).await {
+            if let Err(e) = persist_gateway_image(&pool, store.as_ref(), input).await {
                 warn!(error = %e, "gateway image archive failed");
             }
         }
