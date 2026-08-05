@@ -4,12 +4,32 @@
 use serde::{Deserialize, Serialize};
 
 /// Provider 类型，对应 `grok_accounts.provider` CHECK 约束。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Provider {
     GrokBuild,
     GrokWeb,
     GrokConsole,
+}
+
+/// Web 账号档位（Go `WebTier`；selector 按 tier 顺序优先于账号 priority）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WebTier {
+    #[default]
+    Basic,
+    Super,
+    Heavy,
+}
+
+impl WebTier {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WebTier::Basic => "basic",
+            WebTier::Super => "super",
+            WebTier::Heavy => "heavy",
+        }
+    }
 }
 
 /// Web 调度/维护双轨（对齐 Go `WebLane`，见 web_pool_probe.go）。
@@ -103,6 +123,9 @@ pub struct Account {
     /// 最近一次被调度选中时刻（dispatch 公平序）。
     #[serde(default)]
     pub last_used_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Web 档位（Go `WebTier`）；selector 档位序先于账号 priority。
+    #[serde(default)]
+    pub web_tier: WebTier,
 }
 
 fn default_max_concurrent() -> i32 {
@@ -130,6 +153,7 @@ impl Default for Account {
             created_at: None,
             updated_at: None,
             last_used_at: None,
+            web_tier: WebTier::default(),
         }
     }
 }
@@ -329,6 +353,9 @@ pub struct Billing {
     /// 本期起止（RFC3339 字符串，解析出账期结束用）。
     pub usage_period_start: String,
     pub usage_period_end: String,
+    /// 上游同步时刻（Go `SyncedAt`）；selector 新鲜度（30min）据此判定。
+    #[serde(default)]
+    pub synced_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl Default for Billing {
@@ -345,6 +372,7 @@ impl Default for Billing {
             usage_period_type: String::new(),
             usage_period_start: String::new(),
             usage_period_end: String::new(),
+            synced_at: None,
         }
     }
 }
@@ -387,7 +415,24 @@ pub struct RoutingCandidate {
     pub billing: Option<Billing>,
     pub quota: Option<QuotaWindow>,
     pub recovery: Option<QuotaRecovery>,
+    /// 单模型额度暂不可用（Go `ModelQuotaBlock`），不影响其它模型。
+    pub model_quota_block: Option<ModelQuotaBlock>,
     pub model_state: Option<ModelState>,
+    /// 能力表是否已同步（Go `ModelCapabilityKnown`）。
+    pub model_capability_known: bool,
+    /// 是否支持请求的上游模型（Go `SupportsModel`）。
+    pub supports_model: bool,
+}
+
+/// 账号的单模型配额暂不可用（对照 Go `ModelQuotaBlock`）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ModelQuotaBlock {
+    pub account_id: i64,
+    pub upstream_model: String,
+    pub reason: String,
+    pub cooldown_until: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
 #[cfg(test)]

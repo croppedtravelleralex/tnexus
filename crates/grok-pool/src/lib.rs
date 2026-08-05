@@ -31,6 +31,9 @@ pub mod pins;
 /// Build 四池选择与热路径索引（G3-P3，Go `account/four_pool_probe.go` 移植）。
 pub mod build_pool;
 
+/// 账号选择器（G3-P4，Go `gateway/selector.go` 移植）。
+pub mod selector;
+
 /// 简化单池。
 ///
 /// 载入 `grok_web` enabled 账号；`select` 优先返回 pin 账号，否则在非冷却
