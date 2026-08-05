@@ -1134,6 +1134,7 @@ impl Selector {
                 last_attempt_at: Some(now),
                 cooldown_until: Some(soft_stop_until),
                 last_success_at: None,
+                updated_at: now,
             })
             .await?;
         Ok(())
@@ -1160,6 +1161,7 @@ impl Selector {
                 last_attempt_at: Some(now),
                 cooldown_until: None,
                 last_success_at: Some(now),
+                updated_at: now,
             })
             .await?;
         Ok(())

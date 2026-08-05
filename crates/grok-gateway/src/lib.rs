@@ -11,9 +11,10 @@
 
 pub mod error;
 pub mod handlers;
+pub mod protocol;
 pub mod router;
 
 pub use error::GatewayError;
 pub use router::{
-    build_app, with_engine, with_engines, with_engines_and_media, AppState,
+    build_app, with_engine, with_engines, with_engines_and_media, with_protocol_backend, AppState,
 };

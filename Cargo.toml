@@ -29,6 +29,7 @@ members = [
     "crates/grok-provider-build",
     "crates/grok-provider-console",
     "crates/grok-admin",
+    "crates/grok-accountsync",
 ]
 
 [workspace.package]

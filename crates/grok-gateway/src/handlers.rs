@@ -19,12 +19,13 @@ use futures::stream;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use grok_conversation::{normalize_chat_input, ChatMessage};
+use grok_conversation::{normalize_chat_input, ChatMessage, NormalizedChatInput};
 use grok_provider_web::{
     public_models, ChatEngine, ChatRequest as ProviderChatRequest, ImagineRequest, ALIAS_OCR,
 };
 
 use crate::error::GatewayError;
+use crate::protocol::{messages_json, messages_stream_events, normalize_messages_input, normalize_responses_input, responses_json, responses_stream_events, MessagesRequest, ResponsesRequest};
 use crate::router::AppState;
 
 /// `POST /v1/chat/completions` 请求（G1 子集：model / messages / stream）。
@@ -148,6 +149,77 @@ use axum::http::StatusCode;
 #[async_trait::async_trait]
 pub trait MediaFetcher: Send + Sync {
     async fn fetch_bytes(&self, id: &str) -> Result<(Vec<u8>, String), GatewayError>;
+}
+
+/// G5-P3 协议后端抽象：`/v1/responses` 与 `/v1/messages` 的上游推理面。
+///
+/// 真实实现接 grok-provider-build / grok-provider-console（TODO(G5-P3): 接线
+/// grok-provider-build 的 stored response / console 流式到 `complete`），
+/// 测试注入 fake。`normalized` 已含 system 前缀（`[system]\n...`）与图片清单。
+#[async_trait::async_trait]
+pub trait ProtocolBackend: Send + Sync {
+    /// 执行一次对话推理，返回最终文本。
+    async fn complete(
+        &self,
+        model: &str,
+        normalized: &NormalizedChatInput,
+    ) -> Result<String, GatewayError>;
+}
+
+/// `POST /v1/responses`（OpenAI Responses，G5-P3）。
+///
+/// `stream=false` → 单次 stored response（`object: response`）；`stream=true` →
+/// SSE（response.created → output_text.delta → response.completed）。
+pub async fn responses_completions(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<ResponsesRequest>,
+) -> Result<Response, GatewayError> {
+    let normalized = normalize_responses_input(&req)?;
+    let backend = state
+        .protocol_backend
+        .as_ref()
+        .ok_or_else(|| GatewayError::Internal("ProtocolBackend not configured".into()))?;
+    let text = backend.complete(&req.model, &normalized).await?;
+    let request_id = new_request_id();
+    if req.stream {
+        let events = responses_stream_events(&request_id, &req.model, &text);
+        Ok(protocol_sse(events).into_response())
+    } else {
+        Ok(Json(responses_json(&request_id, &req.model, &text)).into_response())
+    }
+}
+
+/// `POST /v1/messages`（Anthropic Messages，G5-P3）。
+///
+/// `stream=false` → content block 响应；`stream=true` → SSE
+/// （message_start → content_block_* → message_delta → message_stop）。
+pub async fn messages_completions(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<MessagesRequest>,
+) -> Result<Response, GatewayError> {
+    let normalized = normalize_messages_input(&req)?;
+    let backend = state
+        .protocol_backend
+        .as_ref()
+        .ok_or_else(|| GatewayError::Internal("ProtocolBackend not configured".into()))?;
+    let text = backend.complete(&req.model, &normalized).await?;
+    let request_id = new_request_id();
+    if req.stream {
+        let events = messages_stream_events(&request_id, &req.model, &text);
+        Ok(protocol_sse(events).into_response())
+    } else {
+        Ok(Json(messages_json(&request_id, &req.model, &text)).into_response())
+    }
+}
+
+/// 协议 SSE：事件数组 → 逐帧 `data: {...}`（无 `[DONE]`，协议各自终止事件收尾）。
+fn protocol_sse(events: Vec<serde_json::Value>) -> Sse<impl futures::Stream<Item = Result<Event, std::convert::Infallible>>> {
+    let s = stream::iter(
+        events
+            .into_iter()
+            .map(|event| Ok(Event::default().data(event.to_string()))),
+    );
+    Sse::new(s)
 }
 
 /// `GET /v1/models` 返回的模型项。

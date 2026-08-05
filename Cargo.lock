@@ -1701,6 +1701,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 
 [[package]]
+name = "grok-accountsync"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "grok-domain",
+ "grok-storage",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "grok-admin"
 version = "0.1.0"
 dependencies = [

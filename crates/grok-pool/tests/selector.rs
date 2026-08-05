@@ -446,6 +446,7 @@ async fn prioritizes_due_quota_probe_once() {
         exhausted_at: Some(t),
         next_probe_at: Some(t - Duration::minutes(1)),
         last_confirmed_at: Some(t),
+        updated_at: t,
     });
     let selector = new_selector(loader.clone(), Arc::new(InMemoryLimiter::default()), Duration::zero());
 
@@ -482,6 +483,7 @@ async fn skips_quota_probe_before_due() {
         kind: QuotaRecoveryKind::Free,
         status: QuotaRecoveryStatus::Exhausted,
         next_probe_at: Some(t + Duration::hours(1)),
+        updated_at: t,
         ..Default::default()
     });
     let selector = new_selector(loader, Arc::new(InMemoryLimiter::default()), Duration::zero());
@@ -510,6 +512,7 @@ async fn claims_paid_billing_probe_after_period_end() {
         kind: QuotaRecoveryKind::Paid,
         status: QuotaRecoveryStatus::Exhausted,
         next_probe_at: Some(t - Duration::minutes(1)),
+        updated_at: t,
         ..Default::default()
     });
     let selector = new_selector(loader, Arc::new(InMemoryLimiter::default()), Duration::zero());
@@ -660,6 +663,7 @@ async fn build_acquire_merges_due_normal_probe_ids() {
         kind: QuotaRecoveryKind::Free,
         status: QuotaRecoveryStatus::Exhausted,
         next_probe_at: Some(t - Duration::minutes(1)),
+        updated_at: t,
         ..Default::default()
     });
     let dispatch = Arc::new(StubBuildDispatch {
