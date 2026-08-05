@@ -21,6 +21,7 @@ members = [
     "crates/grok-egress",
     "crates/grok-conversation",
     "crates/grok-pool",
+    "crates/grok-ops",
     "crates/grok-audit",
     "crates/grok-provider-web",
     "crates/grok-gateway",

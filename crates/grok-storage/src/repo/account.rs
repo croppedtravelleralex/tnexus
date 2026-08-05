@@ -69,6 +69,7 @@ fn map_row(row: &PgRow) -> Result<Account, StorageError> {
         auth_status: auth_status_from_str(&status_str)?,
         priority: row.try_get("priority")?,
         observed_model: row.try_get("observed_model")?,
+        ..Default::default()
     })
 }
 

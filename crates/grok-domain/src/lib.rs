@@ -14,6 +14,7 @@ pub mod account;
 pub mod audit;
 pub mod chrome_ticket;
 pub mod egress;
+pub mod imagine_quota;
 pub mod model_route;
 pub mod pipeline;
 
@@ -21,5 +22,6 @@ pub use account::*;
 pub use audit::*;
 pub use chrome_ticket::*;
 pub use egress::*;
+pub use imagine_quota::*;
 pub use model_route::*;
 pub use pipeline::*;

@@ -42,6 +42,7 @@ fn sample_account(id: i64) -> Account {
         auth_status: AuthStatus::Active,
         priority: 0,
         observed_model: None,
+        ..Default::default()
     }
 }
 

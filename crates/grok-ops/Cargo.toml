@@ -1,19 +1,18 @@
 [package]
-name = "grok-pool"
+name = "grok-ops"
 version.workspace = true
 edition.workspace = true
+description = "Grok 运维后台任务：探针 / quota refresh / pin sync（对齐 Go web_* 后台任务）"
 
 [dependencies]
 grok-domain = { path = "../grok-domain" }
 grok-storage = { path = "../grok-storage" }
-tokio = { workspace = true }
-rand = { workspace = true }
+grok-pool = { path = "../grok-pool" }
+async-trait = { workspace = true }
 chrono = { workspace = true }
-redis = { workspace = true }
 thiserror = { workspace = true }
-
-[features]
-default = []
+tokio = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

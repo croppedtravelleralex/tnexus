@@ -19,6 +19,15 @@ use rand::{Rng, SeedableRng};
 use tokio::sync::RwLock;
 use tokio::time::Duration;
 
+/// 调度索引原语（G3，Go `account/poolindex/*.go` 移植）。
+pub mod poolindex;
+
+/// Web 图池选择纯函数（G3，Go `account/web_pool.go` 移植）。
+pub mod web_pool;
+
+/// Web dispatch pin 对齐纯函数（G3，Go `web_pool_pins.go` + `imagine_slots.go` 移植）。
+pub mod pins;
+
 /// 简化单池。
 ///
 /// 载入 `grok_web` enabled 账号；`select` 优先返回 pin 账号，否则在非冷却
@@ -251,6 +260,7 @@ mod tests {
             auth_status: AuthStatus::Active,
             priority: 0,
             observed_model: None,
+            ..Default::default()
         }
     }
 

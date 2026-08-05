@@ -29,18 +29,32 @@ pub enum Error {
     /// 在等待槽位期间上下文取消。
     #[error("acquisition canceled")]
     Canceled,
+    /// 底层存储（Redis）操作失败。
+    #[error("lease store error: {0}")]
+    Store(String),
 }
 
 /// 一次成功获得的出口并发租约。
 ///
 /// 持有期间独占 scope 内的一个并发槽位；`release(self)` 释放。
 /// 采用 RAII：`Lease` 被 drop 时自动释放底层 permit，避免泄漏。
-#[derive(Debug)]
 pub struct Lease {
     scope: Scope,
     gate: GateId,
-    /// 底层信号量 permit；drop 时自动归还。
+    /// 底层信号量 permit；drop 时自动归还（内存实现）。
     _permit: Option<tokio::sync::OwnedSemaphorePermit>,
+    /// 可选的资源释放回调（Redis 实现用）；drop / release 时调用一次。
+    release_fn: Option<Box<dyn FnOnce() + Send>>,
+}
+
+impl std::fmt::Debug for Lease {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Lease")
+            .field("scope", &self.scope)
+            .field("gate", &self.gate)
+            .field("has_release", &self.release_fn.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Lease {
@@ -53,6 +67,21 @@ impl Lease {
             scope,
             gate,
             _permit: Some(permit),
+            release_fn: None,
+        }
+    }
+
+    /// 构造带资源释放回调的租约（Redis backend 使用）。
+    pub(crate) fn new_redis(
+        scope: Scope,
+        gate: GateId,
+        release_fn: Box<dyn FnOnce() + Send>,
+    ) -> Self {
+        Self {
+            scope,
+            gate,
+            _permit: None,
+            release_fn: Some(release_fn),
         }
     }
 
@@ -64,9 +93,22 @@ impl Lease {
         &self.gate
     }
 
-    /// 显式释放槽位；重复调用与 drop 后调用均为 no-op（permmit 已消费）。
+    /// 显式释放槽位；重复调用与 drop 后调用均为 no-op（permit 已消费）。
     pub fn release(mut self) {
         self._permit.take();
+        if let Some(f) = self.release_fn.take() {
+            f();
+        }
+    }
+}
+
+impl Drop for Lease {
+    fn drop(&mut self) {
+        // 持有 _permit 或 release_fn 之一；drop 时二者都须清理（自动归还/释放）。
+        self._permit.take();
+        if let Some(f) = self.release_fn.take() {
+            f();
+        }
     }
 }
 

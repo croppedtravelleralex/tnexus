@@ -1709,6 +1709,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "grok-domain",
+ "redis",
  "thiserror",
  "tokio",
 ]
@@ -1755,12 +1756,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "grok-ops"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "grok-domain",
+ "grok-pool",
+ "grok-storage",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "grok-pool"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "grok-domain",
  "grok-storage",
  "rand 0.8.7",
+ "redis",
  "thiserror",
  "tokio",
 ]
