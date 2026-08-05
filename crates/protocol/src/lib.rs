@@ -363,17 +363,38 @@ pub fn chat_completion_response_with_image_b64(model: &str, b64: &str) -> Value 
     })
 }
 
+fn image_generation_usage_value() -> Value {
+    // Match :8012 openai_image billing shape so NewAPI records 11/1650 not 1/0.
+    json!({
+        "input_tokens": 2,
+        "output_tokens": 1650,
+        "total_tokens": 1652,
+        "input_tokens_details": {
+            "text_tokens": 2,
+            "image_tokens": 0,
+            "cached_tokens": 0
+        },
+        "output_tokens_details": {
+            "text_tokens": 0,
+            "image_tokens": 1650,
+            "reasoning_tokens": 0
+        }
+    })
+}
+
 pub fn image_generation_response(b64: &str) -> Value {
     json!({
         "created": chrono_secs(),
-        "data": [{ "b64_json": b64 }]
+        "data": [{ "b64_json": b64 }],
+        "usage": image_generation_usage_value(),
     })
 }
 
 pub fn image_generation_url_response(url: &str) -> Value {
     json!({
         "created": chrono_secs(),
-        "data": [{ "url": url }]
+        "data": [{ "url": url }],
+        "usage": image_generation_usage_value(),
     })
 }
 
@@ -382,6 +403,7 @@ pub fn image_generation_response_with_pipeline(data: Value, pipeline: Value) -> 
     json!({
         "created": chrono_secs(),
         "data": data,
+        "usage": image_generation_usage_value(),
         "_tnexus_pipeline": pipeline,
     })
 }
@@ -408,6 +430,7 @@ pub fn image_generation_b64_multi_response(b64s: &[String]) -> Value {
     json!({
         "created": chrono_secs(),
         "data": data,
+        "usage": image_generation_usage_value(),
     })
 }
 
@@ -419,6 +442,7 @@ pub fn image_generation_url_multi_response(urls: &[String]) -> Value {
     json!({
         "created": chrono_secs(),
         "data": data,
+        "usage": image_generation_usage_value(),
     })
 }
 
