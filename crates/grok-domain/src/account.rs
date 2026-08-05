@@ -51,6 +51,8 @@ pub enum AuthStatus {
     Active,
     Restricted,
     Banned,
+    /// 需重新授权（Go `ReauthRequired`）：Build 四池中视为可删（对齐 `AccountPoolAt`）。
+    ReauthRequired,
 }
 
 /// 账号主表领域模型。
@@ -90,6 +92,17 @@ pub struct Account {
     /// 账号当前归属的调度轨。None 表示未知，需按模型解析（对齐 `ResolveWebAcquireLane`）。
     #[serde(default)]
     pub lane: Option<WebLane>,
+
+    // ── G3-P3 Build 四池索引字段（对齐 Go `Credential.CreatedAt/UpdatedAt/LastUsedAt`）──
+    /// 创建时刻（verification 池 due 基准）。
+    #[serde(default)]
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// 更新时刻（delete 池 due / dispatch 探针 due 基准）。
+    #[serde(default)]
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// 最近一次被调度选中时刻（dispatch 公平序）。
+    #[serde(default)]
+    pub last_used_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 fn default_max_concurrent() -> i32 {
@@ -114,6 +127,9 @@ impl Default for Account {
             last_error: None,
             model_state: None,
             lane: None,
+            created_at: None,
+            updated_at: None,
+            last_used_at: None,
         }
     }
 }
@@ -436,6 +452,9 @@ mod tests {
                 cooldown_until: None,
             }),
             lane: Some(WebLane::Image),
+            created_at: None,
+            updated_at: None,
+            last_used_at: None,
         };
         let json = serde_json::to_string(&a).unwrap();
         let back: Account = serde_json::from_str(&json).unwrap();

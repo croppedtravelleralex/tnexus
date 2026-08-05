@@ -1,13 +1,13 @@
 # 39f — Grok 移植进度记录（做了的 / 未做的 / 要做的）
 
-最后更新：**2026-08-04**（G0 已完成并合并；G1 实现完成、**未提交**；G2–G7 未开工）
+最后更新：**2026-08-05**（G0/G1 已合并；G2 已提交在 feat/grok/g2-image；G3-P1/P2/P3 已完成；G3-P4~P7 未开工）
 主文档：[39-grok2api-rust-migration.md](39-grok2api-rust-migration.md) · 路线图：[39a](39a-grok-roadmap.md) · 执行计划：[39e](39e-grok-execution-plan.md)
 
 ---
 
 ## 0. 一句话状态
 
-> **G0 完成并已合入 `main`（tag `grok-g0`）**；**G1（OCR + chat 最小闭环）代码全部写完、55 个测试全绿、门禁 `g1` 本地 PASS，但尚未 git 提交、未合并、未打 tag**；G2–G7 未开工。
+> **G0/G1 已合入 `main`（tag `grok-g0`/`grok-g1`）；G2（Web 生图）已提交于 `feat/grok/g2-image`（含 gateway 生图路由）；G3-P1/P2（poolindex 原语 + web_pool/pins + imagine_quota，commit `c954fde`）与 G3-P3（Build 四池 + 探针监控，见下）已完成；G3-P4~P7 未开工。**
 
 ---
 
@@ -89,6 +89,20 @@
 2. `grok-audit`：测试 `sink` 未声明 mut；DB-down 测试断言竞态（BufferFull unwrap panic）→ 修复并改为容忍模式，4 测试过。
 
 ---
+
+### 2.5 G3-P1/P2/P3（✅ 已完成，commit `c954fde` + 待提交；分支 `feat/grok/g2-image`）
+
+| 项 | 产出 | 测试 |
+|----|------|------|
+| G3-P1 poolindex 原语 | `grok-pool/poolindex`：mirror/dispatch/timing_wheel/drr/web_drr/heap | pool_index 6 + timing_wheel 4 ✅ |
+| G3-P2 Web 四池 + pin | `grok-pool/web_pool.rs` + `pins.rs`；`grok-domain/imagine_quota.rs`（QuotaWindow source/synced_at/updated_at 对齐 Go） | web_pool 6 + domain 12 ✅ |
+| G3-P3 Build 四池 + 探针 | `grok-pool/build_pool.rs`（AccountPoolAt/BuildPoolIndex/汇总）；`grok-ops/build_probe.rs`（监控状态机）+ `four_pool.rs`（tick 编排 + BuildProbeOps trait） | build_pool 4 + build_probe 2 ✅（迁移 Go 两个验收测试） |
+| grok-egress Redis | `redis.rs` + lease release_fn + redis 依赖 | 编译 ✅ |
+| grok-ops 骨架 | probe/quota/pins（前序会话）+ build_probe/four_pool | 10 ✅ |
+
+**验收映射**：`four_pool_probe_test.go` → `tests/build_pool.rs::rebuild_orders_dispatch_by_billing_quota`；`build_probe_monitor_test.go` → `tests/build_probe.rs::monitor_tracks_running_account_and_delete_transition`（阻塞适配器 + 403 permission-denied → deletable 迁移 + 统计/pools/recent 断言）。dispatch 排序、池分类、DRR 分轨、purge apply 开关均覆盖。
+
+**G3-P3 遗留**：真实 grok-storage repo 实现 `BuildProbeOps`（当前测试用 fake）；`grok2api-rs` 二进制未挂载。
 
 ## 3. 未做的（已知缺口，按严重度）
 

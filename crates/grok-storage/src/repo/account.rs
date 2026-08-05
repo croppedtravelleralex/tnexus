@@ -52,6 +52,7 @@ fn auth_status_from_str(s: &str) -> Result<AuthStatus, StorageError> {
         "active" => Ok(AuthStatus::Active),
         "restricted" => Ok(AuthStatus::Restricted),
         "banned" => Ok(AuthStatus::Banned),
+        "reauth_required" => Ok(AuthStatus::ReauthRequired),
         other => Err(StorageError::Decode(format!(
             "unknown auth_status: {other}"
         ))),

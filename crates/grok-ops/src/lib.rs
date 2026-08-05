@@ -17,6 +17,8 @@ pub mod error;
 pub mod pins;
 pub mod probe;
 pub mod quota;
+pub mod build_probe;
+pub mod four_pool;
 
 pub use error::{OpsError, OpsResult};
 #[doc(hidden)]
@@ -25,6 +27,13 @@ pub use pins::{PinSyncResult, PinSyncTask, RoutePinRepository};
 pub use probe::{ProbeBackend, WebDispatchProbe};
 #[doc(hidden)]
 pub use quota::{QuotaRefreshResult, QuotaStore, WebQuotaRefresh};
+#[doc(hidden)]
+pub use build_probe::{
+    BuildProbeLaneAttempts, BuildProbeMode, BuildProbeMonitor, BuildProbeOutcome, BuildProbeResult,
+    BuildProbeStatistics, BuildProbeStatus, ProbeFailure,
+};
+#[doc(hidden)]
+pub use four_pool::{BuildFourPool, BuildProbeOps, TickResult};
 
 #[cfg(test)]
 mod ops_tests;
