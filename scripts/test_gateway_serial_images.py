@@ -57,14 +57,14 @@ def build_prompt(base: str, profile: str, slot: int, attempt: int) -> str:
     return f"{base} [{profile} slot={slot} attempt={attempt} {unique_suffix()}]"
 
 
-def one_image(base_url: str, api_key: str, prompt: str, model: str, timeout: float) -> dict:
+def one_image(base_url: str, api_key: str, prompt: str, model: str, timeout: float, response_format: str) -> dict:
     url = f"{base_url.rstrip('/')}/v1/images/generations"
     body = json.dumps(
         {
             "model": model,
             "prompt": prompt,
             "size": "1024x1024",
-            "response_format": "b64_json",
+            "response_format": response_format,
             "n": 1,
         }
     ).encode()
@@ -87,20 +87,24 @@ def one_image(base_url: str, api_key: str, prompt: str, model: str, timeout: flo
             data = json.loads(raw)
             item = (data.get("data") or [{}])[0]
             b64 = item.get("b64_json") or ""
+            img_url = item.get("url") or ""
             img = base64.b64decode(b64) if b64 else b""
             dims = png_dims(img)
             usage = data.get("usage") or {}
             pipe = data.get("_tnexus_pipeline") or {}
             return {
-                "ok": bool(img),
+                "ok": bool(img or img_url),
                 "elapsed_s": round(elapsed, 2),
                 "bytes": len(img),
                 "dims": dims,
                 "status": resp.status,
                 "usage": usage,
+                "input_tokens": usage.get("input_tokens"),
                 "email": pipe.get("account_email"),
                 "output_tokens": usage.get("output_tokens"),
                 "prompt_chars": len(prompt),
+                "response_format": response_format,
+                "url": img_url[:80] if img_url else None,
             }
     except urllib.error.HTTPError as e:
         elapsed = time.perf_counter() - t0
@@ -145,11 +149,12 @@ def one_image_with_retry(
     model: str,
     timeout: float,
     retries: int,
+    response_format: str,
 ) -> dict:
     last: dict = {}
     for attempt in range(retries + 1):
         prompt = build_prompt(base_prompt, profile, slot, attempt + 1)
-        last = one_image(base_url, api_key, prompt, model, timeout)
+        last = one_image(base_url, api_key, prompt, model, timeout, response_format)
         last["profile"] = profile
         last["attempts"] = attempt + 1
         if last.get("ok") or not last.get("retryable") or attempt >= retries:
@@ -178,6 +183,12 @@ def main() -> int:
         help="comma-separated prompt length profiles to cycle",
     )
     p.add_argument("--prompt", default="", help="optional prefix prepended to every prompt")
+    p.add_argument(
+        "--response-format",
+        default="url",
+        choices=("url", "b64_json"),
+        help="url avoids multi-MB JSON through sub2api/CF (default: url)",
+    )
     args = p.parse_args()
 
     profiles = [x.strip() for x in args.profiles.split(",") if x.strip()]
@@ -200,12 +211,13 @@ def main() -> int:
             args.model,
             args.timeout,
             args.retries,
+            args.response_format,
         )
         results.append(r)
         mark = "OK" if r.get("ok") else "FAIL"
         extra = ""
         if r.get("ok"):
-            extra = f" out_tok={r.get('output_tokens')} email={r.get('email')}"
+            extra = f" in_tok={r.get('input_tokens')} out_tok={r.get('output_tokens')} email={r.get('email')}"
         print(
             f"  {mark} {r.get('elapsed_s')}s status={r.get('status', '-')}"
             f" dims={r.get('dims')} attempts={r.get('attempts')}{extra}",

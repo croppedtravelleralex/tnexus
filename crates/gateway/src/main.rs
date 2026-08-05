@@ -573,6 +573,7 @@ fn finalize_upstream_image(
     upstream: &upstream::ImageRunMetrics,
     asset_store_ms: u64,
     response_out_bytes: u64,
+    prompt: &str,
 ) -> Value {
     let quota_change = st.scheduling_gate.decrement_quota(email).ok().flatten();
     let (quota_before, quota_after) = quota_change.unwrap_or((-1, -1));
@@ -618,7 +619,10 @@ fn finalize_upstream_image(
         },
         timings_ms: pipeline.get("timings_ms").cloned(),
         bytes: pipeline.get("bytes").cloned(),
-        extra: None,
+        extra: Some(json!({
+            "prompt_chars": prompt.chars().count(),
+            "input_tokens_est": protocol::estimate_image_input_tokens(prompt),
+        })),
     });
     pipeline
 }
@@ -749,6 +753,7 @@ async fn chat_image_completions(
     };
 
     let image_prompt = extract_chat_image_prompt(last_user);
+    let usage_prompt = image_prompt.clone();
     let image_model = if req.model.contains("image") {
         req.model.clone()
     } else {
@@ -780,7 +785,15 @@ async fn chat_image_completions(
                     Some("self"),
                 );
             }
-            finalize_upstream_image(&st, &account.email, elapsed_ms, &metrics, 0, b64.len() as u64);
+            finalize_upstream_image(
+                &st,
+                &account.email,
+                elapsed_ms,
+                &metrics,
+                0,
+                b64.len() as u64,
+                &usage_prompt,
+            );
             info!(email=%account.email, elapsed_ms, b64_len=b64.len(), "chat image ok");
             if req.stream {
                 let stream = upstream::chat_image_b64_sse_stream(&req.model, &b64)
@@ -1342,6 +1355,7 @@ async fn image_generations(
                         m,
                         0,
                         item.b64.len() as u64,
+                        &req.prompt,
                     )
                 });
                 batch_items.push(ImageBatchItem {
@@ -1425,11 +1439,11 @@ async fn image_generations(
             "image ok (url)"
         );
         let body = if let Some(p) = pipeline {
-            image_generation_url_multi_response_with_pipeline(&urls, p)
+            image_generation_url_multi_response_with_pipeline(&urls, p, &req.prompt)
         } else if urls.len() == 1 {
-            image_generation_url_response(&urls[0])
+            image_generation_url_response(&urls[0], &req.prompt)
         } else {
-            image_generation_url_multi_response(&urls)
+            image_generation_url_multi_response(&urls, &req.prompt)
         };
         return (StatusCode::OK, Json(body)).into_response();
     }
@@ -1455,11 +1469,11 @@ async fn image_generations(
         "image ok"
     );
     let body = if let Some(p) = pipeline {
-        image_generation_b64_multi_response_with_pipeline(&b64s, p)
+        image_generation_b64_multi_response_with_pipeline(&b64s, p, &req.prompt)
     } else if b64s.len() == 1 {
-        image_generation_response(&b64s[0])
+        image_generation_response(&b64s[0], &req.prompt)
     } else {
-        image_generation_b64_multi_response(&b64s)
+        image_generation_b64_multi_response(&b64s, &req.prompt)
     };
     (StatusCode::OK, Json(body)).into_response()
 }
@@ -1774,6 +1788,7 @@ async fn image_edits_json(
                         m,
                         0,
                         item.b64.len() as u64,
+                        &req.prompt,
                     )
                 });
                 batch_items.push(ImageBatchItem {
@@ -1817,11 +1832,11 @@ async fn image_edits_json(
         "image edit ok"
     );
     let body = if let Some(p) = pipeline {
-        image_generation_b64_multi_response_with_pipeline(&b64s, p)
+        image_generation_b64_multi_response_with_pipeline(&b64s, p, &req.prompt)
     } else if b64s.len() == 1 {
-        image_generation_response(&b64s[0])
+        image_generation_response(&b64s[0], &req.prompt)
     } else {
-        image_generation_b64_multi_response(&b64s)
+        image_generation_b64_multi_response(&b64s, &req.prompt)
     };
     (StatusCode::OK, Json(body)).into_response()
 }
