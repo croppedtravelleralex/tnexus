@@ -20,6 +20,7 @@ pub mod quota;
 pub mod build_probe;
 pub mod four_pool;
 pub mod pg_ops;
+pub mod scheduler;
 
 pub use error::{OpsError, OpsResult};
 #[doc(hidden)]
@@ -35,6 +36,8 @@ pub use build_probe::{
 };
 #[doc(hidden)]
 pub use four_pool::{BuildFourPool, BuildProbeOps, TickResult};
+#[doc(hidden)]
+pub use scheduler::{SettingsWatcher, TaskScheduler, TaskStatus};
 #[doc(hidden)]
 pub use pg_ops::{
     BuildProbeTransport, CredentialProbeAction, NotWiredTransport, PgBuildProbeOps, ProbeRepo,
