@@ -53,6 +53,8 @@ pub struct JobResultRecord {
     pub width: Option<i32>,
     pub height: Option<i32>,
     pub size_bytes: Option<i64>,
+    #[serde(default)]
+    pub generation_ms: Option<i64>,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -84,6 +86,8 @@ pub struct JobResultView {
     pub height: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub size_bytes: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generation_ms: Option<i64>,
 }
 
 pub fn parse_mode(s: &str) -> Option<JobMode> {

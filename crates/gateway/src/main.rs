@@ -57,7 +57,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::{Mutex, TryAcquireError};
+use tokio::sync::Mutex;
 use tower_http::{
     cors::{AllowOrigin, Any, CorsLayer},
     services::ServeDir,
@@ -515,6 +515,7 @@ fn upstream_image_retryable(err: &anyhow::Error) -> bool {
     msg.contains("file_id predicate")
         || msg.contains("sse ended")
         || msg.contains("image sse ended")
+        || msg.contains("image poll timeout")
         || msg.contains("upstream_unreachable")
 }
 
@@ -701,25 +702,14 @@ fn check_dispatch_backpressure(st: &AppState, email: &str) -> Option<Response> {
     None
 }
 
-fn try_acquire_image_permit(st: &AppState) -> Result<tokio::sync::OwnedSemaphorePermit, Response> {
+async fn acquire_image_permit(st: &AppState) -> Result<tokio::sync::OwnedSemaphorePermit, Response> {
     st.image_queue_depth.fetch_add(1, Ordering::Relaxed);
-    match st.image_sem.clone().try_acquire_owned() {
+    match st.image_sem.clone().acquire_owned().await {
         Ok(permit) => {
             st.image_queue_depth.fetch_sub(1, Ordering::Relaxed);
             Ok(permit)
         }
-        Err(TryAcquireError::NoPermits) => {
-            let wait = st.estimated_image_wait_secs();
-            st.image_queue_depth.fetch_sub(1, Ordering::Relaxed);
-            Err(err_wait(
-                StatusCode::TOO_MANY_REQUESTS,
-                "image_service_busy: global concurrency limit reached",
-                "image_service_busy",
-                Some("gate"),
-                wait,
-            ))
-        }
-        Err(TryAcquireError::Closed) => {
+        Err(_) => {
             st.image_queue_depth.fetch_sub(1, Ordering::Relaxed);
             Err(err(
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -754,7 +744,7 @@ async fn chat_image_completions(
         );
     }
 
-    let permit = match try_acquire_image_permit(st) {
+    let permit = match acquire_image_permit(st).await {
         Ok(p) => p,
         Err(r) => return r,
     };
@@ -1284,7 +1274,7 @@ async fn image_generations(
         }
     }
 
-    let permit = match try_acquire_image_permit(&st) {
+    let permit = match acquire_image_permit(&st).await {
         Ok(p) => p,
         Err(r) => return r,
     };
@@ -1754,7 +1744,7 @@ async fn image_edits_json(
         }
     }
 
-    let permit = match try_acquire_image_permit(&st) {
+    let permit = match acquire_image_permit(&st).await {
         Ok(p) => p,
         Err(r) => return r,
     };

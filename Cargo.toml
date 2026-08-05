@@ -17,6 +17,12 @@ members = [
     "crates/grok-domain",
     "crates/grok-storage",
     "crates/grok2api-rs",
+    "crates/grok-egress",
+    "crates/grok-conversation",
+    "crates/grok-pool",
+    "crates/grok-audit",
+    "crates/grok-provider-web",
+    "crates/grok-gateway",
 ]
 
 [workspace.package]

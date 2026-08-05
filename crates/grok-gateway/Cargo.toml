@@ -1,0 +1,25 @@
+[package]
+name = "grok-gateway"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+axum = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tower = { workspace = true }
+tracing = { workspace = true }
+
+grok-audit = { path = "../grok-audit" }
+grok-conversation = { path = "../grok-conversation" }
+grok-domain = { path = "../grok-domain" }
+grok-pool = { path = "../grok-pool" }
+grok-provider-web = { path = "../grok-provider-web" }
+
+[dev-dependencies]
+grok-egress = { path = "../grok-egress" }
+http-body-util = { workspace = true }

@@ -1,0 +1,17 @@
+[package]
+name = "grok-pool"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+grok-domain = { path = "../grok-domain" }
+grok-storage = { path = "../grok-storage" }
+tokio = { workspace = true }
+rand = { workspace = true }
+thiserror = { workspace = true }
+
+[features]
+default = []
+
+[dev-dependencies]
+tokio = { workspace = true }

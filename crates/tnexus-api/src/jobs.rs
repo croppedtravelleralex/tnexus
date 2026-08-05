@@ -153,7 +153,7 @@ pub async fn update_job_status(
 
 pub async fn list_results(state: &AppState, job_id: Uuid) -> Result<Vec<JobResultRecord>> {
     let rows = sqlx::query(
-        "SELECT id, job_id, provider, variant_index, r2_key_original, r2_key_preview, r2_key_thumb, agent_prompt, revised_prompt, keywords, inline_preview_b64, source_url, width, height, size_bytes, created_at FROM job_results WHERE job_id = $1 ORDER BY provider, variant_index",
+        "SELECT id, job_id, provider, variant_index, r2_key_original, r2_key_preview, r2_key_thumb, agent_prompt, revised_prompt, keywords, inline_preview_b64, source_url, width, height, size_bytes, generation_ms, created_at FROM job_results WHERE job_id = $1 ORDER BY provider, variant_index",
     )
     .bind(job_id)
     .fetch_all(&state.pool)
@@ -203,6 +203,7 @@ fn result_image_meta(r: &JobResultRecord) -> (Option<i32>, Option<i32>, Option<i
 
 pub async fn result_to_view(_state: &AppState, r: JobResultRecord) -> Result<JobResultView> {
     let (width, height, size_bytes) = result_image_meta(&r);
+    let generation_ms = r.generation_ms;
     let has_persisted = r
         .inline_preview_b64
         .as_ref()
@@ -246,6 +247,7 @@ pub async fn result_to_view(_state: &AppState, r: JobResultRecord) -> Result<Job
                     width,
                     height,
                     size_bytes,
+                    generation_ms,
                 });
             }
             return Ok(JobResultView {
@@ -262,6 +264,7 @@ pub async fn result_to_view(_state: &AppState, r: JobResultRecord) -> Result<Job
                 width,
                 height,
                 size_bytes,
+                generation_ms,
             });
         }
         if has_persisted {
@@ -280,6 +283,7 @@ pub async fn result_to_view(_state: &AppState, r: JobResultRecord) -> Result<Job
                 width,
                 height,
                 size_bytes,
+                generation_ms,
             });
         }
         return Ok(JobResultView {
@@ -296,6 +300,7 @@ pub async fn result_to_view(_state: &AppState, r: JobResultRecord) -> Result<Job
             width,
             height,
             size_bytes,
+            generation_ms,
         });
     }
     let has_inline = r
@@ -348,6 +353,7 @@ pub async fn result_to_view(_state: &AppState, r: JobResultRecord) -> Result<Job
         width,
         height,
         size_bytes,
+        generation_ms,
     })
 }
 
@@ -392,6 +398,7 @@ fn row_to_result(row: sqlx::postgres::PgRow) -> Result<JobResultRecord> {
         width: row.get("width"),
         height: row.get("height"),
         size_bytes: row.get("size_bytes"),
+        generation_ms: row.get("generation_ms"),
         created_at: row.get("created_at"),
     })
 }

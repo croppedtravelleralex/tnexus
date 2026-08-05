@@ -1,0 +1,164 @@
+//! grok-gateway HTTP handlers（docs/39d §2.1 推理端点，docs/39 主文档 §6.1 P0/P1）。
+//!
+//! G1 端点：`GET /v1/models`、`POST /v1/chat/completions`（含识图 OCR）。
+//!
+//! OCR 判定（39 主文档 §4.2 + §4.1 治理）：
+//! 请求 `model == grok-vision-ocr` **或** 消息含 image_url → 走 OCR 路径
+//! （`grok-chat-fast` + `enableImageGeneration=false`）。这符合 §4.1「普通带图
+//! 请求 enableImageGeneration=true 可能触发上游生图副作用，移植时需显式治理」——
+//! 在 gateway 边界把带图请求统一送 OCR/识图路径（禁生图），避免意外生图。
+
+use std::sync::Arc;
+
+use axum::extract::State;
+use axum::response::sse::{Event, Sse};
+use axum::response::IntoResponse;
+use axum::Json;
+use futures::stream;
+use serde::Deserialize;
+use serde_json::{json, Value};
+
+use grok_conversation::{normalize_chat_input, ChatMessage};
+use grok_provider_web::{public_models, ChatEngine, ChatRequest as ProviderChatRequest, ALIAS_OCR};
+
+use crate::error::GatewayError;
+use crate::router::AppState;
+
+/// `POST /v1/chat/completions` 请求（G1 子集：model / messages / stream）。
+#[derive(Debug, Deserialize)]
+pub struct ChatCompletionsRequest {
+    /// 对外模型名，可为 `grok-vision-ocr`（OCR 别名）或常规模型。
+    pub model: String,
+    /// 消息列表（含多模态 content）。
+    pub messages: Vec<ChatMessage>,
+    /// true → SSE 流式返回。
+    #[serde(default)]
+    pub stream: bool,
+}
+
+/// `GET /v1/models` 返回的模型项。
+#[derive(Debug, Clone, serde::Serialize)]
+struct ModelEntry {
+    id: String,
+    object: &'static str,
+    created: i64,
+    owned_by: &'static str,
+}
+
+/// 生成唯一请求 ID（审计 / SSE id）。本阶段用时间戳 + 计数器，足够区分。
+fn new_request_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    format!(
+        "chatcmpl-{stamp}-{:06}",
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+/// `GET /v1/models`：对外模型路由（含 OCR 别名）。
+pub async fn models(State(state): State<Arc<AppState>>) -> axum::response::Response {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let data: Vec<ModelEntry> = public_models()
+        .into_iter()
+        .map(|(alias, _upstream)| ModelEntry {
+            id: alias.to_string(),
+            object: "model",
+            created: now,
+            owned_by: "grok",
+        })
+        .collect();
+    let _ = &state; // G1 无鉴权；保留抽取便于后续扩展。
+    Json(json!({ "object": "list", "data": data })).into_response()
+}
+
+/// OCR 判定：别名或带图请求。
+fn is_ocr_request(model: &str, normalized_images: &[String]) -> bool {
+    model == ALIAS_OCR || !normalized_images.is_empty()
+}
+
+/// `POST /v1/chat/completions`（含 OCR）。stream=true 走 SSE。
+pub async fn chat_completions(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<ChatCompletionsRequest>,
+) -> Result<axum::response::Response, GatewayError> {
+    // 1) 协议归一化（图片数/大小/file_id 校验，conversation 层）。
+    let normalized = normalize_chat_input(req.messages).map_err(GatewayError::from)?;
+
+    // 2) OCR 判定 + 组装引擎请求。
+    let ocr = is_ocr_request(&req.model, &normalized.images);
+    let provider_req = ProviderChatRequest {
+        prompt: normalized.prompt,
+        images: normalized.images,
+        ocr,
+        system_prompt: None,
+        request_id: new_request_id(),
+    };
+
+    let engine: &ChatEngine = state
+        .engine
+        .as_ref()
+        .ok_or_else(|| GatewayError::Internal("ChatEngine not configured".into()))?;
+
+    // 3) 执行推理（池 / lease / payload / bridge）。
+    let text = engine.chat(&provider_req).await?;
+
+    // 4) 组装 OpenAI 兼容响应 / SSE。
+    let model_out = if ocr { ALIAS_OCR } else { "grok-chat" };
+    if req.stream {
+        Ok(stream_response(provider_req.request_id, model_out, text).into_response())
+    } else {
+        Ok(Json(chat_completion_json(
+            provider_req.request_id,
+            model_out,
+            text,
+        ))
+        .into_response())
+    }
+}
+
+/// 非流式 OpenAI 兼容 `chat.completion`。
+fn chat_completion_json(id: String, model: &str, content: String) -> Value {
+    json!({
+        "id": id,
+        "object": "chat.completion",
+        "created": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "message": { "role": "assistant", "content": content },
+            "finish_reason": "stop",
+        }],
+        "usage": { "total_tokens": null },
+    })
+}
+
+/// 流式：完整文本以单个 chunk 的 delta 发出，然后 `[DONE]`（G-OCR-9）。
+fn stream_response(
+    id: String,
+    model: &str,
+    content: String,
+) -> Sse<impl futures::Stream<Item = Result<Event, std::convert::Infallible>>> {
+    let chunk = json!({
+        "id": id,
+        "object": "chat.completion.chunk",
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "delta": { "role": "assistant", "content": content },
+            "finish_reason": "stop",
+        }],
+    });
+    let s = stream::iter(vec![
+        Ok(Event::default().data(chunk.to_string())),
+        Ok(Event::default().data("[DONE]")),
+    ]);
+    Sse::new(s)
+}
