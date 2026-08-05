@@ -25,6 +25,9 @@ members = [
     "crates/grok-audit",
     "crates/grok-provider-web",
     "crates/grok-gateway",
+    "crates/grok-chrome-ticket",
+    "crates/grok-provider-build",
+    "crates/grok-admin",
 ]
 
 [workspace.package]

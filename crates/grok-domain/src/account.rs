@@ -89,6 +89,19 @@ pub struct Account {
     pub auth_status: AuthStatus,
     pub priority: i32,
     pub observed_model: Option<String>,
+    // ── DB 全字段（对齐 Go `Credential`，G0 后追加，均带默认值）──
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub user_id: Option<String>,
+    #[serde(default)]
+    pub team_id: Option<String>,
+    #[serde(default)]
+    pub source_key: String,
+    #[serde(default)]
+    pub observed_model_at: Option<chrono::DateTime<chrono::Utc>>,
 
     // ── G3 selector 字段（对照 Go Credential，见 domain/account/account.go）──
     /// 该账号允许的最大并发数（Go `MaxConcurrent`，默认 8）。
@@ -143,6 +156,12 @@ impl Default for Account {
             auth_status: AuthStatus::Active,
             priority: 0,
             observed_model: None,
+            name: String::new(),
+            email: None,
+            user_id: None,
+            team_id: None,
+            source_key: String::new(),
+            observed_model_at: None,
             max_concurrent: default_max_concurrent(),
             minimum_remaining: 0,
             failure_count: 0,
@@ -254,7 +273,7 @@ impl ModelStatus {
 }
 
 /// 账号在单个上游模型上的结果状态（对照 Go `ModelState`）；额度次数由 `QuotaWindow` 独立保存。
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelState {
     pub account_id: i64,
     pub upstream_model: String,
@@ -271,6 +290,25 @@ pub struct ModelState {
     pub last_success_at: Option<chrono::DateTime<chrono::Utc>>,
     #[serde(default)]
     pub cooldown_until: Option<chrono::DateTime<chrono::Utc>>,
+    /// 更新时间（Go `UpdatedAt`）。
+    #[serde(default)]
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl Default for ModelState {
+    fn default() -> Self {
+        Self {
+            account_id: 0,
+            upstream_model: String::new(),
+            status: ModelStatus::Unknown,
+            reason: None,
+            consecutive_failures: 0,
+            last_attempt_at: None,
+            last_success_at: None,
+            cooldown_until: None,
+            updated_at: chrono::DateTime::UNIX_EPOCH,
+        }
+    }
 }
 
 /// 额度恢复判别类别：Free 需真实流量探测，Paid（账户期）需 Billing 探测（Go `QuotaRecoveryKind`）。
@@ -282,6 +320,15 @@ pub enum QuotaRecoveryKind {
     Paid,
 }
 
+impl QuotaRecoveryKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            QuotaRecoveryKind::Free => "free",
+            QuotaRecoveryKind::Paid => "paid",
+        }
+    }
+}
+
 /// Free 额度耗尽后的持久化恢复状态（Go `QuotaRecoveryStatus`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -290,6 +337,16 @@ pub enum QuotaRecoveryStatus {
     Active,
     Exhausted,
     Probing,
+}
+
+impl QuotaRecoveryStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            QuotaRecoveryStatus::Active => "active",
+            QuotaRecoveryStatus::Exhausted => "exhausted",
+            QuotaRecoveryStatus::Probing => "probing",
+        }
+    }
 }
 
 /// 额度耗尽后的单次恢复探测状态（对照 Go `QuotaRecovery`）。
@@ -310,6 +367,9 @@ pub struct QuotaRecovery {
     pub next_probe_at: Option<chrono::DateTime<chrono::Utc>>,
     #[serde(default)]
     pub last_confirmed_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// 更新时间（Go `UpdatedAt`；ClaimQuotaProbe 会推进它）。
+    #[serde(default)]
+    pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
 impl Default for QuotaRecovery {
@@ -323,6 +383,7 @@ impl Default for QuotaRecovery {
             exhausted_at: None,
             next_probe_at: None,
             last_confirmed_at: None,
+            updated_at: chrono::DateTime::UNIX_EPOCH,
         }
     }
 }
@@ -336,6 +397,8 @@ pub struct Billing {
     pub account_id: i64,
     /// 上游计划代码（plan_code）。
     pub plan_code: String,
+    /// 上游计划名（plan_name）。
+    pub plan_name: String,
     /// 月度额度上限（monthly_limit）。
     pub monthly_limit: f64,
     /// 本月已用（used）。
@@ -346,13 +409,21 @@ pub struct Billing {
     pub on_demand_used: f64,
     /// 预付余额。>0 表示可脱离月限额继续服务。
     pub prepaid_balance: f64,
+    /// 信用使用百分比（Go 存入字段；`None` 时回退到 [`Billing::credit_usage_percent`] 的
+    /// monthly_limit/used 近似算法——用于旧 JSON / 未探测到的快照）。
+    #[serde(default)]
+    pub credit_usage_percent: Option<f64>,
     /// 统一账单用户标记，影响 IsExhausted 判定。
     pub is_unified_billing_user: bool,
+    /// 充值方式（top_up_method）。
+    pub top_up_method: String,
     /// 账期类型（usage_period_type）。
     pub usage_period_type: String,
     /// 本期起止（RFC3339 字符串，解析出账期结束用）。
     pub usage_period_start: String,
     pub usage_period_end: String,
+    pub billing_period_start: String,
+    pub billing_period_end: String,
     /// 上游同步时刻（Go `SyncedAt`）；selector 新鲜度（30min）据此判定。
     #[serde(default)]
     pub synced_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -363,15 +434,20 @@ impl Default for Billing {
         Self {
             account_id: 0,
             plan_code: String::new(),
+            plan_name: String::new(),
             monthly_limit: 0.0,
             used: 0.0,
             on_demand_cap: 0.0,
             on_demand_used: 0.0,
             prepaid_balance: 0.0,
+            credit_usage_percent: None,
             is_unified_billing_user: false,
+            top_up_method: String::new(),
             usage_period_type: String::new(),
             usage_period_start: String::new(),
             usage_period_end: String::new(),
+            billing_period_start: String::new(),
+            billing_period_end: String::new(),
             synced_at: None,
         }
     }
@@ -396,8 +472,11 @@ impl Billing {
             && (self.on_demand_cap > 0.0 || !self.usage_period_type.is_empty())
     }
 
-    /// 信用使用百分比（约 100 时进入 exhausted 判定）；域内维持简单近似。
+    /// 信用使用百分比（约 100 时进入 exhausted 判定）；有存储值时用存储值，否则近似计算。
     pub fn credit_usage_percent(&self) -> f64 {
+        if let Some(stored) = self.credit_usage_percent {
+            return stored;
+        }
         if self.monthly_limit <= 0.0 {
             return 0.0;
         }

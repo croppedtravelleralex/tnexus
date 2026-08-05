@@ -28,7 +28,7 @@ pub trait AccountRepository {
 
 /// PG 账号只读实现。
 pub struct PgAccountRepository {
-    pool: PgPool,
+    pub(crate) pool: PgPool,
 }
 
 impl PgAccountRepository {
@@ -37,7 +37,7 @@ impl PgAccountRepository {
     }
 }
 
-fn provider_from_str(s: &str) -> Result<Provider, StorageError> {
+pub(crate) fn provider_from_str(s: &str) -> Result<Provider, StorageError> {
     match s {
         "grok_build" => Ok(Provider::GrokBuild),
         "grok_web" => Ok(Provider::GrokWeb),
@@ -53,6 +53,7 @@ fn auth_status_from_str(s: &str) -> Result<AuthStatus, StorageError> {
         "restricted" => Ok(AuthStatus::Restricted),
         "banned" => Ok(AuthStatus::Banned),
         "reauth_required" => Ok(AuthStatus::ReauthRequired),
+        "reauthRequired" => Ok(AuthStatus::ReauthRequired),
         other => Err(StorageError::Decode(format!(
             "unknown auth_status: {other}"
         ))),
@@ -121,3 +122,4 @@ impl AccountRepository for PgAccountRepository {
         map_row(&row)
     }
 }
+

@@ -4,8 +4,10 @@
 //! 全部留待对应 Phase，避免在本 Phase 引入未用写路径（39e / 39c L1）。
 
 pub mod account;
+pub mod accounts_ops;
 pub mod credential;
 pub mod quota;
+pub mod routing;
 
 // Re-export traits at repo root for convenience.
 pub use account::{AccountRepository, PgAccountRepository};
