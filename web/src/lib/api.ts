@@ -180,6 +180,7 @@ export type User = {
   display_name: string;
   disabled?: boolean;
   created_at?: string;
+  newapi_user_id?: number | null;
 };
 
 export type FactorPoint = { x: number; y: number };
@@ -295,6 +296,16 @@ export const authApi = {
     api<{ ok: boolean }>(`/api/auth/users/${id}/disabled`, {
       method: "POST",
       body: JSON.stringify({ disabled }),
+    }),
+  bindNewApi: (newapi_user_id: number) =>
+    api<User>("/api/auth/newapi/bind", {
+      method: "POST",
+      body: JSON.stringify({ newapi_user_id }),
+    }),
+  adminBindNewApi: (userId: string, newapi_user_id: number) =>
+    api<User>(`/api/auth/users/${userId}/newapi`, {
+      method: "POST",
+      body: JSON.stringify({ newapi_user_id }),
     }),
 };
 
@@ -558,6 +569,9 @@ export type ManagedImage = {
   height?: number;
   tags?: string[];
   prompt?: string;
+  source?: "studio" | "api" | string;
+  backup_status?: string;
+  newapi_token_name?: string | null;
 };
 
 export type SystemLog = {

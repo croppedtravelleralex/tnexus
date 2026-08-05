@@ -9,6 +9,7 @@ mod accounts_routes;
 mod auth_routes;
 mod backend_routes;
 mod config;
+mod image_archive;
 mod image_assets;
 mod state;
 mod upstream_face;
@@ -159,6 +160,10 @@ async fn main() -> anyhow::Result<()> {
         image_assets::asset_ttl_secs_from_env(),
     ));
 
+    let image_archive_store = tnexus_storage::ImageStore::from_env()
+        .await
+        .context("image archive store")?;
+
     let pg_pool = if std::env::var("ACCOUNTS_BACKEND").ok().as_deref() == Some("postgres") {
         let url = std::env::var("DATABASE_URL").context("DATABASE_URL for postgres accounts")?;
         Some(
@@ -206,6 +211,8 @@ async fn main() -> anyhow::Result<()> {
         image_account_rr: AtomicUsize::new(0),
         image_queue_depth: AtomicUsize::new(0),
         duplicate_prompt: duplicate_prompt::DuplicatePromptGate::new(),
+        pg_pool,
+        image_archive_store: image_archive_store.map(Arc::new),
     });
 
     tokio::spawn(async move {
@@ -1445,6 +1452,25 @@ async fn image_generations(
         } else {
             image_generation_url_multi_response(&urls, &req.prompt)
         };
+        let archive_items: Vec<_> = batch_items
+            .iter()
+            .zip(urls.iter())
+            .map(|(item, url)| {
+                (
+                    item.b64.clone(),
+                    item.elapsed_ms,
+                    item.pipeline.clone(),
+                    Some(url.clone()),
+                )
+            })
+            .collect();
+        image_archive::schedule_gateway_image_archive(
+            st,
+            headers,
+            req.model.clone(),
+            req.prompt.clone(),
+            archive_items,
+        );
         return (StatusCode::OK, Json(body)).into_response();
     }
 
@@ -1475,6 +1501,24 @@ async fn image_generations(
     } else {
         image_generation_b64_multi_response(&b64s, &req.prompt)
     };
+    let archive_items: Vec<_> = batch_items
+        .iter()
+        .map(|item| {
+            (
+                item.b64.clone(),
+                item.elapsed_ms,
+                item.pipeline.clone(),
+                None,
+            )
+        })
+        .collect();
+    image_archive::schedule_gateway_image_archive(
+        st,
+        headers,
+        req.model.clone(),
+        req.prompt.clone(),
+        archive_items,
+    );
     (StatusCode::OK, Json(body)).into_response()
 }
 
@@ -1838,6 +1882,24 @@ async fn image_edits_json(
     } else {
         image_generation_b64_multi_response(&b64s, &req.prompt)
     };
+    let archive_items: Vec<_> = batch_items
+        .iter()
+        .map(|item| {
+            (
+                item.b64.clone(),
+                item.elapsed_ms,
+                item.pipeline.clone(),
+                None,
+            )
+        })
+        .collect();
+    image_archive::schedule_gateway_image_archive(
+        st.clone(),
+        headers,
+        req.model.clone(),
+        req.prompt.clone(),
+        archive_items,
+    );
     (StatusCode::OK, Json(body)).into_response()
 }
 
@@ -1951,6 +2013,8 @@ mod auth_integration {
             image_account_rr: AtomicUsize::new(0),
             image_queue_depth: AtomicUsize::new(0),
             duplicate_prompt: duplicate_prompt::DuplicatePromptGate::new(),
+            pg_pool: None,
+            image_archive_store: None,
         })
     }
 
@@ -1995,6 +2059,8 @@ mod auth_integration {
             image_account_rr: AtomicUsize::new(0),
             image_queue_depth: AtomicUsize::new(0),
             duplicate_prompt: duplicate_prompt::DuplicatePromptGate::new(),
+            pg_pool: None,
+            image_archive_store: None,
         });
         let app = Router::new()
             .route("/guarded", get(|| async { "ok" }))
@@ -2112,6 +2178,8 @@ mod auth_integration {
             image_account_rr: AtomicUsize::new(0),
             image_queue_depth: AtomicUsize::new(0),
             duplicate_prompt: duplicate_prompt::DuplicatePromptGate::new(),
+            pg_pool: None,
+            image_archive_store: None,
         });
         let me_app = Router::new()
             .route("/me", get(me))

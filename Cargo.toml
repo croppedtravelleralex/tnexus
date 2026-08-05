@@ -5,6 +5,7 @@ members = [
     "crates/tnexus-domain",
     "crates/tnexus-auth",
     "crates/tnexus-storage",
+    "crates/tnexus-image-archive",
     "crates/tnexus-api",
     "crates/tnexus-worker",
     "crates/tnexus-account-ops",

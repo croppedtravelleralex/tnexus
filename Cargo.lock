@@ -1583,6 +1583,8 @@ dependencies = [
  "time",
  "tnexus-accounts-db",
  "tnexus-domain",
+ "tnexus-image-archive",
+ "tnexus-storage",
  "tokio",
  "tower",
  "tower-http",
@@ -4118,6 +4120,7 @@ dependencies = [
  "tnexus-accounts-db",
  "tnexus-auth",
  "tnexus-domain",
+ "tnexus-image-archive",
  "tnexus-storage",
  "tokio",
  "tokio-stream",
@@ -4151,6 +4154,23 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "uuid",
+]
+
+[[package]]
+name = "tnexus-image-archive"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64",
+ "chrono",
+ "image",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tnexus-storage",
+ "tracing",
  "uuid",
 ]
 

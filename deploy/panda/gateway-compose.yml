@@ -25,5 +25,6 @@ services:
       DATA_PLANE: upstream
     volumes:
       - /opt/tnexus/data/pool:/data/pool:rw
+      - /opt/tnexus/data/images:/data/images:rw
       - /root/gptimage-gateway-rs/secrets/pin_account.json:/secrets/pin_account.json:ro
     restart: unless-stopped

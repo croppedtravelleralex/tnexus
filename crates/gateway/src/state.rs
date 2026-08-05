@@ -31,6 +31,8 @@ pub struct AppState {
     pub scheduling_gate: SchedulingGate,
     pub image_account_rr: AtomicUsize,
     pub duplicate_prompt: DuplicatePromptGate,
+    pub pg_pool: Option<sqlx::PgPool>,
+    pub image_archive_store: Option<tnexus_storage::SharedImageStore>,
 }
 
 impl AppState {

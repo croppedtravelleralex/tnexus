@@ -33,5 +33,6 @@ base64 = { workspace = true }
 uuid = { workspace = true }
 tnexus-auth = { workspace = true }
 tnexus-domain = { workspace = true }
+tnexus-image-archive = { path = "../tnexus-image-archive" }
 tnexus-storage = { workspace = true }
 tnexus-accounts-db = { workspace = true }
