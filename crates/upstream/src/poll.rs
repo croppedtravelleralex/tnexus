@@ -10,11 +10,13 @@ use wreq::Client;
 use crate::requirements::{RequirementsClient, BASE_URL};
 use crate::sse::{extract_conversation_ids, real_image_file_re, sediment_re, file_service_re};
 
-const DEFAULT_POLL_TIMEOUT_SECS: u64 = 90;
+// Align with gptimage production `image_poll_timeout_secs` (180s wall budget).
+const DEFAULT_POLL_TIMEOUT_SECS: u64 = 180;
 const DEFAULT_POLL_INITIAL_WAIT_SECS: f64 = 5.0;
 const DEFAULT_POLL_INTERVAL_SECS: f64 = 3.0;
-const DEFAULT_POLL_MAX_TASKS_GETS: u32 = 8;
 const DEFAULT_POLL_TASKS_EVERY_N: u32 = 2;
+const GET_BUDGET_OVERSHOOT_FACTOR: u32 = 2;
+const GET_BUDGET_SLACK_ATTEMPTS: u32 = 8;
 const SKIP_FILE_IDS: &[&str] = &["file_upload"];
 
 /// Wall-clock poll budget for post-SSE image resolution (aligned with gptimage `image_task_queue`).
@@ -34,21 +36,38 @@ impl ImagePollConfig {
             env_f64("UPSTREAM_IMAGE_POLL_INITIAL_WAIT_SECS", DEFAULT_POLL_INITIAL_WAIT_SECS);
         let interval_secs =
             env_f64("UPSTREAM_IMAGE_POLL_INTERVAL_SECS", DEFAULT_POLL_INTERVAL_SECS);
+        let interval = Duration::from_secs_f64(interval_secs.max(0.5));
+        let timeout = Duration::from_secs(timeout_secs.max(30));
+        let tasks_every_n = env_u32(
+            "UPSTREAM_IMAGE_POLL_TASKS_EVERY_N",
+            DEFAULT_POLL_TASKS_EVERY_N,
+        )
+        .max(1);
+        let max_tasks_gets = env_u32("UPSTREAM_IMAGE_POLL_MAX_TASKS_GETS", 0);
+        let max_tasks_gets = if max_tasks_gets == 0 {
+            derive_max_tasks_gets(timeout, interval, tasks_every_n)
+        } else {
+            max_tasks_gets
+        };
         Self {
-            timeout: Duration::from_secs(timeout_secs.max(30)),
+            timeout,
             initial_wait: Duration::from_secs_f64(initial_secs.max(0.0)),
-            interval: Duration::from_secs_f64(interval_secs.max(0.5)),
-            max_tasks_gets: env_u32(
-                "UPSTREAM_IMAGE_POLL_MAX_TASKS_GETS",
-                DEFAULT_POLL_MAX_TASKS_GETS,
-            ),
-            tasks_every_n_attempts: env_u32(
-                "UPSTREAM_IMAGE_POLL_TASKS_EVERY_N",
-                DEFAULT_POLL_TASKS_EVERY_N,
-            )
-                .max(1),
+            interval,
+            max_tasks_gets,
+            tasks_every_n_attempts: tasks_every_n,
         }
     }
+}
+
+/// Headroom for tasks GETs across the full wall budget (gptimage `image_poll_budget`).
+fn derive_max_tasks_gets(timeout: Duration, interval: Duration, tasks_every_n: u32) -> u32 {
+    let interval_secs = interval.as_secs_f64().max(0.5);
+    let wall_secs = timeout.as_secs_f64().max(0.1);
+    let nominal_attempts = (wall_secs / interval_secs).ceil() as u32;
+    let cap = nominal_attempts
+        .saturating_mul(GET_BUDGET_OVERSHOOT_FACTOR)
+        .saturating_add(GET_BUDGET_SLACK_ATTEMPTS);
+    cap.saturating_div(tasks_every_n.max(1)).max(8)
 }
 
 #[derive(Debug, Clone, Default)]
@@ -124,15 +143,10 @@ fn task_matches_conversation(task: &Value, conversation_id: &str) -> bool {
             .unwrap_or(false)
 }
 
-fn task_is_structured_error(task: &Value) -> bool {
-    let img_msg = task.get("image_gen_message").and_then(|v| v.as_object());
-    if img_msg.is_none() {
-        return false;
-    }
-    let img_msg = img_msg.unwrap();
-    let metadata = img_msg.get("metadata").and_then(|v| v.as_object());
-    let content = img_msg.get("content").and_then(|v| v.as_object());
-    let author = img_msg.get("author").and_then(|v| v.as_object());
+fn message_is_structured_image_error(message: &serde_json::Map<String, Value>) -> bool {
+    let metadata = message.get("metadata").and_then(|v| v.as_object());
+    let content = message.get("content").and_then(|v| v.as_object());
+    let author = message.get("author").and_then(|v| v.as_object());
     let is_error = metadata
         .and_then(|m| m.get("is_error"))
         .and_then(|v| v.as_bool())
@@ -146,6 +160,58 @@ fn task_is_structured_error(task: &Value) -> bool {
         .and_then(|v| v.as_str())
         == Some("assistant");
     is_error && is_text_only && is_assistant_role
+}
+
+fn structured_image_error_text(message: &serde_json::Map<String, Value>) -> Option<String> {
+    if !message_is_structured_image_error(message) {
+        return None;
+    }
+    let content = message.get("content")?;
+    let parts = content.get("parts")?.as_array()?;
+    let text: String = parts
+        .iter()
+        .filter_map(|p| p.as_str())
+        .collect::<Vec<_>>()
+        .join("");
+    if text.is_empty() {
+        Some("upstream image generation failed".into())
+    } else {
+        Some(text)
+    }
+}
+
+fn task_is_structured_error(task: &Value) -> bool {
+    let img_msg = task.get("image_gen_message").and_then(|v| v.as_object());
+    if img_msg.is_none() {
+        return false;
+    }
+    let img_msg = img_msg.unwrap();
+    message_is_structured_image_error(img_msg)
+}
+
+/// Detect terminal upstream image failures in a conversation document.
+pub fn detect_image_gen_failure_from_conversation(data: &Value) -> Option<String> {
+    let mapping = data.get("mapping")?.as_object()?;
+    for node in mapping.values() {
+        let message = node.get("message")?.as_object()?;
+        if let Some(text) = structured_image_error_text(message) {
+            return Some(text);
+        }
+    }
+    None
+}
+
+fn poll_image_failed_from_tasks(tasks: &[Value]) -> Option<String> {
+    for task in tasks {
+        if !task_is_structured_error(task) {
+            continue;
+        }
+        let img_msg = task.get("image_gen_message")?.as_object()?;
+        if let Some(text) = structured_image_error_text(img_msg) {
+            return Some(text);
+        }
+    }
+    None
 }
 
 fn walk_image_reference_ids(value: &Value, file_ids: &mut Vec<String>, sediment_ids: &mut Vec<String>) {
@@ -380,6 +446,9 @@ where
         {
             tasks_gets += 1;
             if let Ok(tasks) = query_tasks(client, &headers_fn, conversation_id).await {
+                if let Some(reason) = poll_image_failed_from_tasks(&tasks) {
+                    bail!("upstream image generation failed: {reason}");
+                }
                 if let Some(ids) = poll_image_ready_from_tasks(&tasks) {
                     add_unique_file_ids(&mut file_ids, &ids);
                 }
@@ -388,6 +457,9 @@ where
 
         match get_conversation(client, &headers_fn, conversation_id).await {
             Ok(conversation) => {
+                if let Some(reason) = detect_image_gen_failure_from_conversation(&conversation) {
+                    bail!("upstream image generation failed: {reason}");
+                }
                 let (conv_files, conv_sediments) = extract_image_ids_from_conversation(&conversation);
                 add_unique_file_ids(&mut file_ids, &conv_files);
                 add_unique_sediment_ids(&mut sediment_ids, &conv_sediments);
