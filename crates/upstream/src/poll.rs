@@ -10,14 +10,34 @@ use wreq::Client;
 use crate::requirements::{RequirementsClient, BASE_URL};
 use crate::sse::{extract_conversation_ids, real_image_file_re, sediment_re, file_service_re};
 
-// Align with gptimage production `image_poll_timeout_secs` (180s wall budget).
-const DEFAULT_POLL_TIMEOUT_SECS: u64 = 180;
+// Align with gptimage `image_generation_poll_timeout_secs` (300s on Panda).
+const DEFAULT_POLL_TIMEOUT_SECS: u64 = 300;
 const DEFAULT_POLL_INITIAL_WAIT_SECS: f64 = 5.0;
 const DEFAULT_POLL_INTERVAL_SECS: f64 = 3.0;
+const DEFAULT_POLL_SETTLE_SECS: f64 = 2.0;
 const DEFAULT_POLL_TASKS_EVERY_N: u32 = 2;
 const GET_BUDGET_OVERSHOOT_FACTOR: u32 = 2;
 const GET_BUDGET_SLACK_ATTEMPTS: u32 = 8;
 const SKIP_FILE_IDS: &[&str] = &["file_upload"];
+
+const CONTENT_POLICY_KEYWORDS: &[&str] = &[
+    "内容政策",
+    "防护限制",
+    "违反",
+    "moderation",
+    "policy",
+    "blocked",
+    "不能生成",
+    "无法生成",
+    "不能帮助",
+    "无法帮助",
+    "裸体",
+    "裸露",
+    "色情",
+    "性内容",
+    "未成年",
+    "抱歉，我不能",
+];
 
 /// Wall-clock poll budget for post-SSE image resolution (aligned with gptimage `image_task_queue`).
 #[derive(Debug, Clone)]
@@ -25,6 +45,8 @@ pub struct ImagePollConfig {
     pub timeout: Duration,
     pub initial_wait: Duration,
     pub interval: Duration,
+    pub settle: Duration,
+    pub check_before_hit: bool,
     pub max_tasks_gets: u32,
     pub tasks_every_n_attempts: u32,
 }
@@ -49,10 +71,14 @@ impl ImagePollConfig {
         } else {
             max_tasks_gets
         };
+        let settle_secs =
+            env_f64("UPSTREAM_IMAGE_POLL_SETTLE_SECS", DEFAULT_POLL_SETTLE_SECS).max(0.0);
         Self {
             timeout,
             initial_wait: Duration::from_secs_f64(initial_secs.max(0.0)),
             interval,
+            settle: Duration::from_secs_f64(settle_secs),
+            check_before_hit: env_bool("UPSTREAM_IMAGE_POLL_CHECK_BEFORE_HIT", true),
             max_tasks_gets,
             tasks_every_n_attempts: tasks_every_n,
         }
@@ -95,6 +121,15 @@ fn env_u32(key: &str, default: u32) -> u32 {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(default)
+}
+
+fn env_bool(key: &str, default: bool) -> bool {
+    match std::env::var(key).ok().map(|s| s.to_ascii_lowercase()) {
+        Some(v) if matches!(v.as_str(), "1" | "true" | "yes" | "on") => true,
+        Some(v) if matches!(v.as_str(), "0" | "false" | "no" | "off") => false,
+        Some(_) => default,
+        None => default,
+    }
 }
 
 fn with_accept_json(mut headers: Vec<(String, String)>) -> Vec<(String, String)> {
@@ -201,14 +236,130 @@ pub fn detect_image_gen_failure_from_conversation(data: &Value) -> Option<String
     None
 }
 
-fn poll_image_failed_from_tasks(tasks: &[Value]) -> Option<String> {
+fn last_task_error_from_tasks(tasks: &[Value]) -> Option<String> {
+    let mut last = None;
     for task in tasks {
         if !task_is_structured_error(task) {
             continue;
         }
         let img_msg = task.get("image_gen_message")?.as_object()?;
         if let Some(text) = structured_image_error_text(img_msg) {
-            return Some(text);
+            last = Some(text);
+        }
+    }
+    last
+}
+
+fn message_text(message: &serde_json::Map<String, Value>) -> String {
+    let content = message.get("content").unwrap_or(&Value::Null);
+    let mut parts = Vec::new();
+    if let Some(content_obj) = content.as_object() {
+        if let Some(msg_parts) = content_obj.get("parts").and_then(|v| v.as_array()) {
+            for part in msg_parts {
+                if let Some(text) = part.as_str() {
+                    if !text.trim().is_empty() {
+                        parts.push(text.trim());
+                    }
+                }
+            }
+        }
+        if let Some(text) = content_obj.get("text").and_then(|v| v.as_str()) {
+            if !text.trim().is_empty() {
+                parts.push(text.trim());
+            }
+        }
+    } else if let Some(text) = content.as_str() {
+        if !text.trim().is_empty() {
+            parts.push(text.trim());
+        }
+    }
+    parts.join("\n")
+}
+
+fn is_content_policy_error(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    CONTENT_POLICY_KEYWORDS
+        .iter()
+        .any(|keyword| lower.contains(&keyword.to_ascii_lowercase()))
+}
+
+/// Classify assistant/task text into a terminal upstream error code.
+pub fn classify_terminal_upstream_text(text: &str) -> Option<(String, String)> {
+    let clipped = text.trim();
+    if clipped.is_empty() {
+        return None;
+    }
+    let clipped = clipped.chars().take(500).collect::<String>();
+    if is_content_policy_error(&clipped) {
+        return Some(("content_policy_violation".into(), clipped));
+    }
+    let lower = clipped.to_ascii_lowercase();
+    if lower.contains("image creation limit")
+        || lower.contains("instant limit")
+        || lower.contains("limit resets")
+    {
+        return Some(("image_instant_limit".into(), clipped));
+    }
+    if clipped.contains("请上传")
+        || clipped.contains("参考图")
+        || clipped.contains("请先上传")
+        || lower.contains("please upload")
+        || lower.contains("reference image")
+        || lower.contains("no reference image")
+    {
+        return Some(("missing_reference_image".into(), clipped));
+    }
+    None
+}
+
+pub fn conversation_has_image_gen_activity(data: &Value) -> bool {
+    let mapping = match data.get("mapping").and_then(|v| v.as_object()) {
+        Some(m) => m,
+        None => return false,
+    };
+    for node in mapping.values() {
+        let metadata = node
+            .get("message")
+            .and_then(|v| v.get("metadata"));
+        if metadata
+            .and_then(|m| m.get("async_task_type"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.eq_ignore_ascii_case("image_gen"))
+            .unwrap_or(false)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+pub fn find_terminal_upstream_block_in_conversation(data: &Value) -> Option<(String, String)> {
+    let title = data
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    if !title.is_empty() && title.to_ascii_lowercase().contains("image creation limit") {
+        return Some((
+            "image_instant_limit".into(),
+            title.chars().take(500).collect(),
+        ));
+    }
+    let mapping = data.get("mapping")?.as_object()?;
+    for node in mapping.values() {
+        let message = node.get("message")?.as_object()?;
+        let role = message
+            .get("author")
+            .and_then(|a| a.get("role"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if role != "assistant" && role != "tool" {
+            continue;
+        }
+        let text = message_text(message);
+        if let Some(hit) = classify_terminal_upstream_text(&text) {
+            return Some(hit);
         }
     }
     None
@@ -427,6 +578,8 @@ where
     let mut sediment_ids: Vec<String> = initial_sediment_ids.to_vec();
     let mut attempt: u32 = 0;
     let mut tasks_gets: u32 = 0;
+    let mut last_task_error = String::new();
+    let mut last_hit_key: Option<(Vec<String>, Vec<String>)> = None;
 
     if file_ids.is_empty() && sediment_ids.is_empty() && config.initial_wait > Duration::ZERO {
         info!(
@@ -446,8 +599,8 @@ where
         {
             tasks_gets += 1;
             if let Ok(tasks) = query_tasks(client, &headers_fn, conversation_id).await {
-                if let Some(reason) = poll_image_failed_from_tasks(&tasks) {
-                    bail!("upstream image generation failed: {reason}");
+                if let Some(err) = last_task_error_from_tasks(&tasks) {
+                    last_task_error = err;
                 }
                 if let Some(ids) = poll_image_ready_from_tasks(&tasks) {
                     add_unique_file_ids(&mut file_ids, &ids);
@@ -463,6 +616,21 @@ where
                 let (conv_files, conv_sediments) = extract_image_ids_from_conversation(&conversation);
                 add_unique_file_ids(&mut file_ids, &conv_files);
                 add_unique_sediment_ids(&mut sediment_ids, &conv_sediments);
+
+                if file_ids.is_empty()
+                    && sediment_ids.is_empty()
+                    && !conversation_has_image_gen_activity(&conversation)
+                {
+                    if let Some((code, msg)) = find_terminal_upstream_block_in_conversation(&conversation)
+                    {
+                        bail!("upstream image generation failed ({code}): {msg}");
+                    }
+                    if !last_task_error.is_empty() {
+                        if let Some((code, msg)) = classify_terminal_upstream_text(&last_task_error) {
+                            bail!("upstream image generation failed ({code}): {msg}");
+                        }
+                    }
+                }
             }
             Err(err) => {
                 info!(
@@ -477,6 +645,28 @@ where
         }
 
         if !file_ids.is_empty() || !sediment_ids.is_empty() {
+            let hit_key = (file_ids.clone(), sediment_ids.clone());
+            if config.check_before_hit {
+                if last_hit_key.as_ref() == Some(&hit_key) {
+                    info!(
+                        conversation_id = %conversation_id,
+                        attempt,
+                        file_ids = file_ids.len(),
+                        sediment_ids = sediment_ids.len(),
+                        elapsed_secs = started.elapsed().as_secs_f64(),
+                        "image poll succeeded"
+                    );
+                    return Ok(ImagePollOutcome {
+                        file_ids,
+                        sediment_ids,
+                    });
+                }
+                last_hit_key = Some(hit_key);
+                if config.settle > Duration::ZERO {
+                    cancel_aware_sleep(deadline, config.settle).await;
+                    continue;
+                }
+            }
             info!(
                 conversation_id = %conversation_id,
                 attempt,
@@ -607,5 +797,31 @@ mod tests {
         let (file_ids, sediment_ids) = extract_image_ids_from_conversation(&data);
         assert_eq!(file_ids, ["file_00000000a1b2c3d4e5f678901234"]);
         assert!(sediment_ids.is_empty());
+    }
+
+    #[test]
+    fn classify_terminal_content_policy() {
+        let (code, _) = classify_terminal_upstream_text("抱歉，我不能生成这类图片").unwrap();
+        assert_eq!(code, "content_policy_violation");
+    }
+
+    #[test]
+    fn terminal_block_skipped_while_image_gen_active() {
+        let data: Value = serde_json::from_str(
+            r#"{
+                "mapping": {
+                    "m1": {
+                        "message": {
+                            "author": { "role": "assistant" },
+                            "metadata": { "async_task_type": "image_gen" },
+                            "content": { "content_type": "text", "parts": ["working"] }
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        assert!(conversation_has_image_gen_activity(&data));
+        assert!(find_terminal_upstream_block_in_conversation(&data).is_none());
     }
 }
