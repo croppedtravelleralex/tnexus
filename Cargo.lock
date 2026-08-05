@@ -1656,6 +1656,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 
 [[package]]
+name = "grok-audit"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "grok-domain",
+ "grok-storage",
+ "serde",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "grok-conversation"
+version = "0.1.0"
+dependencies = [
+ "grok-domain",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "grok-domain"
 version = "0.1.0"
 dependencies = [
@@ -1663,6 +1689,69 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+]
+
+[[package]]
+name = "grok-egress"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "grok-domain",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "grok-gateway"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "bytes",
+ "futures",
+ "grok-audit",
+ "grok-conversation",
+ "grok-domain",
+ "grok-egress",
+ "grok-pool",
+ "grok-provider-web",
+ "http-body-util",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tower",
+ "tracing",
+]
+
+[[package]]
+name = "grok-pool"
+version = "0.1.0"
+dependencies = [
+ "grok-domain",
+ "grok-storage",
+ "rand 0.8.7",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "grok-provider-web"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64",
+ "futures",
+ "grok-audit",
+ "grok-conversation",
+ "grok-domain",
+ "grok-egress",
+ "grok-pool",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

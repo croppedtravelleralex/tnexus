@@ -1,0 +1,23 @@
+{
+  "model": "grok-chat-fast",
+  "messages": [
+    {
+      "role": "system",
+      "content": "提取图中全部可见文字，保持版面顺序；无文字则回复「无文字内容」。"
+    },
+    {
+      "role": "user",
+      "content": "[user]\n提取图中文字"
+    }
+  ],
+  "enableImageGeneration": false,
+  "enableImageStreaming": false,
+  "fileAttachments": [
+    {
+      "source_url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+      "file_name": "attachment_1.png",
+      "mime_type": "image/png",
+      "data_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    }
+  ]
+}

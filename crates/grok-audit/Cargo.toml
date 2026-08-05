@@ -1,0 +1,16 @@
+[package]
+name = "grok-audit"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+grok-domain = { path = "../grok-domain" }
+grok-storage = { path = "../grok-storage" }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+sqlx = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }

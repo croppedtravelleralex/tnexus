@@ -1,0 +1,10 @@
+[package]
+name = "grok-egress"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+grok-domain = { path = "../grok-domain" }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
