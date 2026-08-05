@@ -515,7 +515,6 @@ fn upstream_image_retryable(err: &anyhow::Error) -> bool {
     msg.contains("file_id predicate")
         || msg.contains("sse ended")
         || msg.contains("image sse ended")
-        || msg.contains("image poll timeout")
         || msg.contains("upstream_unreachable")
 }
 
