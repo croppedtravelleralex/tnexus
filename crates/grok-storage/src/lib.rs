@@ -12,3 +12,5 @@ pub mod error;
 pub mod repo;
 
 pub use error::StorageError;
+pub use repo::credential::{decrypt_primary, parse_credential_key, PgSsoTokenProvider};
+pub use repo::CredentialRepository;

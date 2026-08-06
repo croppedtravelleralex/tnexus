@@ -11,5 +11,8 @@ pub mod routing;
 
 // Re-export traits at repo root for convenience.
 pub use account::{AccountRepository, PgAccountRepository};
-pub use credential::{CredentialRepository, PgCredentialRepository};
+pub use credential::{
+    decrypt_primary, parse_credential_key, CredentialRepository, PgCredentialRepository,
+    PgSsoTokenProvider,
+};
 pub use quota::{PgQuotaRepository, QuotaRepository};

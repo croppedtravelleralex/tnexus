@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use grok_audit::AuditSink;
 use grok_domain::egress::Scope;
+use grok_domain::SsoTokenProvider;
 use grok_egress::{GateId, LeaseManager};
 use grok_pool::SharedPool;
 
@@ -29,6 +30,8 @@ pub struct ChatEngine {
     lease: Arc<dyn LeaseManager>,
     bridge: Arc<dyn BridgeClient>,
     audit: Option<Arc<AuditSink>>,
+    /// 无 chrome 直连路径：按账号取 sso token（bridge 模式为 None）。
+    sso: Option<Arc<dyn SsoTokenProvider>>,
     lease_duration: Duration,
 }
 
@@ -45,8 +48,21 @@ impl ChatEngine {
             lease,
             bridge,
             audit,
+            sso: None,
             lease_duration: DEFAULT_LEASE_DURATION,
         }
+    }
+
+    /// 注入 sso token 提供者（无 chrome 直连路径）。bridge 模式不注入。
+    pub fn with_sso(mut self, sso: Arc<dyn SsoTokenProvider>) -> Self {
+        self.sso = Some(sso);
+        self
+    }
+
+    /// 注入可选的 sso token 提供者（直连模式 Some / bridge 模式 None）。
+    pub fn with_sso_opt(mut self, sso: Option<Arc<dyn SsoTokenProvider>>) -> Self {
+        self.sso = sso;
+        self
     }
 
     /// 覆盖 lease 获取超时（测试/生产调优）。
@@ -96,7 +112,12 @@ impl ChatEngine {
             .unwrap_or(DEFAULT_OCR_SYSTEM_PROMPT);
         let payload = build_web_chat_payload(&req.prompt, &attachments, req.ocr, system_prompt);
 
-        let result = self.bridge.fetch_chat(&payload).await;
+        // 无 chrome 直连：按账号取 sso token；bridge 模式跳过。
+        let sso_token = match &self.sso {
+            Some(provider) => Some(provider.sso_token(account_id).await?),
+            None => None,
+        };
+        let result = self.bridge.fetch_chat(&payload, sso_token.as_deref()).await;
 
         match result {
             Ok(text) => {

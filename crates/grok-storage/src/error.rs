@@ -11,4 +11,6 @@ pub enum StorageError {
     Database(#[from] sqlx::Error),
     #[error("row decode error: {0}")]
     Decode(String),
+    #[error("credential decrypt error: {0}")]
+    Decrypt(String),
 }

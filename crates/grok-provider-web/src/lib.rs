@@ -12,18 +12,22 @@
 pub mod attachments;
 pub mod bridge;
 pub mod chat;
+pub mod direct;
 pub mod engine;
 pub mod expand;
 pub mod image;
+pub mod statsig;
 
 pub use attachments::{prepare_file_attachments, FileAttachment};
 pub use bridge::{default_bridge_url, BridgeClient, HttpBridgeClient, MockBridgeClient};
 pub use chat::{
     build_web_chat_payload, public_models, ALIAS_OCR, DEFAULT_OCR_SYSTEM_PROMPT, UPSTREAM_OCR_MODEL,
 };
+pub use direct::{DirectConfig, HttpDirectClient};
 pub use engine::ChatEngine;
 pub use expand::expand_prompt;
 pub use image::ImageEngine;
+pub use statsig::{validate_signer_url, StatsigSigner};
 // 契约类型/端口在 grok-domain（跨 crate 共享），此处 re-export 保持旧调用路径。
 pub use grok_domain::{
     ChatBackend, ChatRequest, ImageBackend, ImagineRequest, ImagineResult, ProviderError,

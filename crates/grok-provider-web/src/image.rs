@@ -34,6 +34,8 @@ pub struct ImageEngine {
     lease: Arc<dyn LeaseManager>,
     bridge: Arc<dyn BridgeClient>,
     audit: Option<Arc<AuditSink>>,
+    /// 无 chrome 直连路径：按账号取 sso token（bridge 模式为 None）。
+    sso: Option<Arc<dyn grok_domain::SsoTokenProvider>>,
     pipeline: ImagePipeline,
     lease_duration: Duration,
     slot_timeout: Duration,
@@ -58,6 +60,7 @@ impl ImageEngine {
             lease,
             bridge,
             audit,
+            sso: None,
             pipeline,
             lease_duration: DEFAULT_LEASE_DURATION,
             slot_timeout: DEFAULT_SLOT_TIMEOUT,
@@ -69,6 +72,12 @@ impl ImageEngine {
     /// 覆盖 lease 超时（测试/调优）。
     pub fn with_lease_duration(mut self, d: Duration) -> Self {
         self.lease_duration = d;
+        self
+    }
+
+    /// 注入 sso token 提供者（无 chrome 直连路径）。bridge 模式不注入。
+    pub fn with_sso(mut self, sso: Arc<dyn grok_domain::SsoTokenProvider>) -> Self {
+        self.sso = Some(sso);
         self
     }
 
@@ -151,7 +160,15 @@ impl ImageEngine {
             "n": req.n.max(1),
             "response_format": if req.response_format == "b64_json" { "b64_json" } else { "url" },
         });
-        let upstream = match self.bridge.fetch_imagine(&payload).await {
+        let sso_token = match &self.sso {
+            Some(provider) => Some(provider.sso_token(account_id).await?),
+            None => None,
+        };
+        let upstream = match self
+            .bridge
+            .fetch_imagine(&payload, sso_token.as_deref())
+            .await
+        {
             Ok(v) => v,
             Err(e) => {
                 self.pool.dispatch_failure(account_id).await;

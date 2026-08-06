@@ -39,8 +39,11 @@ use grok_domain::egress::Scope;
 use grok_egress::{InMemoryLeaseManager, LeaseManager, RedisLeaseManager};
 use grok_gateway::{default_protocol_backends, AppState};
 use grok_pool::{SharedPool, SimplifiedPool};
-use grok_provider_web::{BridgeClient, ChatEngine, HttpBridgeClient};
+use grok_provider_web::{
+    BridgeClient, ChatEngine, DirectConfig, HttpBridgeClient, HttpDirectClient,
+};
 use grok_storage::repo::account::PgAccountRepository;
+use grok_storage::{parse_credential_key, PgSsoTokenProvider};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -94,12 +97,47 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let lease = build_lease(&cfg).await;
-    let bridge: Arc<dyn BridgeClient> = Arc::new(HttpBridgeClient::new());
+
+    // 无 chrome 直连（GROK2API_DIRECT=1）：直连 grok.com（sso cookie + statsig 签名）。
+    // 缺 GROK_CREDENTIAL_KEY → sso 提供者恒 503（安全红线：绝不以空凭据外呼）。
+    let sso: Option<Arc<dyn grok_domain::SsoTokenProvider>> = if cfg.direct_enabled {
+        let provider: Arc<dyn grok_domain::SsoTokenProvider> = match cfg.credential_key.as_deref() {
+            Some(key_b64) => match parse_credential_key(key_b64) {
+                Ok(key) => Arc::new(PgSsoTokenProvider::new(pool.clone(), key)),
+                Err(e) => {
+                    tracing::warn!("GROK_CREDENTIAL_KEY 解析失败（直连降级 503）: {e}");
+                    Arc::new(MissingKeyProvider)
+                }
+            },
+            None => {
+                tracing::warn!("GROK2API_DIRECT=1 但缺 GROK_CREDENTIAL_KEY：直连 chat/OCR 将 503");
+                Arc::new(MissingKeyProvider)
+            }
+        };
+        tracing::info!(
+            "GROK2API_DIRECT=1：chat/OCR 走无 chrome 直连（signer={}）",
+            cfg.signer_url
+        );
+        Some(provider)
+    } else {
+        None
+    };
+
+    // 选 BridgeClient 实现：直连 vs bridge 侧车。
+    let bridge: Arc<dyn BridgeClient> = if cfg.direct_enabled {
+        Arc::new(HttpDirectClient::new(DirectConfig {
+            base_url: "https://grok.com".to_string(),
+            signer_url: cfg.signer_url.clone(),
+            sso: None,
+        }))
+    } else {
+        Arc::new(HttpBridgeClient::new())
+    };
 
     // 安全红线（Critical-1）：/v1 写操作鉴权密钥挂进 gateway state。
     let gateway_key = cfg.gateway_auth_key.clone();
     let v1_app = grok_gateway::build_app(
-        gateway_state(&cfg, bridge, shared_pool, lease).with_gateway_auth_key(gateway_key),
+        gateway_state(&cfg, bridge, shared_pool, lease, sso).with_gateway_auth_key(gateway_key),
     );
 
     // 安全红线（Critical-2/3）：/admin 独立端口（GROK_ADMIN_LISTEN，默认 :8091 仅内网），
@@ -193,11 +231,13 @@ fn gateway_state(
     bridge: Arc<dyn BridgeClient>,
     pool: SharedPool,
     lease: Arc<dyn LeaseManager>,
+    sso: Option<Arc<dyn grok_domain::SsoTokenProvider>>,
 ) -> AppState {
     // /v1/responses + /v1/messages：真实 Build/Console 后端（token 未配置时为 None → 503）。
     let (responses, messages) =
         default_protocol_backends(cfg.build_base_url.clone(), cfg.console_base_url.clone());
-    let engine = ChatEngine::new(pool.clone(), lease.clone(), bridge.clone(), None);
+    let engine = ChatEngine::new(pool.clone(), lease.clone(), bridge.clone(), None)
+        .with_sso_opt(sso.clone());
     let mut state = AppState {
         // 端口注入：ChatEngine 实现 grok_domain::ChatBackend，Arc 直接 upcast。
         engine: Some(Arc::new(engine) as Arc<dyn grok_domain::ChatBackend>),
@@ -218,6 +258,11 @@ fn gateway_state(
                 Arc::new(grok_image_pipeline::InMemoryTraceRepository::new()),
             ),
         );
+        // 直连模式：生图同样按账号取 sso（当前 fetch_imagine 回退 chat SSE）。
+        let image_engine = match sso {
+            Some(provider) => image_engine.with_sso(provider),
+            None => image_engine,
+        };
         state.image_engine = Some(Arc::new(image_engine) as Arc<dyn grok_domain::ImageBackend>);
         tracing::info!("GROK_IMAGE_ENABLED=1：/v1/images/generations 已接线真实引擎");
     } else {
@@ -225,6 +270,18 @@ fn gateway_state(
     }
     // 媒体/视频后端未接线 → 501/500（G2/G5 收尾 TODO：media fetcher 需存储 + 视频需上游轮询）。
     state
+}
+
+/// 直连模式缺 GROK_CREDENTIAL_KEY 时的 sso 提供者：恒 503 不外呼（安全红线）。
+struct MissingKeyProvider;
+
+#[async_trait::async_trait]
+impl grok_domain::SsoTokenProvider for MissingKeyProvider {
+    async fn sso_token(&self, _account_id: i64) -> Result<String, grok_domain::ProviderError> {
+        Err(grok_domain::ProviderError::Upstream(
+            "GROK_CREDENTIAL_KEY 未配置（直连禁外呼）".into(),
+        ))
+    }
 }
 
 /// 生产默认：PG 加载号池（调用方已 load）+ 内存/Redis lease + HTTP bridge 侧车。
@@ -236,7 +293,7 @@ fn gateway_app(
     lease: Arc<dyn LeaseManager>,
     bridge: Arc<dyn BridgeClient>,
 ) -> axum::Router {
-    grok_gateway::build_app(gateway_state(cfg, bridge, pool, lease))
+    grok_gateway::build_app(gateway_state(cfg, bridge, pool, lease, None))
 }
 
 /// 随机 admin JWT secret（GROK_ADMIN_SECRET 缺省时）。
@@ -273,6 +330,9 @@ mod tests {
             admin_username: "admin".to_string(),
             admin_password: Some("admin123456".to_string()),
             image_enabled: false,
+            direct_enabled: false,
+            signer_url: "https://grok.wodf.de/sign".to_string(),
+            credential_key: None,
         }
     }
 
@@ -327,7 +387,7 @@ mod tests {
             Arc::new(InMemoryLeaseManager::new(&[(Scope::GrokWeb, 4)]));
         let cfg = test_cfg();
         grok_gateway::build_app(
-            gateway_state(&cfg, Arc::new(mock), pool, lease)
+            gateway_state(&cfg, Arc::new(mock), pool, lease, None)
                 .with_gateway_auth_key(Some(key.to_string())),
         )
     }
@@ -656,11 +716,11 @@ mod tests {
             4,
         )]));
         // 默认关闭 → None
-        let state = gateway_state(&cfg, mock.clone(), pool.clone(), lease.clone());
+        let state = gateway_state(&cfg, mock.clone(), pool.clone(), lease.clone(), None);
         assert!(state.image_engine.is_none(), "默认应无生图引擎");
         // 开启 → Some（真实 ImageEngine 组装成功）
         cfg.image_enabled = true;
-        let state2 = gateway_state(&cfg, mock, pool, lease);
+        let state2 = gateway_state(&cfg, mock, pool, lease, None);
         assert!(
             state2.image_engine.is_some(),
             "GROK_IMAGE_ENABLED=1 应组装真实 ImageEngine"

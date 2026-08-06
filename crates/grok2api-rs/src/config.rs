@@ -42,6 +42,14 @@ pub struct Config {
     /// 生图引擎开关（`GROK_IMAGE_ENABLED=1`）。生图走真实 bridge（默认不外呼，
     /// 与 provider「未配置不外呼」红线一致）；未开启时 `/v1/images/generations` 500。
     pub image_enabled: bool,
+    /// 无 chrome 直连开关（`GROK2API_DIRECT=1`）：chat/OCR 不走 browser-bridge，
+    /// 直连 grok.com（sso cookie + statsig 签名）。缺省关（bridge 模式）。
+    pub direct_enabled: bool,
+    /// statsig signer 服务地址（`GROK2API_SIGNER_URL`，缺省 https://grok.wodf.de/sign）。
+    pub signer_url: String,
+    /// 凭据解密主密钥（`GROK_CREDENTIAL_KEY`，base64 32B AES-256-GCM）。
+    /// 直连模式下缺失 → chat/OCR 503 不外呼（安全红线）。
+    pub credential_key: Option<String>,
 }
 
 impl Config {
@@ -83,6 +91,15 @@ impl Config {
             .map(|v| v.trim() == "1")
             .unwrap_or(false);
 
+        let direct_enabled = env::var("GROK2API_DIRECT")
+            .map(|v| v.trim() == "1")
+            .unwrap_or(false);
+        let signer_url =
+            env::var("GROK2API_SIGNER_URL").unwrap_or_else(|_| "https://grok.wodf.de/sign".into());
+        let credential_key = env::var("GROK_CREDENTIAL_KEY")
+            .ok()
+            .filter(|s| !s.trim().is_empty());
+
         let config = Self {
             server_addr,
             database_url,
@@ -96,6 +113,9 @@ impl Config {
             admin_username,
             admin_password,
             image_enabled,
+            direct_enabled,
+            signer_url,
+            credential_key,
         };
         config.validate()?;
         Ok(config)
@@ -150,6 +170,9 @@ mod tests {
             admin_username: "admin".to_string(),
             admin_password: Some("admin123456".to_string()),
             image_enabled: false,
+            direct_enabled: false,
+            signer_url: "https://grok.wodf.de/sign".to_string(),
+            credential_key: None,
         }
     }
 

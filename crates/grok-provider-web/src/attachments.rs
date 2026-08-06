@@ -42,7 +42,7 @@ pub async fn prepare_file_attachments<B: BridgeClient + ?Sized>(
 ) -> Result<Vec<FileAttachment>, ProviderError> {
     let mut out = Vec::with_capacity(images.len());
     for (i, url) in images.iter().enumerate() {
-        let bytes = bridge.fetch_bytes(url).await?;
+        let bytes = bridge.fetch_bytes(url, None).await?;
         if bytes.is_empty() {
             return Err(ProviderError::Bridge(format!(
                 "downloaded empty image for {url}"

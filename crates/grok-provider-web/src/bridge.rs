@@ -43,13 +43,26 @@ pub fn derive_session_key(cookie: &str, user_agent: &str) -> String {
 #[async_trait::async_trait]
 pub trait BridgeClient: Send + Sync {
     /// 下载图片二进制（经 bridge）。`image_url` 为 HTTPS URL 或 data URI。
-    async fn fetch_bytes(&self, image_url: &str) -> Result<Vec<u8>, ProviderError>;
+    /// `sso_token`：无 chrome 直连路径用于鉴权；bridge 会话路径忽略。
+    async fn fetch_bytes(
+        &self,
+        image_url: &str,
+        sso_token: Option<&str>,
+    ) -> Result<Vec<u8>, ProviderError>;
 
     /// 发送 chat 请求到 bridge，返回上游 SSE 汇总后的文本。
-    async fn fetch_chat(&self, payload: &Value) -> Result<String, ProviderError>;
+    async fn fetch_chat(
+        &self,
+        payload: &Value,
+        sso_token: Option<&str>,
+    ) -> Result<String, ProviderError>;
 
     /// 发送生图（imagine）请求到 bridge，返回上游 JSON（含 data[].url / b64_json）。
-    async fn fetch_imagine(&self, payload: &Value) -> Result<Value, ProviderError>;
+    async fn fetch_imagine(
+        &self,
+        payload: &Value,
+        sso_token: Option<&str>,
+    ) -> Result<Value, ProviderError>;
 }
 
 /// 基于 `reqwest::Client` 的真实 bridge 客户端（协议对齐 Go `browser_bridge.go`）。
@@ -190,7 +203,11 @@ impl HttpBridgeClient {
 
 #[async_trait::async_trait]
 impl BridgeClient for HttpBridgeClient {
-    async fn fetch_bytes(&self, image_url: &str) -> Result<Vec<u8>, ProviderError> {
+    async fn fetch_bytes(
+        &self,
+        image_url: &str,
+        _sso_token: Option<&str>,
+    ) -> Result<Vec<u8>, ProviderError> {
         // data URI 本地直解（不经 bridge）：仅 HTTP(S) 图片走 bridge 下载。
         if let Some(payload) = decode_data_uri(image_url) {
             return Ok(payload);
@@ -205,7 +222,11 @@ impl BridgeClient for HttpBridgeClient {
         Ok(bytes)
     }
 
-    async fn fetch_chat(&self, payload: &Value) -> Result<String, ProviderError> {
+    async fn fetch_chat(
+        &self,
+        payload: &Value,
+        _sso_token: Option<&str>,
+    ) -> Result<String, ProviderError> {
         let body = serde_json::to_vec(payload)
             .map_err(|e| ProviderError::Bridge(format!("serialize chat payload: {e}")))?;
         let result = self
@@ -223,7 +244,11 @@ impl BridgeClient for HttpBridgeClient {
             .map_err(|e| ProviderError::Bridge(format!("chat body not utf8: {e}")))
     }
 
-    async fn fetch_imagine(&self, payload: &Value) -> Result<Value, ProviderError> {
+    async fn fetch_imagine(
+        &self,
+        payload: &Value,
+        _sso_token: Option<&str>,
+    ) -> Result<Value, ProviderError> {
         let body = serde_json::to_vec(payload)
             .map_err(|e| ProviderError::Bridge(format!("serialize imagine payload: {e}")))?;
         let result = self
@@ -240,6 +265,11 @@ impl BridgeClient for HttpBridgeClient {
         serde_json::from_slice(&bytes)
             .map_err(|e| ProviderError::Bridge(format!("parse imagine json: {e}")))
     }
+}
+
+/// 解码 `data:image/<type>;base64,<payload>`。非 data URI 返回 None。
+pub fn decode_data_uri_public(value: &str) -> Option<Vec<u8>> {
+    decode_data_uri(value)
 }
 
 /// 解码 `data:image/<type>;base64,<payload>`。非 data URI 返回 None。
@@ -285,7 +315,11 @@ impl Default for MockBridgeClient {
 
 #[async_trait::async_trait]
 impl BridgeClient for MockBridgeClient {
-    async fn fetch_bytes(&self, image_url: &str) -> Result<Vec<u8>, ProviderError> {
+    async fn fetch_bytes(
+        &self,
+        image_url: &str,
+        _sso_token: Option<&str>,
+    ) -> Result<Vec<u8>, ProviderError> {
         if let Some(b) = decode_data_uri(image_url) {
             return Ok(b);
         }
@@ -295,12 +329,20 @@ impl BridgeClient for MockBridgeClient {
             .ok_or_else(|| ProviderError::Bridge(format!("mock no bytes for {image_url}")))
     }
 
-    async fn fetch_chat(&self, payload: &Value) -> Result<String, ProviderError> {
+    async fn fetch_chat(
+        &self,
+        payload: &Value,
+        _sso_token: Option<&str>,
+    ) -> Result<String, ProviderError> {
         *self.last_chat_payload.lock().await = Some(payload.clone());
         Ok(self.chat_text.clone())
     }
 
-    async fn fetch_imagine(&self, payload: &Value) -> Result<Value, ProviderError> {
+    async fn fetch_imagine(
+        &self,
+        payload: &Value,
+        _sso_token: Option<&str>,
+    ) -> Result<Value, ProviderError> {
         *self.last_imagine_payload.lock().await = Some(payload.clone());
         Ok(self.imagine_response.clone())
     }
@@ -337,7 +379,7 @@ mod tests {
         let mut m = MockBridgeClient::new();
         m.chat_text = "ok".to_string();
         let p = serde_json::json!({"model": "grok-chat-fast"});
-        let out = m.fetch_chat(&p).await.unwrap();
+        let out = m.fetch_chat(&p, None).await.unwrap();
         assert_eq!(out, "ok");
         let got = m.last_chat_payload.lock().await;
         assert_eq!(got.as_ref().unwrap()["model"], "grok-chat-fast");

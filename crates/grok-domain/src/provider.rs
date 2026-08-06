@@ -113,6 +113,14 @@ pub trait ImageBackend: Send + Sync {
     async fn imagine(&self, req: &ImagineRequest) -> Result<ImagineResult, ProviderError>;
 }
 
+/// 账号 sso token 提供者（无 chrome 直连路径用）：按账号取解密后的 sso token。
+/// 实现方负责凭据解密（grok-storage `PgSsoTokenProvider`）与密钥治理。
+#[async_trait::async_trait]
+pub trait SsoTokenProvider: Send + Sync {
+    /// 返回账号 sso token（`Cookie: sso=<token>; sso-rw=<token>`）。
+    async fn sso_token(&self, account_id: i64) -> Result<String, ProviderError>;
+}
+
 /// 便于 domain 用户直接引用序列化（如 `ImagineResult` 测试断言）。
 #[allow(unused)]
 fn _assert_serializable(v: &impl Serialize) {}

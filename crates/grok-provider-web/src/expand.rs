@@ -37,7 +37,7 @@ pub async fn expand_prompt(
         "text_only": true,
         "messages": messages,
     });
-    let expanded = bridge.fetch_chat(&payload).await?;
+    let expanded = bridge.fetch_chat(&payload, None).await?;
     let trimmed = expanded.trim();
     if trimmed.is_empty() {
         return Err(ProviderError::Upstream(
