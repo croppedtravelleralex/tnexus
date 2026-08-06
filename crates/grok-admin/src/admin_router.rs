@@ -126,12 +126,15 @@ impl AdminRouter {
             .filter(|s| !s.is_empty())
             .collect();
         match segments.as_slice() {
-            // ── 账号域（新增：summary/analytics 必须在 {id} 通配之前）──
+            // ── 账号域（新增：summary/analytics/import 必须在 {id} 通配之前）──
             ["admin", "accounts", "summary"] if method.eq_ignore_ascii_case("GET") => {
                 self.accounts_summary().await
             }
             ["admin", "accounts", "analytics"] if method.eq_ignore_ascii_case("GET") => {
                 self.accounts_analytics().await
+            }
+            ["admin", "accounts", "import"] if method.eq_ignore_ascii_case("POST") => {
+                self.accounts_import(body).await
             }
             ["admin", "accounts"] if method.eq_ignore_ascii_case("GET") => {
                 self.list(query).await
@@ -168,6 +171,13 @@ impl AdminRouter {
             }
             ["admin", "accounts", id, "reauth"] if method.eq_ignore_ascii_case("POST") => {
                 self.accounts_refresh(id, "reauth").await
+            }
+
+            ["admin", "analytics", "timeseries"] if method.eq_ignore_ascii_case("GET") => {
+                self.analytics_timeseries(query).await
+            }
+            ["admin", "analytics", "top-accounts"] if method.eq_ignore_ascii_case("GET") => {
+                self.analytics_top_accounts(query).await
             }
 
             // ── 模型域 ──
@@ -391,6 +401,36 @@ impl AdminRouter {
     async fn accounts_analytics(&self) -> AdminHttpResponse {
         match self.accounts.analytics().await {
             Ok(analytics) => AdminHttpResponse::ok(json!(analytics)),
+            Err(e) => map_error(e),
+        }
+    }
+
+    async fn accounts_import(&self, body: Option<&str>) -> AdminHttpResponse {
+        // body = JSON 数组（每项一条账号）；逐条校验由 service 委托 store 完成。
+        let inputs: Vec<crate::accounts::ImportAccountInput> = match parse_json(body) {
+            Some(inputs) => inputs,
+            None => return AdminHttpResponse::bad_request("invalidRequest", "请求参数无效"),
+        };
+        match self.accounts.import(&inputs).await {
+            Ok(result) => AdminHttpResponse::created(json!(result)),
+            Err(e) => map_error(e),
+        }
+    }
+
+    /// GET /admin/analytics/timeseries?days=7：按天聚合（可视化面板数据源）。
+    async fn analytics_timeseries(&self, query: &str) -> AdminHttpResponse {
+        let days: i64 = query_params(query).get("days").and_then(|d| d.parse().ok()).unwrap_or(7);
+        match self.accounts.timeseries(days).await {
+            Ok(points) => AdminHttpResponse::ok(json!(points)),
+            Err(e) => map_error(e),
+        }
+    }
+
+    /// GET /admin/analytics/top-accounts?limit=10：按请求量/失败率排。
+    async fn analytics_top_accounts(&self, query: &str) -> AdminHttpResponse {
+        let limit: i64 = query_params(query).get("limit").and_then(|d| d.parse().ok()).unwrap_or(10);
+        match self.accounts.top_accounts(limit).await {
+            Ok(items) => AdminHttpResponse::ok(json!(items)),
             Err(e) => map_error(e),
         }
     }
@@ -704,6 +744,11 @@ fn page_params(query: &str) -> (i64, i64) {
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(20);
     (page.max(1), page_size.clamp(1, 100))
+}
+
+/// 查询参数表（`?a=1&b=2` → map）。
+fn query_params(query: &str) -> std::collections::HashMap<String, String> {
+    parse_query(query)
 }
 
 /// 解析 JSON body（空/坏 → None）。

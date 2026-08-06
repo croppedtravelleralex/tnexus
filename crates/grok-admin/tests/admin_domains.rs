@@ -591,6 +591,82 @@ impl grok_admin::AdminStore for AccountStore {
             Ok(false)
         }
     }
+
+    async fn import_accounts(
+        &self,
+        inputs: &[grok_admin::ImportAccountInput],
+    ) -> AdminResult<grok_admin::ImportResult> {
+        let mut result = grok_admin::ImportResult::default();
+        for (index, input) in inputs.iter().enumerate() {
+            let provider = match grok_admin::accounts::parse_provider(&input.provider) {
+                Some(p) => p,
+                None => {
+                    result.failed += 1;
+                    result.errors.push(grok_admin::ImportError {
+                        index,
+                        reason: format!("unknown provider: {}", input.provider),
+                    });
+                    continue;
+                }
+            };
+            let identity_key = input.identity_key.trim();
+            if identity_key.is_empty() {
+                result.failed += 1;
+                result.errors.push(grok_admin::ImportError {
+                    index,
+                    reason: "identity_key 不能为空".into(),
+                });
+                continue;
+            }
+            let mut accounts = self.accounts.lock().unwrap();
+            if accounts.iter().any(|a| a.identity_key == identity_key) {
+                result.failed += 1;
+                result.errors.push(grok_admin::ImportError {
+                    index,
+                    reason: format!("identity_key 冲突: {identity_key}"),
+                });
+                continue;
+            }
+            let id = self.next_id.fetch_add(1, Ordering::SeqCst) + 1;
+            accounts.push(grok_domain::Account {
+                id,
+                identity_key: identity_key.to_string(),
+                provider,
+                name: input.name.clone().unwrap_or_else(|| format!("imported-{id}")),
+                priority: input.priority.unwrap_or(1),
+                max_concurrent: input.max_concurrent.unwrap_or(8),
+                enabled: true,
+                auth_status: grok_domain::AuthStatus::Unknown,
+                created_at: Some(Utc::now()),
+                updated_at: Some(Utc::now()),
+                ..Default::default()
+            });
+            result.imported += 1;
+        }
+        Ok(result)
+    }
+
+    async fn timeseries(&self, _days: i64) -> AdminResult<Vec<grok_admin::TimeseriesPoint>> {
+        // fake 无审计记录：返回空数组（真实实现从 grok_request_audits 聚合，TODO）。
+        Ok(Vec::new())
+    }
+
+    async fn top_accounts(&self, limit: i64) -> AdminResult<Vec<grok_admin::TopAccountView>> {
+        let accounts = self.accounts.lock().unwrap();
+        let mut items: Vec<grok_admin::TopAccountView> = accounts
+            .iter()
+            .map(|a| grok_admin::TopAccountView {
+                account_id: a.id,
+                name: a.name.clone(),
+                requests: 0,
+                failed: 0,
+                failure_rate: 0.0,
+            })
+            .collect();
+        items.sort_by_key(|v| std::cmp::Reverse(v.requests));
+        items.truncate(limit.max(0) as usize);
+        Ok(items)
+    }
 }
 
 fn bearer(token: &str) -> String {
@@ -760,4 +836,72 @@ async fn accounts_summary_analytics_refresh() {
     let resp = router.handle("POST", "/admin/accounts/1/reauth", Some(&bearer(&token)), None).await;
     assert_eq!(resp.status, 200);
     assert_eq!(resp.body["refreshed"], "reauth");
+}
+#[tokio::test]
+async fn import_accounts_batch() {
+    let (router, token) = setup().await;
+    // 全部合法
+    let body = r#"[{"identity_key":"k-import-1","provider":"grok_build"},{"identity_key":"k-import-2","provider":"grok_web","name":"w2","priority":5,"max_concurrent":2}]"#;
+    let resp = router.handle("POST", "/admin/accounts/import", Some(&bearer(&token)), Some(body)).await;
+    assert_eq!(resp.status, 201, "import: {}", resp.body);
+    assert_eq!(resp.body["imported"], 2);
+    assert_eq!(resp.body["failed"], 0);
+
+    // 部分失败：重复 identity_key + 非法 provider + 空 key + 1 条合法
+    let body = r#"[
+        {"identity_key":"k-import-1","provider":"grok_build"},
+        {"identity_key":"k-fresh","provider":"grok_build"},
+        {"identity_key":"k-new","provider":"bad_provider"},
+        {"identity_key":"","provider":"grok_build"}
+    ]"#;
+    let resp = router.handle("POST", "/admin/accounts/import", Some(&bearer(&token)), Some(body)).await;
+    assert_eq!(resp.status, 201, "partial import: {}", resp.body);
+    assert_eq!(resp.body["imported"], 1);
+    assert_eq!(resp.body["failed"], 3);
+    let errors = resp.body["errors"].as_array().unwrap();
+    assert_eq!(errors.len(), 3);
+    // 校验错误在对应 index（index 1 = k-fresh 成功，不在 errors 中）
+    assert!(errors.iter().any(|e| e["index"] == 0));
+    assert!(!errors.iter().any(|e| e["index"] == 1));
+    assert!(errors.iter().any(|e| e["index"] == 2 && e["reason"].as_str().unwrap().contains("provider")));
+    assert!(errors.iter().any(|e| e["index"] == 3));
+}
+
+#[tokio::test]
+async fn import_requires_bearer_and_valid_json() {
+    let (router, token) = setup().await;
+    // 无 token → 401
+    let resp = router.handle("POST", "/admin/accounts/import", None, Some("[]")).await;
+    assert_eq!(resp.status, 401);
+    // 坏 JSON → 400
+    let resp = router.handle("POST", "/admin/accounts/import", Some(&bearer(&token)), Some("not-json")).await;
+    assert_eq!(resp.status, 400);
+    // 空数组 → 201 空结果
+    let resp = router.handle("POST", "/admin/accounts/import", Some(&bearer(&token)), Some("[]")).await;
+    assert_eq!(resp.status, 201);
+    assert_eq!(resp.body["imported"], 0);
+}
+
+#[tokio::test]
+async fn analytics_timeseries_and_top_accounts() {
+    let (router, token) = setup().await;
+    // timeseries：fake 无审计数据 → 空数组（200）
+    let resp = router.handle("GET", "/admin/analytics/timeseries?days=7", Some(&bearer(&token)), None).await;
+    assert_eq!(resp.status, 200, "timeseries: {}", resp.body);
+    assert_eq!(resp.body.as_array().unwrap().len(), 0);
+    // 默认 days=7；非法 days 也回退默认
+    let resp = router.handle("GET", "/admin/analytics/timeseries", Some(&bearer(&token)), None).await;
+    assert_eq!(resp.status, 200);
+    let resp = router.handle("GET", "/admin/analytics/timeseries?days=abc", Some(&bearer(&token)), None).await;
+    assert_eq!(resp.status, 200);
+    // top-accounts：3 个 seed 账号，请求量为 0 → 按 id 升序（limit 截断）
+    let resp = router.handle("GET", "/admin/analytics/top-accounts?limit=2", Some(&bearer(&token)), None).await;
+    assert_eq!(resp.status, 200, "top-accounts: {}", resp.body);
+    let items = resp.body.as_array().unwrap();
+    assert_eq!(items.len(), 2);
+    // 401 覆盖
+    let resp = router.handle("GET", "/admin/analytics/timeseries", None, None).await;
+    assert_eq!(resp.status, 401);
+    let resp = router.handle("GET", "/admin/analytics/top-accounts", None, None).await;
+    assert_eq!(resp.status, 401);
 }

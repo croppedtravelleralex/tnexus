@@ -1,7 +1,8 @@
 "use client";
 
 import { Badge } from "@/components/ui/badge";
-import type { GrokAccountView } from "@/lib/grok-admin";
+import { GrokQuotaHeatstrip } from "@/components/grok/grok-quota-heatstrip";
+import type { GrokAccountView, GrokQuotaWindow } from "@/lib/grok-admin";
 import { cn } from "@/lib/utils";
 
 const AUTH_STATUS_VARIANT: Record<string, "success" | "warning" | "danger" | "muted" | "info"> = {
@@ -41,6 +42,7 @@ export function GrokAccountsTable({
   items,
   onEdit,
   onDetail,
+  quotaByAccount,
   className,
 }: {
   items: GrokAccountView[];
@@ -48,6 +50,8 @@ export function GrokAccountsTable({
   onEdit?: (account: GrokAccountView) => void;
   /** 行点击回调（打开详情对话框）。 */
   onDetail?: (account: GrokAccountView) => void;
+  /** 账号 → 额度窗口（列表接口不带额度，由页面按需并发拉取；缺失显示「未知」）。 */
+  quotaByAccount?: Record<number, GrokQuotaWindow | null | undefined>;
   className?: string;
 }) {
   if (items.length === 0) {
@@ -61,7 +65,7 @@ export function GrokAccountsTable({
 
   return (
     <div className={cn("neo-card overflow-x-auto", className)}>
-      <table className="w-full min-w-[880px] border-collapse text-left text-sm">
+      <table className="w-full min-w-[940px] border-collapse text-left text-sm">
         <thead>
           <tr className="border-b border-[var(--neo-border)] text-[11px] uppercase tracking-wide text-[var(--neo-muted)]">
             <th className="px-3 py-2 font-medium">ID</th>
@@ -71,6 +75,7 @@ export function GrokAccountsTable({
             <th className="px-3 py-2 font-medium">认证</th>
             <th className="px-3 py-2 font-medium">优先级</th>
             <th className="px-3 py-2 font-medium">已观测模型</th>
+            <th className="px-3 py-2 font-medium">额度</th>
             <th className="px-3 py-2 font-medium">并发</th>
             <th className="px-3 py-2 font-medium">失败</th>
             <th className="px-3 py-2 font-medium">冷却至</th>
@@ -99,6 +104,9 @@ export function GrokAccountsTable({
               <td className="px-3 py-2 tabular-nums">{a.priority}</td>
               <td className="max-w-[180px] truncate px-3 py-2" title={a.observed_model ?? ""}>
                 {a.observed_model || "—"}
+              </td>
+              <td className="px-3 py-2">
+                <GrokQuotaHeatstrip window={quotaByAccount?.[a.id]} />
               </td>
               <td className="px-3 py-2 tabular-nums">{a.max_concurrent}</td>
               <td className="px-3 py-2 tabular-nums">{a.failure_count}</td>

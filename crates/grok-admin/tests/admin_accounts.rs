@@ -382,6 +382,83 @@ impl AdminStore for AccountStore {
         account.auth_status = AuthStatus::ReauthRequired;
         Ok(true)
     }
+
+    async fn import_accounts(
+        &self,
+        inputs: &[grok_admin::ImportAccountInput],
+    ) -> AdminResult<grok_admin::ImportResult> {
+        let mut result = grok_admin::ImportResult::default();
+        for (index, input) in inputs.iter().enumerate() {
+            let provider = match grok_admin::accounts::parse_provider(&input.provider) {
+                Some(p) => p,
+                None => {
+                    result.failed += 1;
+                    result.errors.push(grok_admin::ImportError {
+                        index,
+                        reason: format!("unknown provider: {}", input.provider),
+                    });
+                    continue;
+                }
+            };
+            let identity_key = input.identity_key.trim();
+            if identity_key.is_empty() {
+                result.failed += 1;
+                result.errors.push(grok_admin::ImportError {
+                    index,
+                    reason: "identity_key 不能为空".into(),
+                });
+                continue;
+            }
+            let mut accounts = self.accounts.lock().unwrap();
+            if accounts.iter().any(|a| a.identity_key == identity_key) {
+                result.failed += 1;
+                result.errors.push(grok_admin::ImportError {
+                    index,
+                    reason: format!("identity_key 冲突: {identity_key}"),
+                });
+                continue;
+            }
+            let id = self.next_id.fetch_add(1, Ordering::SeqCst) + 1;
+            accounts.push(Account {
+                id,
+                identity_key: identity_key.to_string(),
+                provider,
+                name: input.name.clone().unwrap_or_else(|| format!("imported-{id}")),
+                priority: input.priority.unwrap_or(1),
+                max_concurrent: input.max_concurrent.unwrap_or(8),
+                enabled: true,
+                auth_status: AuthStatus::Unknown,
+                created_at: Some(Utc::now()),
+                updated_at: Some(Utc::now()),
+                ..Default::default()
+            });
+            result.imported += 1;
+        }
+        Ok(result)
+    }
+
+    async fn timeseries(&self, days: i64) -> AdminResult<Vec<grok_admin::TimeseriesPoint>> {
+        // fake 无审计记录：返回空数组（真实实现从 grok_request_audits 聚合，TODO）。
+        let _ = days;
+        Ok(Vec::new())
+    }
+
+    async fn top_accounts(&self, limit: i64) -> AdminResult<Vec<grok_admin::TopAccountView>> {
+        let accounts = self.accounts.lock().unwrap();
+        let mut items: Vec<grok_admin::TopAccountView> = accounts
+            .iter()
+            .map(|a| grok_admin::TopAccountView {
+                account_id: a.id,
+                name: a.name.clone(),
+                requests: 0,
+                failed: 0,
+                failure_rate: 0.0,
+            })
+            .collect();
+        items.sort_by_key(|v| std::cmp::Reverse(v.requests));
+        items.truncate(limit.max(0) as usize);
+        Ok(items)
+    }
 }
 
 // ── fixture ───────────────────────────────────────────────────────

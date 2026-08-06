@@ -63,6 +63,36 @@ export type GrokModelState = {
   updated_at: string;
 };
 
+/** 审计条目（对齐 grok-admin `AuditEntryView`，snake_case） */
+export type GrokAuditEntry = {
+  id: number;
+  account_id: number | null;
+  provider: string | null;
+  upstream_model: string | null;
+  status: number;
+  /** success / error */
+  outcome: string;
+  latency_ms: number;
+  created_at: string;
+};
+
+/** 审计分页（对齐 grok-admin `request-audits` 响应） */
+export type GrokAuditPage = {
+  items: GrokAuditEntry[];
+  page: number;
+  pageSize: number;
+  total: number;
+};
+
+/** 审计汇总（对齐 grok-admin `AuditSummaryView`） */
+export type GrokAuditSummary = {
+  total: number;
+  requests_24h: number;
+  succeeded_24h: number;
+  failed_24h: number;
+  success_rate_24h: number;
+};
+
 /** 账号详情（账号 + 额度窗口 + 模型状态，对齐 `AccountDetail`） */
 export type GrokAccountDetail = GrokAccountView & {
   quota_windows: GrokQuotaWindow[];
@@ -196,7 +226,46 @@ export const grokAdminApi = {
     const res = await grokAdminFetch(token, `/admin/accounts/${id}`, { method: "DELETE" });
     return res.json();
   },
+
+  /** 审计流水（分页，按时间倒序；对齐 grok-admin `request-audits`） */
+  listAudits: async (
+    token: string,
+    params?: { page?: number; pageSize?: number },
+  ): Promise<GrokAuditPage> => {
+    const q = new URLSearchParams();
+    if (params?.page != null) q.set("page", String(params.page));
+    if (params?.pageSize != null) q.set("pageSize", String(params.pageSize));
+    const query = q.toString();
+    return grokAdminGet<GrokAuditPage>(
+      token,
+      `/admin/request-audits${query ? `?${query}` : ""}`,
+    );
+  },
+
+  /** 审计汇总（近 24h 成功率等） */
+  getAuditSummary: async (token: string): Promise<GrokAuditSummary> => {
+    return grokAdminGet<GrokAuditSummary>(token, "/admin/request-audits/summary");
+  },
 };
+
+/** 拉取多页审计，直到达到 `limit` 条（客户端聚合用；数据不足返回已有条目）。 */
+export async function grokAdminListAuditsUpTo(
+  token: string,
+  limit: number,
+): Promise<GrokAuditEntry[]> {
+  const pageSize = Math.min(100, Math.max(1, limit));
+  const first = await grokAdminApi.listAudits(token, { page: 1, pageSize });
+  const items = [...(first.items ?? [])];
+  const total = first.total ?? items.length;
+  let page = 2;
+  while (items.length < Math.min(limit, total) && page <= 5) {
+    const next = await grokAdminApi.listAudits(token, { page, pageSize });
+    items.push(...(next.items ?? []));
+    if ((next.items ?? []).length === 0) break;
+    page += 1;
+  }
+  return items.slice(0, limit);
+}
 
 async function grokAdminFetch(
   token: string,

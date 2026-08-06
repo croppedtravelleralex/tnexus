@@ -6,6 +6,8 @@ import { ElevatedCard, PageShell } from "@/components/admin/page-shell";
 import { GrokAccountDetailDialog } from "@/components/grok/grok-account-detail-dialog";
 import { GrokAccountEditDialog } from "@/components/grok/grok-account-edit-dialog";
 import { GrokAccountsTable } from "@/components/grok/grok-accounts-table";
+import { GrokActivityPanels } from "@/components/grok/grok-activity-panels";
+import { GrokAccountHeatmap } from "@/components/grok/grok-heatmap";
 import { GrokImportDialog } from "@/components/grok/grok-import-dialog";
 import { GrokSummaryCards } from "@/components/grok/grok-summary-cards";
 import { Button } from "@/components/ui/button";
@@ -17,9 +19,12 @@ import {
   setGrokAdminToken,
   type GrokAccountPage,
   type GrokAccountView,
+  type GrokQuotaWindow,
 } from "@/lib/grok-admin";
 
 const PAGE_SIZE = 50;
+/** 额度列并发拉取的账号上限（列表接口不带额度；后端批量额度端点 TODO）。 */
+const QUOTA_FETCH_LIMIT = 20;
 
 export default function GrokAccountsPage() {
   const [token, setToken] = useState<string | null>(() => getGrokAdminToken());
@@ -29,6 +34,8 @@ export default function GrokAccountsPage() {
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  // 额度列：账号 → 额度窗口（当前页前 N 个并发拉取，容错；缺失显示「未知」）
+  const [quotaByAccount, setQuotaByAccount] = useState<Record<number, GrokQuotaWindow | null>>({});
 
   // 对话框状态
   const [editTarget, setEditTarget] = useState<GrokAccountView | null>(null);
@@ -47,6 +54,18 @@ export default function GrokAccountsPage() {
         setItems(data.items ?? []);
         setTotal(data.total ?? 0);
         setPage(data.page ?? pageNum);
+        // 额度列：仅对当前页前 N 个账号并发拉取（列表接口不带额度窗口）
+        const targets = (data.items ?? []).slice(0, QUOTA_FETCH_LIMIT);
+        const settled = await Promise.allSettled(
+          targets.map((a) => grokAdminApi.getQuotaWindows(currentToken, a.id)),
+        );
+        setQuotaByAccount((prev) => {
+          const next: Record<number, GrokQuotaWindow | null> = { ...prev };
+          targets.forEach((a, i) => {
+            next[a.id] = settled[i].status === "fulfilled" ? (settled[i].value[0] ?? null) : null;
+          });
+          return next;
+        });
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
         setItems([]);
@@ -168,10 +187,16 @@ export default function GrokAccountsPage() {
           ) : (
             <GrokAccountsTable
               items={items}
+              quotaByAccount={quotaByAccount}
               onEdit={(account) => setEditTarget(account)}
               onDetail={(account) => setDetailTarget(account)}
             />
           )}
+          <div className="mt-2 text-[10px] text-[var(--neo-muted)]">
+            额度列仅对当前页前 {QUOTA_FETCH_LIMIT} 个账号拉取（列表接口不带额度；后端批量额度端点 TODO）
+          </div>
+          <GrokActivityPanels token={token} />
+          <GrokAccountHeatmap token={token} />
         </div>
       )}
 

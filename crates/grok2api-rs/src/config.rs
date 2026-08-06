@@ -28,6 +28,12 @@ pub struct Config {
     /// Console 上游 base URL（N5 挂载 `/v1/messages` 用；None = 走
     /// `grok_provider_console::default_base_url()`，即 env `GROK2API_CONSOLE_BASE_URL` 或常量）。
     pub console_base_url: Option<String>,
+    /// Grok 管理台 JWT secret（N5 起 `/admin/*` 鉴权用）。缺省时随机生成并告警。
+    pub admin_secret: String,
+    /// 首启 bootstrap 的管理员用户名（默认 `admin`）。
+    pub admin_username: String,
+    /// 首启 bootstrap 的管理员密码；缺省用 `admin`。
+    pub admin_password: String,
 }
 
 impl Config {
@@ -50,6 +56,12 @@ impl Config {
         let console_base_url =
             env::var("GROK2API_CONSOLE_BASE_URL").ok().filter(|s| !s.trim().is_empty());
 
+        let admin_secret = env::var("GROK_ADMIN_SECRET").unwrap_or_default();
+        let admin_username =
+            env::var("GROK_ADMIN_USERNAME").unwrap_or_else(|_| "admin".into());
+        let admin_password =
+            env::var("GROK_ADMIN_PASSWORD").unwrap_or_else(|_| "admin".into());
+
         let config = Self {
             server_addr,
             database_url,
@@ -57,6 +69,9 @@ impl Config {
             browser_bridge_url,
             build_base_url,
             console_base_url,
+            admin_secret,
+            admin_username,
+            admin_password,
         };
         config.validate()?;
         Ok(config)
@@ -102,6 +117,9 @@ mod tests {
             browser_bridge_url: "http://browser-bridge:8192".to_string(),
             build_base_url: None,
             console_base_url: None,
+            admin_secret: "12345678901234567890123456789012".to_string(),
+            admin_username: "admin".to_string(),
+            admin_password: "admin".to_string(),
         }
     }
 

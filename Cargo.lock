@@ -1930,9 +1930,11 @@ name = "grok2api-rs"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "chrono",
  "dotenvy",
+ "grok-admin",
  "grok-domain",
  "grok-egress",
  "grok-gateway",
@@ -1940,6 +1942,8 @@ dependencies = [
  "grok-provider-web",
  "grok-storage",
  "http-body-util",
+ "rand 0.8.7",
+ "redis",
  "serde",
  "serde_json",
  "sqlx",

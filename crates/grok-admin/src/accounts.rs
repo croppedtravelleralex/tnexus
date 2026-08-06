@@ -87,6 +87,57 @@ pub struct AccountPage {
     pub total: i64,
 }
 
+/// 批量导入单条输入（对齐 Go `accounts/import` 的逐行 JSON）。
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ImportAccountInput {
+    /// 必填：唯一身份键。
+    pub identity_key: String,
+    /// 必填：grok_build / grok_web / grok_console。
+    pub provider: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub priority: Option<i32>,
+    #[serde(default)]
+    pub max_concurrent: Option<i32>,
+}
+
+/// 单条导入失败（对齐 Go 逐条错误 `{index, reason}`）。
+#[derive(Debug, Clone, Serialize)]
+pub struct ImportError {
+    pub index: usize,
+    pub reason: String,
+}
+
+/// 导入结果（对齐 Go `accounts/import` 响应）。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ImportResult {
+    pub imported: i64,
+    pub failed: i64,
+    pub errors: Vec<ImportError>,
+}
+
+/// 每日聚合点（可视化面板数据源；对齐 Go `analytics/timeseries`）。
+#[derive(Debug, Clone, Serialize)]
+pub struct TimeseriesPoint {
+    pub date: String,
+    pub requests: i64,
+    pub succeeded: i64,
+    pub failed: i64,
+    pub latency_p50_ms: i64,
+}
+
+/// Top 账号视图（对齐 Go `analytics/top-accounts`）。
+#[derive(Debug, Clone, Serialize)]
+pub struct TopAccountView {
+    pub account_id: i64,
+    pub name: String,
+    pub requests: i64,
+    pub failed: i64,
+    /// 失败率 0.0–1.0。
+    pub failure_rate: f64,
+}
+
 /// 额度窗口写入输入（对齐 Go `quotaWindowResponse` 的可写子集）。
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct QuotaWindowInput {
@@ -141,6 +192,14 @@ pub trait AdminStore: Send + Sync {
     async fn refresh_token(&self, account_id: i64) -> AdminResult<bool>;
     /// 触发重登；`Ok(false)` = 账号不存在（Go `reauth`）。
     async fn reauth(&self, account_id: i64) -> AdminResult<bool>;
+
+    // ── G6 批量导入 + 可视化聚合（39g §1.2 缺失项）──────────────
+    /// 批量导入；返回成功/失败明细（Go `accounts/import`）。
+    async fn import_accounts(&self, inputs: &[ImportAccountInput]) -> AdminResult<ImportResult>;
+    /// 按天聚合请求统计（近 `days` 天；无数据返回空数组）。
+    async fn timeseries(&self, days: i64) -> AdminResult<Vec<TimeseriesPoint>>;
+    /// 按请求量/失败率取 Top 账号。
+    async fn top_accounts(&self, limit: i64) -> AdminResult<Vec<TopAccountView>>;
 }
 
 /// 池规模汇总（对齐 Go `accounts/summary`；按 provider × 池态计数）。
@@ -312,6 +371,26 @@ impl AccountAdminService {
         self.store.analytics().await
     }
 
+    /// 批量导入：逐条校验（identity_key/provider 必填），委托 store 落库。
+    pub async fn import(&self, inputs: &[ImportAccountInput]) -> AdminResult<ImportResult> {
+        // 空数组 → 直接返回空结果（不调用 store）。
+        if inputs.is_empty() {
+            return Ok(ImportResult::default());
+        }
+        self.store.import_accounts(inputs).await
+    }
+
+    /// 近 `days` 天每日聚合（可视化面板数据源）。
+    pub async fn timeseries(&self, days: i64) -> AdminResult<Vec<TimeseriesPoint>> {
+        let days = days.clamp(1, 90);
+        self.store.timeseries(days).await
+    }
+
+    /// Top 账号（按请求量降序；请求量为 0 时按失败率降序）。
+    pub async fn top_accounts(&self, limit: i64) -> AdminResult<Vec<TopAccountView>> {
+        self.store.top_accounts(limit.clamp(1, 50)).await
+    }
+
     /// 运维动作：单账号 billing 探测 / quota 刷新 / token 刷新 / 重登。
     /// 账号不存在 → NotFound；动作委托给 store（SQL / grok-ops backend 留 TODO）。
     pub async fn refresh_billing(&self, id: i64) -> AdminResult<()> {
@@ -368,6 +447,16 @@ pub fn parse_auth_status(raw: &str) -> AdminResult<AuthStatus> {
         other => Err(AdminError::InvalidRequest(format!(
             "无效 auth_status: {other}"
         ))),
+    }
+}
+
+/// Provider 解析（导入输入用；未知 → None 而非 Err，便于逐条计数）。
+pub fn parse_provider(raw: &str) -> Option<Provider> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "grok_build" | "build" => Some(Provider::GrokBuild),
+        "grok_web" | "web" => Some(Provider::GrokWeb),
+        "grok_console" | "console" => Some(Provider::GrokConsole),
+        _ => None,
     }
 }
 
