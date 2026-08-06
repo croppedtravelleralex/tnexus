@@ -279,6 +279,109 @@ impl AdminStore for AccountStore {
             .cloned()
             .collect())
     }
+
+    async fn pool_summary(&self) -> AdminResult<grok_admin::AccountSummary> {
+        let now = Utc::now();
+        let accounts = self.accounts.lock().unwrap();
+        let mut summary = grok_admin::AccountSummary::default();
+        let mut by_provider: std::collections::HashMap<String, grok_admin::ProviderSummary> =
+            Default::default();
+        for account in accounts.iter() {
+            let provider = account.provider.as_str().to_string();
+            let entry = by_provider.entry(provider).or_default();
+            entry.total += 1;
+            summary.total += 1;
+            if !account.enabled {
+                entry.disabled += 1;
+                summary.disabled += 1;
+                continue;
+            }
+            if account.auth_status == AuthStatus::ReauthRequired {
+                entry.reauth_required += 1;
+                summary.reauth_required += 1;
+                continue;
+            }
+            if account.cooldown_until.is_some_and(|until| until > now) {
+                entry.cooldown += 1;
+                summary.cooldown += 1;
+                continue;
+            }
+            if account.auth_status == AuthStatus::Active {
+                entry.available += 1;
+                summary.available += 1;
+            }
+        }
+        // 额度耗尽统计：窗口 remaining<=0 且 total>0
+        let windows = self.windows.lock().unwrap();
+        summary.quota_exhausted = windows
+            .iter()
+            .filter(|w| w.total > 0 && w.remaining <= 0)
+            .count() as i64;
+        summary.by_provider = by_provider;
+        Ok(summary)
+    }
+
+    async fn analytics(&self) -> AdminResult<grok_admin::AccountAnalytics> {
+        let accounts = self.accounts.lock().unwrap();
+        let windows = self.windows.lock().unwrap();
+        let mut analytics = grok_admin::AccountAnalytics::default();
+        let account_ids: std::collections::HashSet<i64> =
+            accounts.iter().map(|a| a.id).collect();
+        let window_accounts: std::collections::HashSet<i64> =
+            windows.iter().map(|w| w.account_id).collect();
+        for account in accounts.iter() {
+            let Some(window) = windows.iter().find(|w| w.account_id == account.id) else {
+                analytics.quota_unknown += 1;
+                continue;
+            };
+            if window.total > 0 && window.remaining <= 0 {
+                analytics.quota_exhausted += 1;
+            } else if window.total > 0 {
+                analytics.quota_known += 1;
+            } else {
+                analytics.quota_unknown += 1;
+            }
+            if let Some(model) = &account.observed_model {
+                *analytics.by_model.entry(model.clone()).or_insert(0) += 1;
+            }
+        }
+        analytics.billing_count = window_accounts
+            .intersection(&account_ids)
+            .count() as i64;
+        Ok(analytics)
+    }
+
+    async fn refresh_billing(&self, account_id: i64) -> AdminResult<bool> {
+        // 运维动作：推进 synced_at（真实实现接 grok-ops PgBuildProbeOps，TODO）
+        let exists = self.accounts.lock().unwrap().iter().any(|a| a.id == account_id);
+        if !exists {
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    async fn refresh_quota(&self, account_id: i64) -> AdminResult<bool> {
+        let exists = self.accounts.lock().unwrap().iter().any(|a| a.id == account_id);
+        Ok(exists)
+    }
+
+    async fn refresh_token(&self, account_id: i64) -> AdminResult<bool> {
+        let mut accounts = self.accounts.lock().unwrap();
+        let Some(account) = accounts.iter_mut().find(|a| a.id == account_id) else {
+            return Ok(false);
+        };
+        account.updated_at = Some(Utc::now());
+        Ok(true)
+    }
+
+    async fn reauth(&self, account_id: i64) -> AdminResult<bool> {
+        let mut accounts = self.accounts.lock().unwrap();
+        let Some(account) = accounts.iter_mut().find(|a| a.id == account_id) else {
+            return Ok(false);
+        };
+        account.auth_status = AuthStatus::ReauthRequired;
+        Ok(true)
+    }
 }
 
 // ── fixture ───────────────────────────────────────────────────────

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GenerationRecordsPanel } from "@/components/studio/generation-records-panel";
 import { GenConfigPanel } from "@/components/studio/gen-config-panel";
+import { OcrPanel } from "@/components/studio/ocr-panel";
 import { OutputPanel, type OutputSlot } from "@/components/studio/output-panel";
 import { ResizableStudioLayout, DEFAULT_COLUMN_WIDTHS } from "@/components/studio/resizable-layout";
 import { conversationsApi, jobsApi, type FactorPoint, type JobDetail, type JobListItem, type JobResult } from "@/lib/api";
@@ -16,7 +17,8 @@ import { isChatConversationState } from "@/lib/chat-conversations";
 import { DEFAULT_GEN_CONFIG, snappedGenConfig, type GenConfig } from "@/lib/gen-config";
 import { saveColumnRatios } from "@/lib/studio-layout";
 import type { TextModelId } from "@/lib/models";
-import { Loader2 } from "lucide-react";
+import { Loader2, ScanText } from "lucide-react";
+import { Button } from "@/components/ui/button";
 
 const STAGE_LABELS: Record<string, string> = {
   queued: "排队中",
@@ -71,6 +73,7 @@ export default function StudioPage() {
   const [startedAt, setStartedAt] = useState(0);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [ocrOpen, setOcrOpen] = useState(false);
   const displaySlots = useMemo(() => {
     const pending = Math.max(totalSlotCount - completedSlots.length, 0);
     const pendingTiles: OutputSlot[] = Array.from({ length: pending }, (_, i) => ({
@@ -462,6 +465,26 @@ export default function StudioPage() {
 
   return (
     <div className="flex h-[calc(100dvh-3rem)] min-h-0 flex-col bg-[var(--neo-surface-raised)]">
+      {/* Grok OCR 快捷入口（G7-P2，图片 → 文字提取） */}
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => setOcrOpen(true)}
+        className="absolute right-3 top-3 z-30 gap-1.5"
+      >
+        <ScanText className="h-3.5 w-3.5" aria-hidden />
+        Grok OCR
+      </Button>
+      {ocrOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setOcrOpen(false);
+          }}
+        >
+          <OcrPanel onClose={() => setOcrOpen(false)} />
+        </div>
+      )}
       <ResizableStudioLayout
         widths={columnWidths}
         onWidthsChange={(w) => {

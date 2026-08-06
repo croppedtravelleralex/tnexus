@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use grok_domain::{Account, AuthStatus, ModelState, Provider, QuotaSource, QuotaWindow};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::error::{AdminError, AdminResult};
@@ -126,6 +127,66 @@ pub trait AdminStore: Send + Sync {
     async fn upsert_quota_window(&self, window: QuotaWindow) -> AdminResult<QuotaWindow>;
     /// 账号的全部模型状态（Go `GetModelStates`）。
     async fn list_model_states(&self, account_id: i64) -> AdminResult<Vec<ModelState>>;
+
+    // ── G6 运维端点（39g §1.2 缺失项）──────────────────────────
+    /// 池规模汇总（对齐 Go `accounts/summary`）。
+    async fn pool_summary(&self) -> AdminResult<AccountSummary>;
+    /// 账号分析（对齐 Go `accounts/analytics`）。
+    async fn analytics(&self) -> AdminResult<AccountAnalytics>;
+    /// 单账号 billing 探测；`Ok(false)` = 账号不存在（Go `refresh-billing`）。
+    async fn refresh_billing(&self, account_id: i64) -> AdminResult<bool>;
+    /// 单账号 quota 刷新；`Ok(false)` = 账号不存在（Go `refresh-quota`）。
+    async fn refresh_quota(&self, account_id: i64) -> AdminResult<bool>;
+    /// 单账号 token 刷新；`Ok(false)` = 账号不存在（Go `refresh-token`）。
+    async fn refresh_token(&self, account_id: i64) -> AdminResult<bool>;
+    /// 触发重登；`Ok(false)` = 账号不存在（Go `reauth`）。
+    async fn reauth(&self, account_id: i64) -> AdminResult<bool>;
+}
+
+/// 池规模汇总（对齐 Go `accounts/summary`；按 provider × 池态计数）。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct AccountSummary {
+    /// 每 provider 的账号总数。
+    pub total: i64,
+    /// 已启用且 Active。
+    pub available: i64,
+    /// 冷却中（cooldown_until > now）。
+    pub cooldown: i64,
+    /// 需重新授权（reauthRequired）。
+    pub reauth_required: i64,
+    /// 手动禁用。
+    pub disabled: i64,
+    /// 探针中（failure_count > 0 且冷却未过）。
+    pub probing: i64,
+    /// 额度已耗尽（remaining <= 0 且 total > 0 的窗口数）。
+    pub quota_exhausted: i64,
+    /// 各 provider 明细。
+    pub by_provider: HashMap<String, ProviderSummary>,
+}
+
+/// 单 provider 明细（对齐 Go summary 的 provider 分组）。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ProviderSummary {
+    pub total: i64,
+    pub available: i64,
+    pub cooldown: i64,
+    pub reauth_required: i64,
+    pub disabled: i64,
+}
+
+/// 账号分析（对齐 Go `accounts/analytics`；额度状态分布）。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct AccountAnalytics {
+    /// 额度已知且未耗尽。
+    pub quota_known: i64,
+    /// 额度已耗尽。
+    pub quota_exhausted: i64,
+    /// 额度未知（无窗口或 0/0）。
+    pub quota_unknown: i64,
+    /// 有 billing 快照的账号数。
+    pub billing_count: i64,
+    /// 各模型观察到的账号数。
+    pub by_model: HashMap<String, i64>,
 }
 
 /// 账号管理服务：校验 + 编排（无 IO 细节）。
@@ -239,6 +300,49 @@ impl AccountAdminService {
             return Err(AdminError::NotFound(format!("account {id}")));
         }
         self.store.list_model_states(id).await
+    }
+
+    /// 池规模汇总（对齐 Go `accounts/summary`）。
+    pub async fn summary(&self) -> AdminResult<AccountSummary> {
+        self.store.pool_summary().await
+    }
+
+    /// 账号分析（对齐 Go `accounts/analytics`）。
+    pub async fn analytics(&self) -> AdminResult<AccountAnalytics> {
+        self.store.analytics().await
+    }
+
+    /// 运维动作：单账号 billing 探测 / quota 刷新 / token 刷新 / 重登。
+    /// 账号不存在 → NotFound；动作委托给 store（SQL / grok-ops backend 留 TODO）。
+    pub async fn refresh_billing(&self, id: i64) -> AdminResult<()> {
+        self.require_account(id).await?;
+        self.store.refresh_billing(id).await?;
+        Ok(())
+    }
+
+    pub async fn refresh_quota(&self, id: i64) -> AdminResult<()> {
+        self.require_account(id).await?;
+        self.store.refresh_quota(id).await?;
+        Ok(())
+    }
+
+    pub async fn refresh_token(&self, id: i64) -> AdminResult<()> {
+        self.require_account(id).await?;
+        self.store.refresh_token(id).await?;
+        Ok(())
+    }
+
+    pub async fn reauth(&self, id: i64) -> AdminResult<()> {
+        self.require_account(id).await?;
+        self.store.reauth(id).await?;
+        Ok(())
+    }
+
+    async fn require_account(&self, id: i64) -> AdminResult<()> {
+        if self.store.get_account(id).await?.is_none() {
+            return Err(AdminError::NotFound(format!("account {id}")));
+        }
+        Ok(())
     }
 }
 

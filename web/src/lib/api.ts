@@ -810,4 +810,60 @@ export const chatApi = {
     const content = message?.content ?? "";
     if (content) onDelta(content);
   },
+
+  /**
+   * 图片文字提取（OCR）：G7-P2，走既有 chat completions 带图附件链路
+   * （G1 gateway OCR：检测 image_url 附件 → grok-vision 上游）。
+   * 输入为 `data:image/...;base64,` data URI；返回识别文本。
+   * 后端若未暴露 /api/backend/grok/ocr 专用端点，则复用本端点（见 crates/grok-gateway）。
+   */
+  extractText: async (dataUrl: string, prompt?: string): Promise<string> => {
+    const body = {
+      model: "gpt-4o-mini", // 内部通道 id，gateway 映射到 grok OCR 语义（与 chat 页一致）
+      stream: false,
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: prompt ?? "请提取这张图片中的全部文字内容，按原有顺序输出；只输出识别到的文字。" },
+            { type: "image_url", image_url: { url: dataUrl } },
+          ],
+        },
+      ],
+    };
+    let res: Response;
+    try {
+      res = await fetch(`${API_BASE}/api/chat/completions`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    } catch {
+      if (GATEWAY_BASE) {
+        res = await fetch(`${GATEWAY_BASE}/v1/chat/completions`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(GATEWAY_KEY ? { Authorization: `Bearer ${GATEWAY_KEY}` } : {}),
+          },
+          body: JSON.stringify(body),
+        });
+      } else {
+        throw new Error("无法连接对话服务");
+      }
+    }
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(text || res.statusText);
+    }
+    const data = (await res.json()) as {
+      choices?: Array<{ message?: { content?: string } }>;
+    };
+    const content = data.choices?.[0]?.message?.content ?? "";
+    if (!content.trim()) {
+      throw new Error("未识别到文字（空响应）");
+    }
+    return content;
+  },
 };
