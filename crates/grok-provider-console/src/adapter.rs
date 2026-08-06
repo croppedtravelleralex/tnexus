@@ -20,6 +20,10 @@ use crate::error::{ProviderError, UpstreamError};
 use crate::normalize::build_chat_request;
 use crate::sse::{parse_chat_delta, ChatDelta, SseParser};
 
+/// SSE 帧间空闲上限：流可长时间保持连接，但不能容忍帧间长时间静默
+/// （上游卡死/半开连接）。比 client 级 total timeout 更适合流式。
+pub const READ_FRAME_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// 适配器配置（对齐 Go `console.Config`）。
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -33,9 +37,18 @@ impl Default for Config {
         Self {
             base_url: crate::default_base_url(),
             user_agent: "grok-console/0.1".into(),
-            timeout: Duration::from_secs(300),
+            timeout: default_timeout(),
         }
     }
+}
+
+/// 上游请求超时（env `GROK2API_UPSTREAM_TIMEOUT_MS` 覆盖，缺省 60_000ms）。
+pub fn default_timeout() -> Duration {
+    let ms = std::env::var("GROK2API_UPSTREAM_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(60_000);
+    Duration::from_millis(ms)
 }
 
 /// Console 适配器。
@@ -57,11 +70,10 @@ impl ConsoleAdapter {
         }
     }
 
-    fn build_client(cfg: &Config) -> Client {
-        Client::builder()
-            .timeout(cfg.timeout)
-            .build()
-            .expect("reqwest client")
+    fn build_client(_cfg: &Config) -> Client {
+        // 不带 client 级 total timeout：SSE 流式长连会被它杀死。
+        // 总超时语义由调用方（send/error-body 用 `tokio::time::timeout`，流式读用帧超时）承担。
+        Client::builder().build().expect("reqwest client")
     }
 
     pub fn update_config(&self, cfg: Config) {
@@ -82,7 +94,8 @@ impl ConsoleAdapter {
         let url = format!("{}/v1/chat/completions", cfg.base_url.trim_end_matches('/'));
         let body = build_chat_request(model, messages, true)?;
 
-        let response = self
+        // 响应头/连接阶段：总超时（连接 + 首字节），避免无限挂起。
+        let request = self
             .client
             .post(&url)
             .header("Accept", "text/event-stream")
@@ -96,17 +109,24 @@ impl ConsoleAdapter {
             .header("x-cluster", "https://us-east-1.api.x.ai")
             .header("User-Agent", cfg.user_agent)
             .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| classify_reqwest_error(e, cfg.timeout))?;
+            .json(&body);
+        let send = tokio::time::timeout(cfg.timeout, request.send());
+        let response = match send.await {
+            Ok(Ok(resp)) => resp,
+            Ok(Err(e)) => return Err(classify_reqwest_error(e, cfg.timeout)),
+            Err(_) => return Err(ProviderError::Timeout(cfg.timeout)),
+        };
 
         let status = response.status();
         if !status.is_success() {
-            let text = response
-                .text()
-                .await
-                .map_err(|e| ProviderError::Upstream(format!("读取错误响应: {e}")))?;
+            let text_fut = response.text();
+            let text = match tokio::time::timeout(cfg.timeout, text_fut).await {
+                Ok(Ok(t)) => t,
+                Ok(Err(e)) => {
+                    return Err(classify_reqwest_error(e, cfg.timeout));
+                }
+                Err(_) => return Err(ProviderError::Timeout(cfg.timeout)),
+            };
             let upstream = UpstreamError::parse(status.as_u16(), &text);
             return Err(ProviderError::Upstream(format!(
                 "上游 {status} {}: {}",
@@ -114,15 +134,25 @@ impl ConsoleAdapter {
             )));
         }
 
-        // 2xx：增量读流
+        // 2xx：增量读流。注意：**不用** client 级 total timeout 杀长流
+        // （SSE 可长时间保持连接），改为每帧读超时（帧间空闲上限）。
         let mut parser = SseParser::new();
         let mut deltas = Vec::new();
         let mut stream = response.bytes_stream();
         use futures_util::StreamExt;
-        while let Some(chunk) = stream.next().await {
-            let bytes = chunk.map_err(|e| classify_reqwest_error(e, cfg.timeout))?;
-            for event in parser.feed(&bytes) {
-                collect_delta(&mut deltas, &event.data)?;
+        loop {
+            let frame = tokio::time::timeout(READ_FRAME_TIMEOUT, stream.next()).await;
+            match frame {
+                Ok(Some(Ok(bytes))) => {
+                    for event in parser.feed(&bytes) {
+                        collect_delta(&mut deltas, &event.data)?;
+                    }
+                }
+                Ok(Some(Err(e))) => return Err(classify_reqwest_error(e, cfg.timeout)),
+                Ok(None) => break,
+                Err(_) => {
+                    return Err(ProviderError::Timeout(READ_FRAME_TIMEOUT));
+                }
             }
         }
         for event in parser.finish() {

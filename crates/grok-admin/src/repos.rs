@@ -5,7 +5,9 @@
 //! 映射为 `RuntimeUnavailable`（对齐 Go 的 `errors.Is(err, repository.ErrNotFound)`）。
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
+use std::collections::HashMap;
+use std::sync::Mutex;
 
 use crate::domain::{Admin, Session};
 use crate::error::AdminResult;
@@ -56,4 +58,42 @@ pub trait AdminSessionRepository: Send + Sync {
 pub trait RateLimiter: Send + Sync {
     /// 是否允许本次请求（Go `Allow`）。
     async fn allow(&self, key: &str, limit: i32, now: DateTime<Utc>) -> AdminResult<bool>;
+}
+
+/// 固定窗口内存限流器（对齐 Go 内存 RateLimiter；多实例需换 Redis，见 docs/39g）。
+pub struct MemoryRateLimiter {
+    window: Duration,
+    buckets: Mutex<HashMap<String, (DateTime<Utc>, i32)>>,
+}
+
+impl MemoryRateLimiter {
+    /// `window`：窗口时长（默认建议 15 分钟，对齐 Go `checkLoginRate` 窗口）。
+    pub fn new(window: Duration) -> Self {
+        Self {
+            window,
+            buckets: Mutex::new(HashMap::new()), // Mutex 无 Default → 显式构造
+        }
+    }
+}
+
+impl Default for MemoryRateLimiter {
+    fn default() -> Self {
+        Self::new(Duration::minutes(15))
+    }
+}
+
+#[async_trait]
+impl RateLimiter for MemoryRateLimiter {
+    async fn allow(&self, key: &str, limit: i32, now: DateTime<Utc>) -> AdminResult<bool> {
+        let mut buckets = self.buckets.lock().unwrap();
+        let entry = buckets.entry(key.to_string()).or_insert((now, 0));
+        if now - entry.0 >= self.window {
+            *entry = (now, 0);
+        }
+        if entry.1 >= limit {
+            return Ok(false);
+        }
+        entry.1 += 1;
+        Ok(true)
+    }
 }

@@ -185,9 +185,13 @@ impl BuildFourPool {
         };
         let candidate = match self.ops.get_account(id).await {
             Ok(Some(a)) => a,
-            Ok(None) | Err(_) => {
+            Ok(None) => {
                 self.sync_account_index(id).await;
                 return Ok(TickResult::none());
+            }
+            Err(e) => {
+                self.sync_account_index(id).await;
+                return Err(e);
             }
         };
         let mode = match lane {
@@ -208,9 +212,13 @@ impl BuildFourPool {
         };
         let candidate = match self.ops.get_account(id).await {
             Ok(Some(a)) => a,
-            Ok(None) | Err(_) => {
+            Ok(None) => {
                 self.sync_account_index(id).await;
                 return Ok(TickResult::none());
+            }
+            Err(e) => {
+                self.sync_account_index(id).await;
+                return Err(e);
             }
         };
         let recovery = self.ops.get_recovery(id).await.ok().flatten();

@@ -299,11 +299,11 @@ async fn protocol_endpoint_without_backend_500() {
         json!({ "model": "grok-4.5", "input": "hi" }),
     )
     .await;
-    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert!(body["error"]["message"]
         .as_str()
         .unwrap()
-        .contains("ProtocolBackend"));
+        .contains("not configured"));
 
     let (status, _) = post(
         &app,
@@ -311,7 +311,7 @@ async fn protocol_endpoint_without_backend_500() {
         json!({ "model": "grok-4.5", "messages": [{"role": "user", "content": "hi"}] }),
     )
     .await;
-    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
 }
 
 /// 未解析的 JSON → 400（axum Json extractor 层）。

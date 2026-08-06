@@ -1117,10 +1117,14 @@ impl Selector {
             || !account.last_error.as_deref().unwrap_or("").is_empty();
         {
             let mut st = self.state();
-            if let Some(last) = st.last_success_at.get(&account.id).copied() {
-                if last == DateTime::<Utc>::UNIX_EPOCH || now - last >= SUCCESS_PERSIST_INTERVAL {
-                    persist = true;
-                }
+            // 对齐 Go `markSuccess`：无记录或 epoch 视为 `last.IsZero()` → 持久化；
+            // 距上次成功超过间隔也持久化（避免每次刷新 DB）。首次成功必须落库。
+            let last = st.last_success_at.get(&account.id).copied();
+            if last.is_none()
+                || last.is_some_and(|t| t == DateTime::<Utc>::UNIX_EPOCH)
+                || now - last.unwrap() >= SUCCESS_PERSIST_INTERVAL
+            {
+                persist = true;
             }
             if persist {
                 st.last_success_at.insert(account.id, now);
@@ -1394,6 +1398,27 @@ impl Selector {
     ) -> SelectorResult<()> {
         let mut ctx = SortContext::default();
         let upstream_model = upstream_model.trim().to_string();
+        // 先持久化 ModelState（跨重启）排名，后内存 outcomes 覆盖——对齐 Go `sortCandidates`：
+        // 最近一次成功/soft-stop 以内存为准（Go 先遍历 candidate.ModelState，再遍历 s.modelOutcomes）。
+        for candidate in values.iter() {
+            let Some(state) = &candidate.model_state else {
+                continue;
+            };
+            if state.upstream_model != upstream_model {
+                continue;
+            }
+            if state.status == ModelStatus::SoftStop
+                && state.cooldown_until.is_some_and(|until| now < until)
+            {
+                ctx.model_ranks.insert(state.account_id, 2);
+            } else if state.status == ModelStatus::Available
+                && state
+                    .last_success_at
+                    .is_some_and(|at| now - at <= MODEL_OUTCOME_SUCCESS_TTL)
+            {
+                ctx.model_ranks.insert(state.account_id, 0);
+            }
+        }
         {
             let st = self.state();
             ctx.last_selected_at = st.last_selected_at.clone();
@@ -1414,26 +1439,6 @@ impl Selector {
                 } else {
                     ctx.model_ranks.insert(id.0, 1);
                 }
-            }
-        }
-        // 持久化 ModelState（跨重启）的排名。
-        for candidate in values.iter() {
-            let Some(state) = &candidate.model_state else {
-                continue;
-            };
-            if state.upstream_model != upstream_model {
-                continue;
-            }
-            if state.status == ModelStatus::SoftStop
-                && state.cooldown_until.is_some_and(|until| now < until)
-            {
-                ctx.model_ranks.insert(state.account_id, 2);
-            } else if state.status == ModelStatus::Available
-                && state
-                    .last_success_at
-                    .is_some_and(|at| now - at <= MODEL_OUTCOME_SUCCESS_TTL)
-            {
-                ctx.model_ranks.insert(state.account_id, 0);
             }
         }
         if upstream_model.eq_ignore_ascii_case(WEB_LITE_IMAGE_UPSTREAM_MODEL) {

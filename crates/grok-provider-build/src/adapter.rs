@@ -25,6 +25,8 @@ pub struct Config {
     pub client_identifier: String,
     pub token_auth: String,
     pub user_agent: String,
+    /// 请求总超时（连接 + 响应头 + 体），`GROK2API_UPSTREAM_TIMEOUT_MS` 可覆盖，缺省 60s。
+    pub timeout: std::time::Duration,
 }
 
 impl Default for Config {
@@ -35,8 +37,18 @@ impl Default for Config {
             client_identifier: "grok-shell".into(),
             token_auth: "xai-grok-cli".into(),
             user_agent: "grok-shell/0.2.99 (linux; x86_64)".into(),
+            timeout: crate::default_timeout(),
         }
     }
+}
+
+/// 上游请求超时（env `GROK2API_UPSTREAM_TIMEOUT_MS` 覆盖，缺省 60_000ms）。
+pub fn default_timeout() -> std::time::Duration {
+    let ms = std::env::var("GROK2API_UPSTREAM_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(60_000);
+    std::time::Duration::from_millis(ms)
 }
 
 /// 转发请求（对齐 Go `provider.ResponseResourceRequest` 的 Build 子集）。
@@ -82,11 +94,11 @@ pub struct BuildAdapter {
 
 impl BuildAdapter {
     pub fn new(cfg: Config) -> Self {
-        Self {
-            client: Client::new(),
-            cfg: RwLock::new(cfg),
-            identities: Mutex::new(HashMap::new()),
-        }
+        let client = Client::builder()
+            .timeout(cfg.timeout)
+            .build()
+            .expect("reqwest client");
+        Self::with_client(client, cfg)
     }
 
     /// 注入 HTTP 客户端（测试指向本地 mock server）。
@@ -204,7 +216,15 @@ impl BuildAdapter {
         let resp = rb
             .send()
             .await
-            .map_err(|e| ProviderError::Http(format!("请求 {url}: {e}")))?;
+            .map_err(|e| {
+                if e.is_timeout() {
+                    ProviderError::Timeout(cfg.timeout)
+                } else if e.is_connect() {
+                    ProviderError::Http(format!("连接上游失败: {e}"))
+                } else {
+                    ProviderError::Http(format!("请求上游失败: {e}"))
+                }
+            })?;
         let status = resp.status().as_u16();
         let text = resp
             .text()

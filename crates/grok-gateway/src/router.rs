@@ -4,11 +4,18 @@
 //! [`AppState`]，内含按需构建的 [`ChatEngine`]。
 //!
 //! [`build_app`] 接受已组装 engine 便于测试注入 mock（tower `ServiceExt::oneshot`）。
+//! `/v1` 写操作（POST/PATCH/DELETE）可选鉴权：配置 `GATEWAY_AUTH_KEY` 后要求
+//! `Authorization: Bearer <key>` 或 `X-API-Key: <key>`（见 [`require_gateway_auth`]）。
 
 use std::sync::Arc;
 
+use axum::extract::{Request, State};
+use axum::http::{header, Method, StatusCode};
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::Router;
+use axum::{Json, Router};
+use serde_json::json;
 
 use grok_provider_web::{ChatEngine, ImageEngine};
 
@@ -33,6 +40,9 @@ pub struct AppState {
     pub messages_backend: Option<Arc<dyn ProtocolBackend>>,
     /// G5-P4 视频后端（/v1/videos）。None 时返回 500。
     pub video_backend: Option<Arc<dyn VideoBackend>>,
+    /// `/v1` 写操作（POST）的共享密钥（`GATEWAY_AUTH_KEY`）。
+    /// `None` = 不校验（生产必须设置；启动时由 grok2api-rs 告警）。
+    pub gateway_auth_key: Option<String>,
 }
 
 impl AppState {
@@ -45,7 +55,14 @@ impl AppState {
             responses_backend: None,
             messages_backend: None,
             video_backend: None,
+            gateway_auth_key: None,
         }
+    }
+
+    /// 设置 `/v1` 写操作鉴权密钥（可选；空字符串视为未配置）。
+    pub fn with_gateway_auth_key(mut self, key: Option<String>) -> Self {
+        self.gateway_auth_key = key.filter(|k| !k.trim().is_empty());
+        self
     }
 }
 
@@ -58,6 +75,7 @@ pub fn with_engine(engine: ChatEngine) -> AppState {
         responses_backend: None,
         messages_backend: None,
         video_backend: None,
+        gateway_auth_key: None,
     }
 }
 
@@ -70,6 +88,7 @@ pub fn with_engines(engine: ChatEngine, image_engine: ImageEngine) -> AppState {
         responses_backend: None,
         messages_backend: None,
         video_backend: None,
+        gateway_auth_key: None,
     }
 }
 
@@ -86,6 +105,7 @@ pub fn with_engines_and_media(
         responses_backend: None,
         messages_backend: None,
         video_backend: None,
+        gateway_auth_key: None,
     }
 }
 
@@ -99,6 +119,7 @@ pub fn with_protocol_backend(backend: Arc<dyn ProtocolBackend>) -> AppState {
         responses_backend: Some(backend.clone()),
         messages_backend: Some(backend),
         video_backend: None,
+        gateway_auth_key: None,
     }
 }
 
@@ -114,6 +135,7 @@ pub fn with_protocol_backends(
         responses_backend: responses,
         messages_backend: messages,
         video_backend: None,
+        gateway_auth_key: None,
     }
 }
 
@@ -125,7 +147,7 @@ pub fn with_default_protocol_backends(
 ) -> AppState {
     let (responses, messages) =
         crate::backends::default_protocol_backends(build_base_url, console_base_url);
-    with_protocol_backends(Some(responses), Some(messages))
+    with_protocol_backends(responses, messages)
 }
 
 /// 构建带视频后端（G5-P4）的应用状态。
@@ -137,11 +159,13 @@ pub fn with_video_backend(backend: Arc<dyn VideoBackend>) -> AppState {
         responses_backend: None,
         messages_backend: None,
         video_backend: Some(backend),
+        gateway_auth_key: None,
     }
 }
 
 /// 构建 router（G1 端点 + G2 生图端点）。
 pub fn build_app(state: AppState) -> Router {
+    let shared = Arc::new(state);
     Router::new()
         .route("/v1/models", get(models))
         .route("/v1/chat/completions", post(chat_completions))
@@ -151,10 +175,63 @@ pub fn build_app(state: AppState) -> Router {
         .route("/v1/messages", post(messages_completions))
         .route("/v1/videos", post(create_video))
         .route("/v1/videos/{id}", get(get_video))
-        .with_state(Arc::new(state))
+        .layer(middleware::from_fn_with_state(
+            shared.clone(),
+            require_gateway_auth,
+        ))
+        .with_state(shared)
+}
+
+/// `/v1` 写操作鉴权中间件（对齐 :8014 `GATEWAY_AUTH_KEY` 语义）。
+///
+/// - `gateway_auth_key` 未配置（None）→ 放行（grok2api-rs 启动时告警）。
+/// - 配置后：仅校验非 GET/HEAD/OPTIONS 请求（`/v1/models`、`/v1/media/images/{id}` 等
+///   读接口保持开放，供 `<img>` 标签等无头场景使用）；通过 `Authorization: Bearer <key>`
+///   或 `X-API-Key: <key>` 校验，失败返回结构化 401 JSON。
+/// - 密钥比较为常数时间，避免时序侧信道。
+async fn require_gateway_auth(
+    State(state): State<Arc<AppState>>,
+    req: Request,
+    next: Next,
+) -> Response {
+    let Some(expected) = state.gateway_auth_key.as_deref() else {
+        return next.run(req).await;
+    };
+    let method = req.method();
+    if method == Method::GET || method == Method::HEAD || method == Method::OPTIONS {
+        return next.run(req).await;
+    }
+    let provided = req
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "))
+        .or_else(|| req.headers().get("x-api-key").and_then(|v| v.to_str().ok()))
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+    match provided {
+        Some(token) if constant_time_eq(token, expected) => next.run(req).await,
+        _ => (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "unauthorized" })),
+        )
+            .into_response(),
+    }
+}
+
+/// 常数时间字符串比较（对齐 :8014 `auth_routes.rs` 的 `constant_time_eq`）。
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.bytes()
+        .zip(b.bytes())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
 }
 
 /// 测试便利：直接构一个空 state 的 app（无 engine，仅测路由形状）。
 pub fn build_app_empty() -> Router {
     build_app(AppState::empty())
 }
+

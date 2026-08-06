@@ -28,12 +28,17 @@ pub struct Config {
     /// Console 上游 base URL（N5 挂载 `/v1/messages` 用；None = 走
     /// `grok_provider_console::default_base_url()`，即 env `GROK2API_CONSOLE_BASE_URL` 或常量）。
     pub console_base_url: Option<String>,
+    /// `/v1` 写操作鉴权密钥（`GROK_GATEWAY_AUTH_KEY` 或 `GATEWAY_AUTH_KEY`）。
+    /// 空 = 不校验（生产必须配置，启动时告警）。
+    pub gateway_auth_key: Option<String>,
+    /// `/admin/*` 独立监听地址（`GROK_ADMIN_LISTEN`，默认 `0.0.0.0:8091`，仅内网）。
+    pub admin_listen: String,
     /// Grok 管理台 JWT secret（N5 起 `/admin/*` 鉴权用）。缺省时随机生成并告警。
     pub admin_secret: String,
     /// 首启 bootstrap 的管理员用户名（默认 `admin`）。
     pub admin_username: String,
-    /// 首启 bootstrap 的管理员密码；缺省用 `admin`。
-    pub admin_password: String,
+    /// 首启 bootstrap 的管理员密码；缺省不设置 → admin 不可用并告警。
+    pub admin_password: Option<String>,
 }
 
 impl Config {
@@ -59,9 +64,18 @@ impl Config {
             .ok()
             .filter(|s| !s.trim().is_empty());
 
+        let gateway_auth_key = env::var("GROK_GATEWAY_AUTH_KEY")
+            .or_else(|_| env::var("GATEWAY_AUTH_KEY"))
+            .ok()
+            .filter(|s| !s.trim().is_empty());
+        let admin_listen =
+            env::var("GROK_ADMIN_LISTEN").unwrap_or_else(|_| "0.0.0.0:8091".into());
+
         let admin_secret = env::var("GROK_ADMIN_SECRET").unwrap_or_default();
         let admin_username = env::var("GROK_ADMIN_USERNAME").unwrap_or_else(|_| "admin".into());
-        let admin_password = env::var("GROK_ADMIN_PASSWORD").unwrap_or_else(|_| "admin".into());
+        let admin_password = env::var("GROK_ADMIN_PASSWORD")
+            .ok()
+            .filter(|s| !s.trim().is_empty());
 
         let config = Self {
             server_addr,
@@ -70,6 +84,8 @@ impl Config {
             browser_bridge_url,
             build_base_url,
             console_base_url,
+            gateway_auth_key,
+            admin_listen,
             admin_secret,
             admin_username,
             admin_password,
@@ -83,6 +99,9 @@ impl Config {
         self.server_addr
             .parse::<std::net::SocketAddr>()
             .context("invalid server_addr, expected host:port")?;
+        self.admin_listen
+            .parse::<std::net::SocketAddr>()
+            .context("invalid admin_listen, expected host:port")?;
 
         let db = &self.database_url;
         if !db.starts_with("postgres://") && !db.starts_with("postgresql://") {
@@ -118,9 +137,11 @@ mod tests {
             browser_bridge_url: "http://browser-bridge:8192".to_string(),
             build_base_url: None,
             console_base_url: None,
+            gateway_auth_key: None,
+            admin_listen: "0.0.0.0:8091".to_string(),
             admin_secret: "12345678901234567890123456789012".to_string(),
             admin_username: "admin".to_string(),
-            admin_password: "admin".to_string(),
+            admin_password: Some("admin123456".to_string()),
         }
     }
 

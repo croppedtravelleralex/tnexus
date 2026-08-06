@@ -9,7 +9,7 @@ use chrono::{DateTime, Duration, Utc};
 
 use crate::domain::{Admin, Session};
 use crate::error::{AdminError, AdminResult};
-use crate::repos::{AdminRepository, AdminSessionRepository, RateLimiter};
+use crate::repos::{AdminRepository, AdminSessionRepository, MemoryRateLimiter, RateLimiter};
 use crate::security::{
     hash_password, hash_token, new_opaque_token, verify_password, AdminTokenIdentity, TokenService,
 };
@@ -52,7 +52,7 @@ impl AdminAuthService {
             tokens,
             access_ttl,
             refresh_ttl,
-            login_limiter: None,
+            login_limiter: Some(Arc::new(MemoryRateLimiter::default())),
             dummy_password_hash,
         }
     }

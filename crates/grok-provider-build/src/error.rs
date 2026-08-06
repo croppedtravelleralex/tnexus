@@ -16,4 +16,8 @@ pub enum ProviderError {
     /// HTTP 传输层错误（连接失败等）。
     #[error("http error: {0}")]
     Http(String),
+
+    /// 请求超时（对齐 console `Timeout` 层级约定）。
+    #[error("request timed out after {0:?}")]
+    Timeout(std::time::Duration),
 }

@@ -110,6 +110,7 @@ fn test_config(base_url: String) -> Config {
         client_identifier: "grok-shell".into(),
         token_auth: "xai-grok-cli".into(),
         user_agent: "grok-shell/0.2.99 (linux; x86_64)".into(),
+        timeout: std::time::Duration::from_secs(60),
     }
 }
 

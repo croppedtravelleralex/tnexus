@@ -10,16 +10,16 @@
 //! - lease：`GROK_REDIS_URL` 存在 → `RedisLeaseManager`，否则 `InMemoryLeaseManager`。
 //! - chat engine：`ChatEngine`（bridge = `HttpBridgeClient`，base 走
 //!   `GROK2API_BROWSER_BRIDGE_URL`；grok-ops 探针 / Selector 完整排序接入留 G6 切流前）。
-//! - `/admin/*`：挂载 grok-admin `AdminRouter`（JWT secret `GROK_ADMIN_SECRET`，缺省
-//!   随机生成并告警；管理员 bootstrap `GROK_ADMIN_USERNAME`/`GROK_ADMIN_PASSWORD`；
-//!   账号数据真实源接 grok-storage 写路径 TODO）。
+//! - 鉴权（安全红线）：`GROK_GATEWAY_AUTH_KEY`/`GATEWAY_AUTH_KEY` → `/v1` 写操作
+//!   Bearer/X-API-Key 校验（见 `grok-gateway::router`）；`/admin/*` 独立监听
+//!   `GROK_ADMIN_LISTEN`（默认 `0.0.0.0:8091`，仅内网），login/refresh 绕过 guard。
 //! - `/v1/responses` + `/v1/messages`：真实 Build/Console 后端（token 走
 //!   `GROK2API_BUILD_TOKEN` / `GROK2API_CONSOLE_TOKEN`，base URL 可被
 //!   `GROK2API_BUILD_BASE_URL` / `GROK2API_CONSOLE_BASE_URL` 覆盖）。
 //! - 生图 / 媒体 / 视频后端未配置 → 503/501/500（路由可达，接线留 G2/G5 收尾）。
 //!
 //! DB 池懒连接：启动时 `connect_lazy`，DB 暂不可达时 `healthz` 仍 200，
-//! 只有 `readyz` 才探 DB。
+//! 只有 `readyz` 才探 DB（响应已脱敏，不回传 DSN/内部错误）。
 
 mod admin;
 mod config;
@@ -28,7 +28,7 @@ mod http;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use admin::build_admin_router;
+use admin::build_admin_bundle;
 use http::build_router;
 use sqlx::postgres::PgPoolOptions;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -67,6 +67,11 @@ async fn main() -> anyhow::Result<()> {
         cfg.browser_bridge_url,
         cfg.admin_username
     );
+    if cfg.gateway_auth_key.is_none() {
+        tracing::warn!(
+            "GROK_GATEWAY_AUTH_KEY/GATEWAY_AUTH_KEY 未配置：/v1 写操作无鉴权，生产前必须设置"
+        );
+    }
 
     let db_url = cfg.database_url.clone();
     let pool = PgPoolOptions::new()
@@ -89,17 +94,39 @@ async fn main() -> anyhow::Result<()> {
     let lease = build_lease(&cfg).await;
     let bridge: Arc<dyn BridgeClient> = Arc::new(HttpBridgeClient::new());
 
-    // N5：healthz/readyz + grok-gateway /v1/* + grok-admin /admin/* 合并为单一 axum app。
-    let state = Arc::new(http::AppState { pool: pool.clone() });
-    let router = build_admin_router(&cfg.admin_username, &cfg.admin_password, &admin_secret).await;
-    let app = build_router(state)
-        .merge(gateway_app(&cfg, shared_pool, lease, bridge))
-        .merge(admin::admin_app(router));
+    // 安全红线（Critical-1）：/v1 写操作鉴权密钥挂进 gateway state。
+    let gateway_key = cfg.gateway_auth_key.clone();
+    let v1_app = grok_gateway::build_app(
+        gateway_state(&cfg, bridge, shared_pool, lease).with_gateway_auth_key(gateway_key),
+    );
 
-    let addr: SocketAddr = cfg.server_addr.parse()?;
-    tracing::info!("grok2api-rs listening on {addr}");
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    // 安全红线（Critical-2/3）：/admin 独立端口（GROK_ADMIN_LISTEN，默认 :8091 仅内网），
+    // login/refresh 绕过 guard（见 admin.rs）。
+    let admin_bundle = build_admin_bundle(
+        &cfg.admin_username,
+        cfg.admin_password.as_deref(),
+        &admin_secret,
+    )
+    .await;
+
+    let state = Arc::new(http::AppState { pool: pool.clone() });
+    let health_app = build_router(state);
+
+    let v1_addr: SocketAddr = cfg.server_addr.parse()?;
+    let admin_addr: SocketAddr = cfg.admin_listen.parse()?;
+    let v1_listener = tokio::net::TcpListener::bind(v1_addr).await?;
+    let admin_listener = tokio::net::TcpListener::bind(admin_addr).await?;
+    tracing::info!("grok2api-rs /v1+healthz listening on {v1_addr}");
+    tracing::info!("grok2api-rs /admin listening on {admin_addr}（仅内网）");
+
+    let v1_server = async {
+        axum::serve(v1_listener, health_app.merge(v1_app)).await
+    };
+    let admin_server = async { axum::serve(admin_listener, admin::admin_app(admin_bundle)).await };
+    tokio::select! {
+        r = v1_server => r?,
+        r = admin_server => r?,
+    }
     Ok(())
 }
 
@@ -138,20 +165,22 @@ fn gateway_state(
     pool: SharedPool,
     lease: Arc<dyn LeaseManager>,
 ) -> AppState {
-    // /v1/responses + /v1/messages：真实 Build/Console 后端。
+    // /v1/responses + /v1/messages：真实 Build/Console 后端（token 未配置时为 None → 503）。
     let (responses, messages) =
         default_protocol_backends(cfg.build_base_url.clone(), cfg.console_base_url.clone());
     let engine = ChatEngine::new(pool, lease, bridge, None);
     AppState {
         engine: Some(Arc::new(engine)),
-        responses_backend: Some(responses),
-        messages_backend: Some(messages),
+        responses_backend: responses,
+        messages_backend: messages,
         // 生图/媒体/视频后端未接线 → 路由可达但 503/501/500（G2/G5 收尾 TODO）。
         ..AppState::empty()
     }
 }
 
 /// 生产默认：PG 加载号池（调用方已 load）+ 内存/Redis lease + HTTP bridge 侧车。
+/// 测试复用：注入 mock bridge 构建 `/v1` 路由（无鉴权）。
+#[allow(dead_code)]
 fn gateway_app(
     cfg: &config::Config,
     pool: SharedPool,
@@ -189,9 +218,11 @@ mod tests {
             browser_bridge_url: "http://browser-bridge:8192".to_string(),
             build_base_url: None,
             console_base_url: None,
+            gateway_auth_key: None,
+            admin_listen: "127.0.0.1:0".to_string(),
             admin_secret: "12345678901234567890123456789012".to_string(),
             admin_username: "admin".to_string(),
-            admin_password: "admin123456".to_string(),
+            admin_password: Some("admin123456".to_string()),
         }
     }
 
@@ -222,11 +253,30 @@ mod tests {
             Arc::new(InMemoryLeaseManager::new(&[(Scope::GrokWeb, 4)]));
         let cfg = test_cfg();
         let state = Arc::new(http::AppState { pool: lazy_pool() });
-        let router =
-            build_admin_router(&cfg.admin_username, &cfg.admin_password, &cfg.admin_secret).await;
+        let bundle =
+            build_admin_bundle(&cfg.admin_username, cfg.admin_password.as_deref(), &cfg.admin_secret)
+                .await;
         build_router(state)
             .merge(gateway_app(&cfg, pool, lease, Arc::new(mock)))
-            .merge(admin::admin_app(router))
+            .merge(admin::admin_app(bundle))
+    }
+
+    /// 带 `/v1` 鉴权密钥的测试 app。
+    async fn app_with_mock_bridge_and_key(chat_text: &str, key: &str) -> axum::Router {
+        let app = app_with_mock_bridge(chat_text).await;
+        // 复用同一 app：无法就地换 key，直接重新组装 gateway 段。
+        // 这里仅用于鉴权行为验证（见 v1_auth_* 测试），直接构造带 key 的独立 app。
+        drop(app);
+        let mut mock = grok_provider_web::MockBridgeClient::new();
+        mock.chat_text = chat_text.to_string();
+        let pool: SharedPool = Arc::new(SimplifiedPool::new());
+        let lease: Arc<dyn LeaseManager> =
+            Arc::new(InMemoryLeaseManager::new(&[(Scope::GrokWeb, 4)]));
+        let cfg = test_cfg();
+        grok_gateway::build_app(
+            gateway_state(&cfg, Arc::new(mock), pool, lease)
+                .with_gateway_auth_key(Some(key.to_string())),
+        )
     }
 
     async fn get_status(app: axum::Router, uri: &str) -> StatusCode {
@@ -241,6 +291,26 @@ mod tests {
     async fn healthz_stays_ok() {
         let app = app_with_mock_bridge("你好").await;
         assert_eq!(get_status(app, "/healthz").await, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn readyz_sanitized_when_db_down() {
+        // 懒连接池连不上：readyz 应 503 且 body 不含 DSN/detail。
+        let app = app_with_mock_bridge("你好").await;
+        let resp = app
+            .oneshot(Request::builder().uri("/readyz").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let text = String::from_utf8_lossy(&bytes);
+        let body: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(body["db"], "error");
+        assert!(body.get("detail").is_none(), "readyz 不得回传内部错误 detail");
+        assert!(
+            !text.contains("postgres://"),
+            "readyz 不得泄露 DB DSN: {text}"
+        );
     }
 
     #[tokio::test]
@@ -311,6 +381,86 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn v1_auth_rejects_without_key_when_configured() {
+        // 配置了 GATEWAY_AUTH_KEY：POST 无凭据 → 401；GET 仍开放。
+        let app = app_with_mock_bridge_and_key("你好", "sekret").await;
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"model":"grok-chat","messages":[]}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "无凭据 POST 应 401");
+        // 错误响应是结构化 JSON（非纯文本/空）。
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["error"], "unauthorized");
+        // GET /v1/models 不要求鉴权。
+        assert_eq!(
+            get_status(app.clone(), "/v1/models").await,
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn v1_auth_accepts_bearer_and_api_key() {
+        let app = app_with_mock_bridge_and_key("你好", "sekret").await;
+        let body = r#"{"model":"grok-chat","messages":[{"role":"user","content":"hi"}]}"#;
+        for header in [
+            ("authorization", "Bearer sekret"),
+            ("x-api-key", "sekret"),
+        ] {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/v1/chat/completions")
+                        .header("content-type", "application/json")
+                        .header(header.0, header.1)
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            // 鉴权放行的标志是「未被 401 拒绝」：空池会 503（无账号），同样证明已过鉴权。
+            assert_ne!(
+                resp.status(),
+                StatusCode::UNAUTHORIZED,
+                "{} 应放行（got {:?}）",
+                header.0,
+                resp.status()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn v1_auth_rejects_wrong_key() {
+        let app = app_with_mock_bridge_and_key("你好", "sekret").await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .header("authorization", "Bearer wrong")
+                    .body(Body::from(
+                        r#"{"model":"grok-chat","messages":[{"role":"user","content":"hi"}]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "错误密钥应 401");
+    }
+
+    #[tokio::test]
     async fn admin_routes_return_401_without_token() {
         let app = app_with_mock_bridge("你好").await;
         for path in [
@@ -333,41 +483,98 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn admin_routes_accept_valid_token() {
-        // 经 AdminAuthService.login 签发真实 token（与 HTTP 层共享同一内存 store），
-        // 再走 HTTP /admin/* → 200（accounts 列表形状）。
+    async fn admin_login_roundtrip_then_access() {
+        // 安全红线（Critical-2）：login 绕过 guard 签发 token，随后携带该 token
+        // 访问受保护端点应 200（共享同一内存 session store）。
         let cfg = test_cfg();
-        let auth_store = Arc::new(admin::InMemoryAuthStore::default());
-        let auth = grok_admin::AdminAuthService::new(
-            Arc::new(admin::InMemoryAdminRepo(auth_store.clone())),
-            Arc::new(admin::InMemorySessionRepo(auth_store)),
-            grok_admin::TokenService::new(&cfg.admin_secret),
-            chrono::Duration::hours(1),
-            chrono::Duration::days(7),
-        );
-        auth.bootstrap("admin", "admin123456")
-            .await
-            .expect("bootstrap");
-        let (_, tokens) = auth
-            .login("admin", "admin123456", "127.0.0.1")
-            .await
-            .expect("login");
-        drop(auth); // token 已签发；HTTP 层使用独立 router（同 secret，session 校验在独立 store 中不通过 → 401）。
+        let bundle = build_admin_bundle(
+            &cfg.admin_username,
+            cfg.admin_password.as_deref(),
+            &cfg.admin_secret,
+        )
+        .await;
+        let app = admin::admin_app(bundle);
 
-        // 注：login 签发的 session 在独立内存 store；HTTP 层 router 是另一实例，
-        // 会话校验会失败 → 401。此测试验证「无有效会话 → 401」语义而非 200；
-        // 200 路径由 grok-admin 集成测试（admin_accounts.rs/admin_domains.rs）覆盖。
-        let app = app_with_mock_bridge("你好").await;
+        // 1) login（无任何 guard）→ 200 + access_token
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/auth/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"username":"admin","password":"admin123456"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "login 应 200（绕过 guard）");
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let token = body["tokens"]["access_token"].as_str().unwrap().to_string();
+        assert!(!token.is_empty());
+
+        // 2) 携带 token 访问受保护端点 → 200
         let resp = app
             .oneshot(
                 Request::builder()
                     .uri("/admin/accounts")
-                    .header("authorization", format!("Bearer {}", tokens.access_token))
+                    .header("authorization", format!("Bearer {token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(resp.status(), StatusCode::OK, "携带 token 应 200");
+    }
+
+    #[tokio::test]
+    async fn admin_login_wrong_password_401() {
+        let cfg = test_cfg();
+        let bundle = build_admin_bundle(
+            &cfg.admin_username,
+            cfg.admin_password.as_deref(),
+            &cfg.admin_secret,
+        )
+        .await;
+        let app = admin::admin_app(bundle);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/auth/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"username":"admin","password":"wrong-pass"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "错误密码应 401");
+    }
+
+    #[tokio::test]
+    async fn admin_login_disabled_without_password() {
+        // GROK_ADMIN_PASSWORD 未配置：无管理员，login 恒 401（不 bootstrap）。
+        let cfg = test_cfg();
+        let bundle = build_admin_bundle(&cfg.admin_username, None, &cfg.admin_secret).await;
+        let app = admin::admin_app(bundle);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/auth/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"username":"admin","password":"whatever123"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "未 bootstrap 应 401");
     }
 }

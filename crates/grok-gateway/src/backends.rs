@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use grok_conversation::NormalizedChatInput;
-use grok_provider_build::{BuildAdapter, Config as BuildConfig};
+use grok_provider_build::{BuildAdapter, Config as BuildConfig, ProviderError};
 use grok_provider_console::{ChatDelta, Config as ConsoleConfig, ConsoleAdapter};
 
 use crate::error::GatewayError;
@@ -74,7 +74,7 @@ impl ProtocolBackend for BuildResponsesBackend {
                 "", // G5-P3 无 prompt cache key；有需求时经请求头透传
             )
             .await
-            .map_err(|e| GatewayError::Upstream(e.to_string()))?;
+            .map_err(sanitize_upstream_error)?;
         Ok(stored.text())
     }
 }
@@ -120,7 +120,7 @@ impl ProtocolBackend for ConsoleMessagesBackend {
             .adapter
             .forward_chat(model, &messages, &self.access_token)
             .await
-            .map_err(|e| GatewayError::Upstream(e.to_string()))?;
+            .map_err(sanitize_console_error)?;
         Ok(join_deltas(&deltas))
     }
 }
@@ -133,17 +133,85 @@ fn join_deltas(deltas: &[ChatDelta]) -> String {
         .collect::<String>()
 }
 
+/// 上游错误脱敏：只保留分类 + 有限消息，**不向客户端透出 base_url / 内网拓扑**。
+///
+/// `ProviderError::Http` 内部含 URL（如 "请求 https://…: connect …"），
+/// 一律折叠为固定文案；`Upstream` 仅透出状态码与解析出的 message（截断 512）。
+fn sanitize_upstream_error(e: ProviderError) -> GatewayError {
+    match e {
+        ProviderError::InvalidRequest(msg) => GatewayError::InvalidRequest(msg),
+        ProviderError::Upstream(msg) => GatewayError::Upstream(sanitize_message(&msg)),
+        ProviderError::Timeout(d) => {
+            GatewayError::Upstream(format!("上游请求超时（{}ms）", d.as_millis()))
+        }
+        ProviderError::Http(_) => GatewayError::Upstream("上游请求失败".to_string()),
+    }
+}
+
+/// 同上，适用于 console provider 的错误（各 crate 的 `ProviderError` 为独立类型）。
+fn sanitize_console_error(e: grok_provider_console::ProviderError) -> GatewayError {
+    use grok_provider_console::ProviderError as ConsoleError;
+    match e {
+        ConsoleError::InvalidRequest(msg) => GatewayError::InvalidRequest(msg),
+        ConsoleError::Upstream(msg) => GatewayError::Upstream(sanitize_message(&msg)),
+        ConsoleError::Timeout(d) => {
+            GatewayError::Upstream(format!("上游请求超时（{}ms）", d.as_millis()))
+        }
+        ConsoleError::Http(_) => GatewayError::Upstream("上游请求失败".to_string()),
+    }
+}
+
+/// 截断并剥离疑似 URL/拓扑痕迹的消息（保留正文片段，避免泄露内网信息）。
+fn sanitize_message(msg: &str) -> String {
+    let mut out = String::with_capacity(msg.len().min(512));
+    for token in msg.split_whitespace() {
+        let t = token.trim();
+        if t.starts_with("http://") || t.starts_with("https://") || t.starts_with("//") {
+            out.push_str("[redacted] ");
+            continue;
+        }
+        out.push_str(t);
+        out.push(' ');
+        if out.len() >= 512 {
+            out.truncate(512);
+            break;
+        }
+    }
+    out.trim().to_string()
+}
+
 /// 默认真实后端对（Build + Console），base_url 可覆盖（测试指 mock server）。
+///
+/// **未配置保护**：对应 env token（`GROK2API_BUILD_TOKEN` / `GROK2API_CONSOLE_TOKEN`）
+/// 为空时返回 `None`（该端点将 503，绝不携带空 Bearer 外呼真实 grok）。
+/// 显式 [`BuildResponsesBackend::new`] / [`ConsoleMessagesBackend::new`] 不受此限
+/// （信任调用方注入，如内部网/mock）。
+/// (responses, messages) 后端对。
+pub type ProtocolBackendPair = (Option<Arc<dyn ProtocolBackend>>, Option<Arc<dyn ProtocolBackend>>);
+
 pub fn default_protocol_backends(
     build_base_url: Option<String>,
     console_base_url: Option<String>,
-) -> (Arc<dyn ProtocolBackend>, Arc<dyn ProtocolBackend>) {
+) -> ProtocolBackendPair {
     let build_token = std::env::var("GROK2API_BUILD_TOKEN").unwrap_or_default();
     let console_token = std::env::var("GROK2API_CONSOLE_TOKEN").unwrap_or_default();
-    (
-        Arc::new(BuildResponsesBackend::new(build_base_url, build_token)),
-        Arc::new(ConsoleMessagesBackend::new(console_base_url, console_token)),
-    )
+    let responses = if build_token.trim().is_empty() {
+        None
+    } else {
+        Some(Arc::new(BuildResponsesBackend::new(
+            build_base_url,
+            build_token,
+        )) as Arc<dyn ProtocolBackend>)
+    };
+    let messages = if console_token.trim().is_empty() {
+        None
+    } else {
+        Some(Arc::new(ConsoleMessagesBackend::new(
+            console_base_url,
+            console_token,
+        )) as Arc<dyn ProtocolBackend>)
+    };
+    (responses, messages)
 }
 
 #[cfg(test)]

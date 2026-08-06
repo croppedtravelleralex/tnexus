@@ -2,6 +2,7 @@
 //!
 //! 39 主文档 §6.1 P0：`GET /healthz`、`GET /readyz`。分层 readyz
 //! （依赖探测按依赖树展开，39 §6.3「易遗漏模块」）留待 G1+，G0 只探 DB。
+//! readyz 错误响应脱敏：不回传 DB DSN / 内部错误 detail（安全红线）。
 
 use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::get, Json, Router};
 use serde_json::json;
@@ -37,9 +38,10 @@ async fn readyz(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     .await
     {
         Ok(Ok(_)) => (StatusCode::OK, Json(json!({"status": "ready"}))),
-        Ok(Err(e)) => (
+        // 脱敏：不回传 DB DSN / 内部错误 detail，只给状态码（安全红线）。
+        Ok(Err(_)) => (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({"status": "not_ready", "db": "error", "detail": e.to_string()})),
+            Json(json!({"status": "not_ready", "db": "error"})),
         ),
         Err(_) => (
             StatusCode::SERVICE_UNAVAILABLE,

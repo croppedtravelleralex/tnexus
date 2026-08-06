@@ -14,7 +14,7 @@ pub mod error;
 pub mod normalize;
 pub mod response;
 
-pub use adapter::{BuildAdapter, Config, ForwardRequest, ForwardResponse};
+pub use adapter::{default_timeout, BuildAdapter, Config, ForwardRequest, ForwardResponse};
 pub use error::ProviderError;
 pub use normalize::{ensure_prompt_cache_key, normalize_responses_request};
 pub use response::StoredResponse;

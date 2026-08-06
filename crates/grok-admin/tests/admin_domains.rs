@@ -1169,3 +1169,32 @@ async fn analytics_timeseries_and_top_accounts() {
         .await;
     assert_eq!(resp.status, 401);
 }
+
+#[tokio::test]
+async fn import_field_level_validation_records_errors() {
+    let (router, token) = setup().await;
+    // 超长 identity_key / 超长 name / priority 超范围 / max_concurrent 超范围 → 逐条 error 不 panic
+    let long_key = "k".repeat(65);
+    let long_name = "n".repeat(161);
+    let body = format!(
+        r#"[
+            {{"identity_key":"{long_key}","provider":"grok_build"}},
+            {{"identity_key":"ok-1","provider":"grok_web","name":"{long_name}"}},
+            {{"identity_key":"ok-2","provider":"grok_build","priority":1001}},
+            {{"identity_key":"ok-3","provider":"grok_web","max_concurrent":0}},
+            {{"identity_key":"ok-4","provider":"grok_build"}}
+        ]"#
+    );
+    let resp = router
+        .handle("POST", "/admin/accounts/import", Some(&bearer(&token)), Some(&body))
+        .await;
+    assert_eq!(resp.status, 201, "import: {}", resp.body);
+    assert_eq!(resp.body["imported"], 1, "only ok-4 imported");
+    assert_eq!(resp.body["failed"], 4);
+    let errors = resp.body["errors"].as_array().unwrap();
+    assert_eq!(errors.len(), 4);
+    assert!(errors.iter().any(|e| e["index"] == 0 && e["reason"].as_str().unwrap().contains("超长")));
+    assert!(errors.iter().any(|e| e["index"] == 1 && e["reason"].as_str().unwrap().contains("超长")));
+    assert!(errors.iter().any(|e| e["index"] == 2 && e["reason"].as_str().unwrap().contains("priority")));
+    assert!(errors.iter().any(|e| e["index"] == 3 && e["reason"].as_str().unwrap().contains("max_concurrent")));
+}

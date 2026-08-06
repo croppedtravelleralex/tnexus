@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Duration, Utc};
 use grok_domain::{
-    Account, AuthStatus, ModelQuotaBlock, ModelState, Provider, QuotaRecovery, QuotaRecoveryKind,
-    QuotaRecoveryStatus, QuotaSource, QuotaWindow, RoutingCandidate, WebTier,
+    Account, AuthStatus, ModelQuotaBlock, ModelState, ModelStatus, Provider, QuotaRecovery,
+    QuotaRecoveryKind, QuotaRecoveryStatus, QuotaSource, QuotaWindow, RoutingCandidate, WebTier,
 };
 use grok_pool::selector::*;
 
@@ -1205,4 +1205,86 @@ async fn consumes_only_matching_quota_snapshot() {
     selector.invalidate_candidates(Provider::GrokWeb);
     let lease = acquire_ok(&selector, Provider::GrokWeb, "grok-chat", "fast").await;
     lease.release();
+}
+
+#[tokio::test]
+async fn in_memory_outcome_overrides_persisted_state() {
+    let loader = Arc::new(FakeLoader::default());
+    let selector = new_selector(loader, Arc::new(InMemoryLimiter::default()), Duration::zero());
+    // 持久化 ModelState：soft-stop 未过期（rank 2）
+    let persisted_soft_stop = RoutingCandidate {
+        account: build_account(1, 1, 1),
+        model_state: Some(ModelState {
+            account_id: 1,
+            upstream_model: "grok-imagine-image".into(),
+            status: ModelStatus::SoftStop,
+            reason: Some("soft_stop".into()),
+            consecutive_failures: 1,
+            last_attempt_at: Some(now()),
+            cooldown_until: Some(now() + Duration::hours(1)),
+            last_success_at: None,
+            updated_at: now(),
+        }),
+        ..Default::default()
+    };
+    // 内存 outcome：成功（rank 0）→ 覆盖持久化 soft-stop（对齐 Go：modelOutcomes 后写）
+    selector
+        .mark_model_success(1, "grok-imagine-image")
+        .await
+        .expect("mark success");
+    let mut values = vec![
+        persisted_soft_stop,
+        candidate(build_account(2, 1, 1)),
+        candidate(build_account(3, 1, 1)),
+    ];
+    selector
+        .sort_candidates(&mut values, now(), &[], "grok-imagine-image")
+        .await
+        .expect("sort");
+    assert_eq!(values[0].account.id, 1, "in-memory success overrides persisted soft-stop");
+
+    // 反向：持久化 success + 内存 soft-stop → 内存覆盖 → rank 2 排最后
+    let loader2 = Arc::new(FakeLoader::default());
+    let selector2 = new_selector(loader2, Arc::new(InMemoryLimiter::default()), Duration::zero());
+    selector2
+        .mark_model_soft_stop(1, "grok-imagine-image")
+        .await
+        .expect("soft stop");
+    let persisted_success = RoutingCandidate {
+        account: build_account(1, 1, 1),
+        model_state: Some(ModelState {
+            account_id: 1,
+            upstream_model: "grok-imagine-image".into(),
+            status: ModelStatus::Available,
+            reason: Some("image_generated".into()),
+            consecutive_failures: 0,
+            last_attempt_at: Some(now()),
+            cooldown_until: None,
+            last_success_at: Some(now()),
+            updated_at: now(),
+        }),
+        ..Default::default()
+    };
+    let mut values = vec![
+        persisted_success,
+        candidate(build_account(2, 1, 1)),
+        candidate(build_account(3, 1, 1)),
+    ];
+    selector2
+        .sort_candidates(&mut values, now(), &[], "grok-imagine-image")
+        .await
+        .expect("sort");
+    assert_eq!(values[2].account.id, 1, "in-memory soft-stop overrides persisted success");
+}
+
+#[tokio::test]
+async fn mark_success_persists_on_first_success() {
+    let loader = Arc::new(FakeLoader::default());
+    let selector = new_selector(loader.clone(), Arc::new(InMemoryLimiter::default()), Duration::zero());
+    let a = build_account(1, 1, 1); // 无 failure/cooldown/last_error
+    selector.mark_success(&a, false).await;
+    assert!(
+        loader.health.lock().unwrap().contains_key(&1),
+        "first success must persist health (Go last.IsZero() → persist)"
+    );
 }

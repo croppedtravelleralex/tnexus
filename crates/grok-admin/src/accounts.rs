@@ -373,13 +373,42 @@ impl AccountAdminService {
         self.store.analytics().await
     }
 
-    /// 批量导入：逐条校验（identity_key/provider 必填），委托 store 落库。
+    /// 批量导入：逐条字段级校验（identity_key ≤64 / provider 枚举 / name ≤160 /
+    /// priority 0..=1000 / max_concurrent 1..=256），超限记 error 条目不 panic；
+    /// 校验通过项委托 store 落库（冲突等 store 级错误按原输入下标映射回）。
     pub async fn import(&self, inputs: &[ImportAccountInput]) -> AdminResult<ImportResult> {
         // 空数组 → 直接返回空结果（不调用 store）。
         if inputs.is_empty() {
             return Ok(ImportResult::default());
         }
-        self.store.import_accounts(inputs).await
+        let mut result = ImportResult::default();
+        let mut valid: Vec<ImportAccountInput> = Vec::with_capacity(inputs.len());
+        let mut orig_index: Vec<usize> = Vec::with_capacity(inputs.len());
+        for (index, input) in inputs.iter().enumerate() {
+            match validate_import_input(input) {
+                Some(reason) => {
+                    result.failed += 1;
+                    result.errors.push(ImportError { index, reason });
+                }
+                None => {
+                    valid.push(input.clone());
+                    orig_index.push(index);
+                }
+            }
+        }
+        if valid.is_empty() {
+            return Ok(result);
+        }
+        let store_result = self.store.import_accounts(&valid).await?;
+        result.imported += store_result.imported;
+        result.failed += store_result.failed;
+        for e in store_result.errors {
+            result.errors.push(ImportError {
+                index: orig_index.get(e.index).copied().unwrap_or(e.index),
+                reason: e.reason,
+            });
+        }
+        Ok(result)
     }
 
     /// 近 `days` 天每日聚合（可视化面板数据源）。
@@ -471,3 +500,34 @@ pub fn parse_quota_source(raw: &str) -> AdminResult<QuotaSource> {
         other => Err(AdminError::InvalidRequest(format!("无效额度来源: {other}"))),
     }
 }
+/// 逐条字段级校验（对齐 Go 账号字段约束与 grok_accounts schema CHECK）。
+/// 返回错误描述；`None` = 通过。
+pub(crate) fn validate_import_input(input: &ImportAccountInput) -> Option<String> {
+    let identity_key = input.identity_key.trim();
+    if identity_key.is_empty() {
+        return Some("identity_key 不能为空".into());
+    }
+    if identity_key.len() > 64 {
+        return Some(format!("identity_key 超长(>64): {identity_key}"));
+    }
+    if parse_provider(&input.provider).is_none() {
+        return Some(format!("unknown provider: {}", input.provider));
+    }
+    if let Some(name) = &input.name {
+        if name.trim().len() > 160 {
+            return Some("name 超长(>160)".into());
+        }
+    }
+    if let Some(priority) = input.priority {
+        if !(0..=1000).contains(&priority) {
+            return Some(format!("priority 超出范围(0..=1000): {priority}"));
+        }
+    }
+    if let Some(mc) = input.max_concurrent {
+        if !(1..=256).contains(&mc) {
+            return Some(format!("max_concurrent 超出范围(1..=256): {mc}"));
+        }
+    }
+    None
+}
+

@@ -5,9 +5,12 @@
 //! - 内存版 [`AdminRepository`] / [`AdminSessionRepository`] / [`AdminStore`]
 //!   （G4 未提供 PG 实现；账号数据真实源后续接 grok-storage 写路径）
 //! - 启动幂等 bootstrap 管理员（`GROK_ADMIN_USERNAME`/`GROK_ADMIN_PASSWORD`）
+//! - `POST /admin/auth/login` + `POST /admin/auth/refresh`：**绕过** [`AdminRouter::handle`]
+//!   的全局 guard（否则登录请求本身被 401 拦截，形成死锁）
 //! - axum `/{*path}` 泛型 handler 把 HTTP 请求映射到 [`AdminRouter::handle`]
 //!
 //! JWT secret：`GROK_ADMIN_SECRET`；缺省随机生成并告警（重启后 token 失效）。
+//! `GROK_ADMIN_PASSWORD` 缺省不 bootstrap → 登录恒 401（admin 不可用 + 启动告警）。
 
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -16,7 +19,9 @@ use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::{Method, StatusCode};
 use axum::response::IntoResponse;
-use axum::Json;
+use axum::{Json, Router};
+use serde::Deserialize;
+use serde_json::json;
 use grok_admin::{
     Admin, AdminAuthService, AdminRepository, AdminResult, AdminRouter, AdminSessionRepository,
     AdminStore, Session, TokenService,
@@ -223,35 +228,140 @@ impl AdminStore for InMemoryAdminStore {
     }
 }
 
-/// 构造 admin router：内存认证存储 + 幂等 bootstrap 管理员。
-pub async fn build_admin_router(username: &str, password: &str, secret: &str) -> AdminRouter {
-    let auth_store = Arc::new(InMemoryAuthStore::default());
-    let auth = AdminAuthService::new(
-        Arc::new(InMemoryAdminRepo(auth_store.clone())),
-        Arc::new(InMemorySessionRepo(auth_store)),
-        TokenService::new(secret),
-        chrono::Duration::hours(1),
-        chrono::Duration::days(7),
-    );
-    // bootstrap 幂等（count>0 跳过）；密码过短时忽略（运维可后补）。
-    let _ = auth.bootstrap(username, password).await;
-    let store = Arc::new(InMemoryAdminStore::default());
-    AdminRouter::new(auth, grok_admin::AccountAdminService::new(store))
+/// 管理台 HTTP 挂载包：受 guard 保护的 [`AdminRouter`] + 登录/刷新所需的 auth service。
+pub struct AdminHttpBundle {
+    router: AdminRouter,
+    auth: Arc<AdminAuthService>,
 }
 
-/// 构建 `/admin/*` 路由（axum 泛型 handler 映射到 [`AdminRouter::handle`]）。
-pub fn admin_app(router: AdminRouter) -> axum::Router {
-    let state = AdminState {
-        router: Arc::new(router),
-    };
-    axum::Router::new()
-        .route("/admin/{*path}", axum::routing::any(admin_handle))
-        .with_state(state)
+/// 构造 admin bundle：内存认证存储 + 幂等 bootstrap 管理员。
+///
+/// `password` 为 None（`GROK_ADMIN_PASSWORD` 未配置）→ 不 bootstrap，
+/// `/admin/auth/login` 恒 401（admin 不可用，启动已告警）。
+pub async fn build_admin_bundle(
+    username: &str,
+    password: Option<&str>,
+    secret: &str,
+) -> AdminHttpBundle {
+    let auth_store = Arc::new(InMemoryAuthStore::default());
+    let repo = Arc::new(InMemoryAdminRepo(auth_store.clone()));
+    let sessions = Arc::new(InMemorySessionRepo(auth_store));
+    let ttl = (chrono::Duration::hours(1), chrono::Duration::days(7));
+    // guard 与 login/refresh 各持一个 AdminAuthService，但共享同一底层 store
+    // （bootstrap / login 写入对 guard 端可见）。
+    let router_auth = AdminAuthService::new(
+        repo.clone(),
+        sessions.clone(),
+        TokenService::new(secret),
+        ttl.0,
+        ttl.1,
+    );
+    let login_auth = Arc::new(AdminAuthService::new(
+        repo,
+        sessions,
+        TokenService::new(secret),
+        ttl.0,
+        ttl.1,
+    ));
+    match password {
+        Some(pw) => match login_auth.bootstrap(username, pw).await {
+            Ok(()) => tracing::info!("admin bootstrap ok: {username}"),
+            Err(e) => tracing::warn!("admin bootstrap 失败（密码过短或已存在）: {e}"),
+        },
+        None => {
+            tracing::warn!(
+                "GROK_ADMIN_PASSWORD 未配置：admin 不可用（/admin/auth/login 将返回 401），生产前必须设置"
+            );
+        }
+    }
+    let store = Arc::new(InMemoryAdminStore::default());
+    AdminHttpBundle {
+        router: AdminRouter::new(router_auth, grok_admin::AccountAdminService::new(store)),
+        auth: login_auth,
+    }
 }
 
 #[derive(Clone)]
 struct AdminState {
     router: Arc<AdminRouter>,
+    auth: Arc<AdminAuthService>,
+}
+
+/// 构建 `/admin/*` 路由（axum）：login/refresh 绕过 guard + 泛型受保护 handler。
+pub fn admin_app(bundle: AdminHttpBundle) -> Router {
+    let state = AdminState {
+        router: Arc::new(bundle.router),
+        auth: bundle.auth,
+    };
+    Router::new()
+        .route("/admin/auth/login", axum::routing::post(admin_login))
+        .route("/admin/auth/refresh", axum::routing::post(admin_refresh))
+        .route("/admin/{*path}", axum::routing::any(admin_handle))
+        .with_state(state)
+}
+
+/// 登录请求体。
+#[derive(Deserialize)]
+struct LoginRequest {
+    username: String,
+    password: String,
+}
+
+/// 刷新请求体。
+#[derive(Deserialize)]
+struct RefreshRequest {
+    refresh_token: String,
+}
+
+/// `POST /admin/auth/login`：绕过 guard 直接调 [`AdminAuthService::login`]。
+async fn admin_login(
+    State(state): State<AdminState>,
+    Json(body): Json<LoginRequest>,
+) -> impl IntoResponse {
+    // 上游反代应透传真实来源 IP（X-Forwarded-For）；当前未接 ConnectInfo，用占位。
+    const REMOTE: &str = "127.0.0.1";
+    match state.auth.login(&body.username, &body.password, REMOTE).await {
+        Ok((admin, tokens)) => (
+            StatusCode::OK,
+            Json(json!({
+                "admin": { "id": admin.id, "username": admin.username },
+                "tokens": {
+                    "access_token": tokens.access_token,
+                    "access_token_expires_at": tokens.access_token_expires_at,
+                    "refresh_token": tokens.refresh_token,
+                    "refresh_token_expires_at": tokens.refresh_token_expires_at,
+                },
+            })),
+        ),
+        Err(_) => (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "invalid_credentials" })),
+        ),
+    }
+}
+
+/// `POST /admin/auth/refresh`：绕过 guard 直接调 [`AdminAuthService::refresh`]。
+async fn admin_refresh(
+    State(state): State<AdminState>,
+    Json(body): Json<RefreshRequest>,
+) -> impl IntoResponse {
+    match state.auth.refresh(&body.refresh_token).await {
+        Ok(tokens) => (
+            StatusCode::OK,
+            Json(json!({
+                "tokens": {
+                    "access_token": tokens.access_token,
+                    "access_token_expires_at": tokens.access_token_expires_at,
+                    "refresh_token": tokens.refresh_token,
+                    "refresh_token_expires_at": tokens.refresh_token_expires_at,
+                },
+            })),
+        ),
+        Err(_) => (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "invalid_session" })),
+        ),
+    }
 }
 
 /// 泛型 `/admin/*` handler：method + 完整路径 + Bearer 头 + body → 响应。

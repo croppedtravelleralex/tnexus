@@ -31,6 +31,9 @@ pub enum GatewayError {
     /// 上游 / bridge 调用失败。
     #[error("{0}")]
     Upstream(String),
+    /// 上游未配置（缺 token / base_url）→ 503，绝不带空凭据外呼真实上游。
+    #[error("upstream not configured for this endpoint")]
+    NotConfigured,
     /// 内部失真（engine 未注入 / 其它工具错误）。
     #[error("internal: {0}")]
     Internal(String),
@@ -44,6 +47,7 @@ impl GatewayError {
         match self {
             GatewayError::InvalidRequest(_) => StatusCode::BAD_REQUEST,
             GatewayError::NoAvailableAccount => StatusCode::SERVICE_UNAVAILABLE,
+            GatewayError::NotConfigured => StatusCode::SERVICE_UNAVAILABLE,
             GatewayError::Lease(_) => StatusCode::TOO_MANY_REQUESTS,
             GatewayError::Upstream(_) => StatusCode::BAD_GATEWAY,
             GatewayError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -55,6 +59,7 @@ impl GatewayError {
         let (msg, ty) = match self {
             GatewayError::InvalidRequest(_)
             | GatewayError::NoAvailableAccount
+            | GatewayError::NotConfigured
             | GatewayError::Internal(_) => (self.to_string(), "invalid_request_error"),
             GatewayError::Lease(_) => (self.to_string(), "rate_limit_error"),
             GatewayError::Upstream(_) => (self.to_string(), "upstream_error"),
