@@ -27,8 +27,10 @@ pub struct AppState {
     pub image_engine: Option<Arc<ImageEngine>>,
     /// 媒体取回器（G2-A4 `/v1/media/images/{id}`）。None 时返回 501。
     pub media_fetcher: Option<Arc<dyn MediaFetcher>>,
-    /// G5-P3 协议后端（/v1/responses、/v1/messages）。None 时返回 500。
-    pub protocol_backend: Option<Arc<dyn ProtocolBackend>>,
+    /// `/v1/responses` 协议后端（Build provider，G5-P3）。None 时返回 500。
+    pub responses_backend: Option<Arc<dyn ProtocolBackend>>,
+    /// `/v1/messages` 协议后端（Console provider，G5-P3）。None 时返回 500。
+    pub messages_backend: Option<Arc<dyn ProtocolBackend>>,
     /// G5-P4 视频后端（/v1/videos）。None 时返回 500。
     pub video_backend: Option<Arc<dyn VideoBackend>>,
 }
@@ -40,7 +42,8 @@ impl AppState {
             engine: None,
             image_engine: None,
             media_fetcher: None,
-            protocol_backend: None,
+            responses_backend: None,
+            messages_backend: None,
             video_backend: None,
         }
     }
@@ -52,7 +55,8 @@ pub fn with_engine(engine: ChatEngine) -> AppState {
         engine: Some(Arc::new(engine)),
         image_engine: None,
         media_fetcher: None,
-        protocol_backend: None,
+        responses_backend: None,
+        messages_backend: None,
         video_backend: None,
     }
 }
@@ -63,7 +67,8 @@ pub fn with_engines(engine: ChatEngine, image_engine: ImageEngine) -> AppState {
         engine: Some(Arc::new(engine)),
         image_engine: Some(Arc::new(image_engine)),
         media_fetcher: None,
-        protocol_backend: None,
+        responses_backend: None,
+        messages_backend: None,
         video_backend: None,
     }
 }
@@ -78,20 +83,49 @@ pub fn with_engines_and_media(
         engine: Some(Arc::new(engine)),
         image_engine: Some(Arc::new(image_engine)),
         media_fetcher: Some(media_fetcher),
-        protocol_backend: None,
+        responses_backend: None,
+        messages_backend: None,
         video_backend: None,
     }
 }
 
-/// 构建带协议后端（G5-P3）的应用状态。engine 可空（协议端点只消费 backend）。
+/// 构建带协议后端（G5-P3）的应用状态：同一后端同时服务 /v1/responses 与 /v1/messages。
+/// 测试注入 fake；生产用 [`with_default_protocol_backends`]。
 pub fn with_protocol_backend(backend: Arc<dyn ProtocolBackend>) -> AppState {
     AppState {
         engine: None,
         image_engine: None,
         media_fetcher: None,
-        protocol_backend: Some(backend),
+        responses_backend: Some(backend.clone()),
+        messages_backend: Some(backend),
         video_backend: None,
     }
+}
+
+/// 构建带两个独立协议后端（/v1/responses → Build；/v1/messages → Console）的状态。
+pub fn with_protocol_backends(
+    responses: Option<Arc<dyn ProtocolBackend>>,
+    messages: Option<Arc<dyn ProtocolBackend>>,
+) -> AppState {
+    AppState {
+        engine: None,
+        image_engine: None,
+        media_fetcher: None,
+        responses_backend: responses,
+        messages_backend: messages,
+        video_backend: None,
+    }
+}
+
+/// 默认真实协议后端：Build（/v1/responses）与 Console（/v1/messages），
+/// 各用 `base_url` 可覆盖（测试指 mock server；None 走各自 default_base_url）。
+pub fn with_default_protocol_backends(
+    build_base_url: Option<String>,
+    console_base_url: Option<String>,
+) -> AppState {
+    let (responses, messages) =
+        crate::backends::default_protocol_backends(build_base_url, console_base_url);
+    with_protocol_backends(Some(responses), Some(messages))
 }
 
 /// 构建带视频后端（G5-P4）的应用状态。
@@ -100,7 +134,8 @@ pub fn with_video_backend(backend: Arc<dyn VideoBackend>) -> AppState {
         engine: None,
         image_engine: None,
         media_fetcher: None,
-        protocol_backend: None,
+        responses_backend: None,
+        messages_backend: None,
         video_backend: Some(backend),
     }
 }

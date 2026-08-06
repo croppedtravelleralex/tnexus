@@ -176,9 +176,9 @@ pub async fn responses_completions(
 ) -> Result<Response, GatewayError> {
     let normalized = normalize_responses_input(&req)?;
     let backend = state
-        .protocol_backend
+        .responses_backend
         .as_ref()
-        .ok_or_else(|| GatewayError::Internal("ProtocolBackend not configured".into()))?;
+        .ok_or_else(|| GatewayError::Internal("ResponsesBackend/ProtocolBackend not configured".into()))?;
     let text = backend.complete(&req.model, &normalized).await?;
     let request_id = new_request_id();
     if req.stream {
@@ -199,9 +199,9 @@ pub async fn messages_completions(
 ) -> Result<Response, GatewayError> {
     let normalized = normalize_messages_input(&req)?;
     let backend = state
-        .protocol_backend
+        .messages_backend
         .as_ref()
-        .ok_or_else(|| GatewayError::Internal("ProtocolBackend not configured".into()))?;
+        .ok_or_else(|| GatewayError::Internal("MessagesBackend/ProtocolBackend not configured".into()))?;
     let text = backend.complete(&req.model, &normalized).await?;
     let request_id = new_request_id();
     if req.stream {
