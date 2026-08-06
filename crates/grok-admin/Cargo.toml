@@ -1,0 +1,23 @@
+[package]
+name = "grok-admin"
+version.workspace = true
+edition.workspace = true
+description = "Grok 管理台认证：管理员登录 / JWT access token / refresh session 轮换（对齐 Go adminauth + infra/security）"
+
+[dependencies]
+grok-domain = { path = "../grok-domain" }
+jsonwebtoken = { workspace = true }
+bcrypt = "0.16"
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+rand = { workspace = true }
+base64 = { workspace = true }
+hex = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

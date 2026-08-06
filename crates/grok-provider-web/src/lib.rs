@@ -14,6 +14,8 @@ pub mod bridge;
 pub mod chat;
 pub mod engine;
 pub mod error;
+pub mod expand;
+pub mod image;
 
 pub use attachments::{prepare_file_attachments, FileAttachment};
 pub use bridge::{default_bridge_url, BridgeClient, HttpBridgeClient, MockBridgeClient};
@@ -22,3 +24,5 @@ pub use chat::{
 };
 pub use engine::{ChatEngine, ChatRequest};
 pub use error::ProviderError;
+pub use expand::expand_prompt;
+pub use image::{ImageEngine, ImagineRequest, ImagineResult};

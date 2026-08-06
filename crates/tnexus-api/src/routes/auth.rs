@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use time::Duration;
 use tnexus_auth::User;
+use tnexus_image_archive::{bind_newapi_user_id, get_newapi_user_id};
 use uuid::Uuid;
 
 #[derive(Deserialize)]
@@ -35,6 +36,7 @@ pub struct UserResponse {
     pub display_name: String,
     pub disabled: bool,
     pub created_at: chrono::DateTime<chrono::Utc>,
+    pub newapi_user_id: Option<i64>,
 }
 
 impl From<User> for UserResponse {
@@ -46,8 +48,20 @@ impl From<User> for UserResponse {
             display_name: u.display_name,
             disabled: u.disabled,
             created_at: u.created_at,
+            newapi_user_id: None,
         }
     }
+}
+
+async fn user_response_with_newapi(
+    state: &AppState,
+    user: User,
+) -> Result<UserResponse, (StatusCode, String)> {
+    let mut resp = UserResponse::from(user);
+    resp.newapi_user_id = get_newapi_user_id(&state.pool, resp.id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(resp)
 }
 
 pub fn routes() -> Router<Arc<AppState>> {
@@ -57,7 +71,9 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/logout", post(logout))
         .route("/me", get(me))
         .route("/preferences", get(get_preferences).patch(patch_preferences))
+        .route("/newapi/bind", post(bind_newapi_self))
         .route("/users", get(list_users))
+        .route("/users/{id}/newapi", post(admin_bind_newapi))
         .route("/users/{id}/disabled", post(set_disabled))
 }
 
@@ -82,7 +98,7 @@ async fn register(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .1;
     let jar = set_session_cookie(&state, jar, &token);
-    Ok((jar, Json(UserResponse::from(user))))
+    Ok((jar, Json(user_response_with_newapi(&state, user).await?)))
 }
 
 async fn login(
@@ -96,7 +112,7 @@ async fn login(
         .await
         .map_err(|_| (StatusCode::UNAUTHORIZED, "invalid credentials".into()))?;
     let jar = set_session_cookie(&state, jar, &token);
-    Ok((jar, Json(UserResponse::from(user))))
+    Ok((jar, Json(user_response_with_newapi(&state, user).await?)))
 }
 
 async fn logout(jar: CookieJar, State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -120,7 +136,55 @@ async fn me(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or((StatusCode::NOT_FOUND, "user not found".into()))?;
-    Ok(Json(UserResponse::from(u)))
+    Ok(Json(user_response_with_newapi(&state, u).await?))
+}
+
+#[derive(Deserialize)]
+struct BindNewApiBody {
+    newapi_user_id: i64,
+}
+
+async fn bind_newapi_self(
+    State(state): State<Arc<AppState>>,
+    user: AuthUser,
+    Json(body): Json<BindNewApiBody>,
+) -> Result<Json<UserResponse>, (StatusCode, String)> {
+    if body.newapi_user_id <= 0 {
+        return Err((StatusCode::BAD_REQUEST, "invalid newapi_user_id".into()));
+    }
+    let id = Uuid::parse_str(&user.claims.sub)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "bad user id".into()))?;
+    bind_newapi_user_id(&state.pool, id, body.newapi_user_id)
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let u = state
+        .auth
+        .get_user(id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "user not found".into()))?;
+    Ok(Json(user_response_with_newapi(&state, u).await?))
+}
+
+async fn admin_bind_newapi(
+    State(state): State<Arc<AppState>>,
+    _admin: AdminUser,
+    axum::extract::Path(id): axum::extract::Path<Uuid>,
+    Json(body): Json<BindNewApiBody>,
+) -> Result<Json<UserResponse>, (StatusCode, String)> {
+    if body.newapi_user_id <= 0 {
+        return Err((StatusCode::BAD_REQUEST, "invalid newapi_user_id".into()));
+    }
+    bind_newapi_user_id(&state.pool, id, body.newapi_user_id)
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let u = state
+        .auth
+        .get_user(id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "user not found".into()))?;
+    Ok(Json(user_response_with_newapi(&state, u).await?))
 }
 
 async fn get_preferences(
@@ -203,7 +267,11 @@ async fn list_users(
         .list_users()
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(users.into_iter().map(UserResponse::from).collect()))
+    let mut out = Vec::with_capacity(users.len());
+    for u in users {
+        out.push(user_response_with_newapi(&state, u).await?);
+    }
+    Ok(Json(out))
 }
 
 #[derive(Deserialize)]

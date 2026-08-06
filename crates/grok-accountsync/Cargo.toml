@@ -1,0 +1,17 @@
+[package]
+name = "grok-accountsync"
+version.workspace = true
+edition.workspace = true
+description = "Grok 账号同步服务（G4-P5，Go internal/application/accountsync 移植）"
+
+[dependencies]
+grok-domain = { path = "../grok-domain" }
+grok-storage = { path = "../grok-storage" }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

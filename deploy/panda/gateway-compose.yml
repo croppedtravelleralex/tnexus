@@ -16,12 +16,15 @@ services:
       IMAGE_ENABLED: "1"
       IMAGE_GLOBAL_CONCURRENCY: "10"
       IMAGE_ACCOUNT_INFLIGHT_MAX: "1"
-      IMAGE_ADMIN_RETRY_MAX: "2"
-      UPSTREAM_IMAGE_POLL_TIMEOUT_SECS: "90"
+      IMAGE_ADMIN_RETRY_MAX: "1"
+      UPSTREAM_IMAGE_POLL_TIMEOUT_SECS: "300"
       UPSTREAM_IMAGE_POLL_INITIAL_WAIT_SECS: "5"
       UPSTREAM_IMAGE_POLL_INTERVAL_SECS: "3"
+      UPSTREAM_IMAGE_POLL_SETTLE_SECS: "2"
+      UPSTREAM_IMAGE_POLL_CHECK_BEFORE_HIT: "1"
       DATA_PLANE: upstream
     volumes:
       - /opt/tnexus/data/pool:/data/pool:rw
+      - /opt/tnexus/data/images:/data/images:rw
       - /root/gptimage-gateway-rs/secrets/pin_account.json:/secrets/pin_account.json:ro
     restart: unless-stopped

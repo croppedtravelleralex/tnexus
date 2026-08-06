@@ -10,18 +10,25 @@
 
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{Path, State};
+use axum::http::header;
 use axum::response::sse::{Event, Sse};
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use futures::stream;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use grok_conversation::{normalize_chat_input, ChatMessage};
-use grok_provider_web::{public_models, ChatEngine, ChatRequest as ProviderChatRequest, ALIAS_OCR};
+use grok_conversation::{normalize_chat_input, ChatMessage, NormalizedChatInput};
+use grok_provider_web::{
+    public_models, ChatEngine, ChatRequest as ProviderChatRequest, ImagineRequest, ALIAS_OCR,
+};
 
 use crate::error::GatewayError;
+use crate::protocol::{
+    messages_json, messages_stream_events, normalize_messages_input, normalize_responses_input,
+    responses_json, responses_stream_events, MessagesRequest, ResponsesRequest,
+};
 use crate::router::AppState;
 
 /// `POST /v1/chat/completions` 请求（G1 子集：model / messages / stream）。
@@ -34,6 +41,183 @@ pub struct ChatCompletionsRequest {
     /// true → SSE 流式返回。
     #[serde(default)]
     pub stream: bool,
+}
+
+/// `POST /v1/images/generations` 请求（G2：prompt / n / response_format / size / quality）。
+#[derive(Debug, Deserialize)]
+pub struct ImageGenerationRequest {
+    /// 生图提示词。
+    pub prompt: String,
+    /// 生图数量（默认 1，上限 10）。
+    #[serde(default = "default_n")]
+    pub n: usize,
+    /// 输出格式：`url`（默认）或 `b64_json`。
+    #[serde(default)]
+    pub response_format: String,
+    /// 尺寸（本阶段忽略具体尺寸，交给上游）。
+    #[serde(default)]
+    pub size: String,
+    /// 质量（本阶段忽略）。
+    #[serde(default)]
+    pub quality: String,
+}
+
+fn default_n() -> usize {
+    1
+}
+
+/// `POST /v1/images/generations`（G2）。走 `ImageEngine.imagine`。
+pub async fn image_generations(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<ImageGenerationRequest>,
+) -> Result<Response, GatewayError> {
+    if req.n == 0 || req.n > 10 {
+        return Err(GatewayError::InvalidRequest(format!(
+            "n must be in 1..=10, got {}",
+            req.n
+        )));
+    }
+    let image_engine = state
+        .image_engine
+        .as_ref()
+        .ok_or_else(|| GatewayError::Internal("ImageEngine not configured".into()))?;
+
+    let out_format = if req.response_format == "b64_json" {
+        "b64_json".to_string()
+    } else {
+        "url".to_string()
+    };
+    let imagine_req = ImagineRequest {
+        prompt: req.prompt.clone(),
+        n: req.n,
+        response_format: out_format.clone(),
+        lite: false,
+        enhance: false,
+        request_id: new_request_id(),
+    };
+    let result = image_engine.imagine(&imagine_req).await?;
+
+    let data: Vec<Value> = result
+        .items
+        .iter()
+        .map(|item| {
+            if result.b64 {
+                json!({ "b64_json": item })
+            } else {
+                json!({ "url": item })
+            }
+        })
+        .collect();
+
+    Ok(Json(json!({
+        "object": "list",
+        "created": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+        "data": data,
+    }))
+    .into_response())
+}
+
+/// `GET /v1/media/images/{id}`（G2-A4）。Grok 生图返回的是上游 URL，
+/// 这里通过 id 查媒体字节并回传（Content-Type 嗅探）。未配置 `media_fetcher`
+/// 或 id 未命中 → 404。
+pub async fn media_images(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+    match state.media_fetcher.as_ref() {
+        Some(fetcher) => match fetcher.fetch_bytes(&id).await {
+            Ok((bytes, content_type)) => {
+                ([(header::CONTENT_TYPE, content_type)], bytes).into_response()
+            }
+            Err(_) => (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": {"message": "media not found"}})),
+            )
+                .into_response(),
+        },
+        None => (
+            StatusCode::NOT_IMPLEMENTED,
+            Json(json!({"error": {"message": "media fetcher not configured"}})),
+        )
+            .into_response(),
+    }
+}
+
+use axum::http::StatusCode;
+
+/// 媒体取回抽象（G2-A4 `GET /v1/media/images/{id}`）。按 id 返回字节与 Content-Type。
+#[async_trait::async_trait]
+pub trait MediaFetcher: Send + Sync {
+    async fn fetch_bytes(&self, id: &str) -> Result<(Vec<u8>, String), GatewayError>;
+}
+
+/// G5-P3 协议后端抽象：`/v1/responses` 与 `/v1/messages` 的上游推理面。
+///
+/// 真实实现接 grok-provider-build / grok-provider-console（TODO(G5-P3): 接线
+/// grok-provider-build 的 stored response / console 流式到 `complete`），
+/// 测试注入 fake。`normalized` 已含 system 前缀（`[system]\n...`）与图片清单。
+#[async_trait::async_trait]
+pub trait ProtocolBackend: Send + Sync {
+    /// 执行一次对话推理，返回最终文本。
+    async fn complete(
+        &self,
+        model: &str,
+        normalized: &NormalizedChatInput,
+    ) -> Result<String, GatewayError>;
+}
+
+/// `POST /v1/responses`（OpenAI Responses，G5-P3）。
+///
+/// `stream=false` → 单次 stored response（`object: response`）；`stream=true` →
+/// SSE（response.created → output_text.delta → response.completed）。
+pub async fn responses_completions(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<ResponsesRequest>,
+) -> Result<Response, GatewayError> {
+    let normalized = normalize_responses_input(&req)?;
+    let backend = state.responses_backend.as_ref().ok_or_else(|| {
+        GatewayError::Internal("ResponsesBackend/ProtocolBackend not configured".into())
+    })?;
+    let text = backend.complete(&req.model, &normalized).await?;
+    let request_id = new_request_id();
+    if req.stream {
+        let events = responses_stream_events(&request_id, &req.model, &text);
+        Ok(protocol_sse(events).into_response())
+    } else {
+        Ok(Json(responses_json(&request_id, &req.model, &text)).into_response())
+    }
+}
+
+/// `POST /v1/messages`（Anthropic Messages，G5-P3）。
+///
+/// `stream=false` → content block 响应；`stream=true` → SSE
+/// （message_start → content_block_* → message_delta → message_stop）。
+pub async fn messages_completions(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<MessagesRequest>,
+) -> Result<Response, GatewayError> {
+    let normalized = normalize_messages_input(&req)?;
+    let backend = state.messages_backend.as_ref().ok_or_else(|| {
+        GatewayError::Internal("MessagesBackend/ProtocolBackend not configured".into())
+    })?;
+    let text = backend.complete(&req.model, &normalized).await?;
+    let request_id = new_request_id();
+    if req.stream {
+        let events = messages_stream_events(&request_id, &req.model, &text);
+        Ok(protocol_sse(events).into_response())
+    } else {
+        Ok(Json(messages_json(&request_id, &req.model, &text)).into_response())
+    }
+}
+
+/// 协议 SSE：事件数组 → 逐帧 `data: {...}`（无 `[DONE]`，协议各自终止事件收尾）。
+fn protocol_sse(
+    events: Vec<serde_json::Value>,
+) -> Sse<impl futures::Stream<Item = Result<Event, std::convert::Infallible>>> {
+    let s = stream::iter(
+        events
+            .into_iter()
+            .map(|event| Ok(Event::default().data(event.to_string()))),
+    );
+    Sse::new(s)
 }
 
 /// `GET /v1/models` 返回的模型项。

@@ -21,7 +21,7 @@ function formatDate(iso?: string) {
 }
 
 export default function SettingsPage() {
-  const { user, logout } = useAuth();
+  const { user, logout, refresh } = useAuth();
   const router = useRouter();
   const [users, setUsers] = useState<User[]>([]);
   const [adminBusy, setAdminBusy] = useState<string | null>(null);
@@ -31,6 +31,9 @@ export default function SettingsPage() {
   const [proxyBusy, setProxyBusy] = useState(false);
   const [proxyError, setProxyError] = useState("");
   const [webshareStatus, setWebshareStatus] = useState<Record<string, unknown> | null>(null);
+  const [newapiUserId, setNewapiUserId] = useState("");
+  const [newapiBusy, setNewapiBusy] = useState(false);
+  const [newapiMsg, setNewapiMsg] = useState("");
 
   const loadProxy = useCallback(async () => {
     if (user?.role !== "admin") return;
@@ -101,6 +104,30 @@ export default function SettingsPage() {
       await loadUsers();
     } finally {
       setAdminBusy(null);
+    }
+  };
+
+  useEffect(() => {
+    setNewapiUserId(user?.newapi_user_id ? String(user.newapi_user_id) : "");
+  }, [user?.newapi_user_id]);
+
+  const saveNewApiBinding = async () => {
+    const id = Number.parseInt(newapiUserId.trim(), 10);
+    if (!Number.isFinite(id) || id <= 0) {
+      setNewapiMsg("请输入有效的 NewAPI 用户 ID（正整数）");
+      return;
+    }
+    setNewapiBusy(true);
+    setNewapiMsg("");
+    try {
+      await authApi.bindNewApi(id);
+      await refresh();
+      setNewapiMsg("已绑定。此后经 NewAPI 生图的记录会出现在你的图片管理中。");
+      await loadUsers().catch(() => undefined);
+    } catch (e) {
+      setNewapiMsg(e instanceof Error ? e.message : "绑定失败");
+    } finally {
+      setNewapiBusy(false);
     }
   };
 
@@ -181,6 +208,32 @@ export default function SettingsPage() {
                 <dd className="mt-1 font-medium">{user.email}</dd>
               </div>
             </dl>
+            <div className="mt-6 rounded-lg border border-[var(--neo-border)] p-4">
+              <h3 className="text-sm font-semibold text-[var(--neo-ink)]">NewAPI 账户关联</h3>
+              <p className="mt-1 text-xs text-[var(--neo-muted)]">
+                绑定 CloseAPI/NewAPI 用户 ID 后，通过 sub2api 调用生图的记录会归入你的图片管理（默认服务端保留 7 天）。
+              </p>
+              <div className="mt-3 flex flex-wrap items-end gap-2">
+                <div className="min-w-[12rem] flex-1">
+                  <label className="text-xs text-[var(--neo-muted)]">NewAPI 用户 ID</label>
+                  <Input
+                    className="mt-1 font-mono text-xs"
+                    value={newapiUserId}
+                    onChange={(e) => setNewapiUserId(e.target.value)}
+                    placeholder="例如 1（root）"
+                  />
+                </div>
+                <Button size="sm" disabled={newapiBusy} onClick={() => void saveNewApiBinding()}>
+                  {newapiBusy ? <LoaderCircle className="size-3.5 animate-spin" /> : "保存绑定"}
+                </Button>
+              </div>
+              {user.newapi_user_id ? (
+                <p className="mt-2 text-xs text-emerald-700">当前已绑定：{user.newapi_user_id}</p>
+              ) : (
+                <p className="mt-2 text-xs text-amber-700">未绑定：API 生图仅管理员可见，或需管理员代为绑定。</p>
+              )}
+              {newapiMsg ? <p className="mt-2 text-xs text-[var(--neo-muted)]">{newapiMsg}</p> : null}
+            </div>
             <div className="mt-6">
               <Button variant="outline" onClick={() => void logout().then(() => router.push("/login"))}>
                 退出登录
@@ -200,6 +253,7 @@ export default function SettingsPage() {
                     <th className="px-4 py-2.5">角色</th>
                     <th className="px-4 py-2.5">状态</th>
                     <th className="px-4 py-2.5">注册</th>
+                    <th className="px-4 py-2.5">NewAPI</th>
                     <th className="px-4 py-2.5">操作</th>
                   </tr>
                 </thead>
@@ -213,6 +267,7 @@ export default function SettingsPage() {
                       <td className="px-4 py-3">{roleLabel(u.role)}</td>
                       <td className="px-4 py-3">{u.disabled ? "已禁用" : "正常"}</td>
                       <td className="px-4 py-3 text-[var(--neo-muted)]">{formatDate(u.created_at)}</td>
+                      <td className="px-4 py-3 font-mono text-xs">{u.newapi_user_id ?? "—"}</td>
                       <td className="px-4 py-3">
                         {u.id !== user.id ? (
                           <Button

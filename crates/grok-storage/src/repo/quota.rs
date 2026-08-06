@@ -41,8 +41,13 @@ impl QuotaRepository for PgQuotaRepository {
         for row in rows {
             out.push(QuotaWindow {
                 account_id: row.try_get("account_id")?,
+                mode: String::from("fast"),
                 remaining: row.try_get("remaining")?,
+                total: 0,
                 reset_at: row.try_get("reset_at")?,
+                source: grok_domain::QuotaSource::default(),
+                synced_at: None,
+                updated_at: chrono::DateTime::UNIX_EPOCH,
             });
         }
         Ok(out)

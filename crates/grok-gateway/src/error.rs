@@ -34,6 +34,9 @@ pub enum GatewayError {
     /// 内部失真（engine 未注入 / 其它工具错误）。
     #[error("internal: {0}")]
     Internal(String),
+    /// 资源不存在（如视频任务 id 未命中）。
+    #[error("{0}")]
+    NotFound(String),
 }
 
 impl GatewayError {
@@ -44,6 +47,7 @@ impl GatewayError {
             GatewayError::Lease(_) => StatusCode::TOO_MANY_REQUESTS,
             GatewayError::Upstream(_) => StatusCode::BAD_GATEWAY,
             GatewayError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            GatewayError::NotFound(_) => StatusCode::NOT_FOUND,
         }
     }
 
@@ -54,6 +58,7 @@ impl GatewayError {
             | GatewayError::Internal(_) => (self.to_string(), "invalid_request_error"),
             GatewayError::Lease(_) => (self.to_string(), "rate_limit_error"),
             GatewayError::Upstream(_) => (self.to_string(), "upstream_error"),
+            GatewayError::NotFound(_) => (self.to_string(), "not_found"),
         };
         json!({
             "error": { "message": msg, "type": ty, "param": null, "code": null },

@@ -15,6 +15,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use sqlx::Row;
 use std::sync::Arc;
+use tnexus_image_archive::get_newapi_user_id;
 use uuid::Uuid;
 
 #[derive(Debug, Deserialize)]
@@ -220,31 +221,130 @@ async fn delete_logs(
 
 async fn list_images(
     State(state): State<Arc<AppState>>,
-    _admin: AdminUser,
+    user: AuthUser,
     Query(q): Query<ImagesQuery>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     let start = parse_date(&q.start_date);
     let end = parse_date(&q.end_date);
-
-    let rows = sqlx::query(
-        r#"SELECT jr.id, jr.job_id, jr.provider, jr.r2_key_original, jr.r2_key_preview,
-                  jr.r2_key_thumb, jr.agent_prompt, jr.revised_prompt, jr.keywords, jr.inline_preview_b64,
-                  jr.source_url, jr.width, jr.height, jr.size_bytes, jr.generation_ms, jr.created_at, j.input_prompt, j.updated_at, j.phase_timings_ms, j.status
-           FROM job_results jr
-           JOIN jobs j ON j.id = jr.job_id
-           WHERE ($1::date IS NULL OR jr.created_at::date >= $1)
-             AND ($2::date IS NULL OR jr.created_at::date <= $2)
-           ORDER BY jr.created_at DESC
-           LIMIT 2000"#,
-    )
-    .bind(start)
-    .bind(end)
-    .fetch_all(&state.pool)
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let user_id = Uuid::parse_str(&user.claims.sub)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "bad user id".into()))?;
+    let is_admin = user.claims.role == Role::Admin;
+    let bound_newapi = if is_admin {
+        None
+    } else {
+        get_newapi_user_id(&state.pool, user_id)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    };
 
     let mut items = Vec::new();
-    for row in rows {
+
+    let worker_rows = if is_admin {
+        sqlx::query(
+            r#"SELECT jr.id, jr.job_id, jr.provider, jr.r2_key_original, jr.r2_key_preview,
+                      jr.r2_key_thumb, jr.agent_prompt, jr.revised_prompt, jr.keywords, jr.inline_preview_b64,
+                      jr.source_url, jr.width, jr.height, jr.size_bytes, jr.generation_ms, jr.created_at,
+                      j.input_prompt, j.updated_at, j.phase_timings_ms, j.status
+               FROM job_results jr
+               JOIN jobs j ON j.id = jr.job_id
+               WHERE ($1::date IS NULL OR jr.created_at::date >= $1)
+                 AND ($2::date IS NULL OR jr.created_at::date <= $2)
+               ORDER BY jr.created_at DESC
+               LIMIT 2000"#,
+        )
+        .bind(start)
+        .bind(end)
+        .fetch_all(&state.pool)
+        .await
+    } else {
+        sqlx::query(
+            r#"SELECT jr.id, jr.job_id, jr.provider, jr.r2_key_original, jr.r2_key_preview,
+                      jr.r2_key_thumb, jr.agent_prompt, jr.revised_prompt, jr.keywords, jr.inline_preview_b64,
+                      jr.source_url, jr.width, jr.height, jr.size_bytes, jr.generation_ms, jr.created_at,
+                      j.input_prompt, j.updated_at, j.phase_timings_ms, j.status
+               FROM job_results jr
+               JOIN jobs j ON j.id = jr.job_id
+               WHERE j.user_id = $3
+                 AND ($1::date IS NULL OR jr.created_at::date >= $1)
+                 AND ($2::date IS NULL OR jr.created_at::date <= $2)
+               ORDER BY jr.created_at DESC
+               LIMIT 2000"#,
+        )
+        .bind(start)
+        .bind(end)
+        .bind(user_id)
+        .fetch_all(&state.pool)
+        .await
+    }
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    for row in worker_rows {
+        if let Some(item) = worker_row_to_item(&state, &row).await? {
+            items.push(item);
+        }
+    }
+
+    let api_rows = if is_admin {
+        sqlx::query(
+            r#"SELECT id, prompt, agent_prompt, r2_key_original, r2_key_preview, r2_key_thumb,
+                      inline_preview_b64, source_url, width, height, size_bytes, generation_ms,
+                      keywords, created_at, backup_status, newapi_user_id, newapi_token_name
+               FROM user_image_records
+               WHERE source = 'gateway_openapi'
+                 AND ($1::date IS NULL OR created_at::date >= $1)
+                 AND ($2::date IS NULL OR created_at::date <= $2)
+               ORDER BY created_at DESC
+               LIMIT 2000"#,
+        )
+        .bind(start)
+        .bind(end)
+        .fetch_all(&state.pool)
+        .await
+    } else {
+        sqlx::query(
+            r#"SELECT id, prompt, agent_prompt, r2_key_original, r2_key_preview, r2_key_thumb,
+                      inline_preview_b64, source_url, width, height, size_bytes, generation_ms,
+                      keywords, created_at, backup_status, newapi_user_id, newapi_token_name
+               FROM user_image_records
+               WHERE source = 'gateway_openapi'
+                 AND (
+                   owner_user_id = $3
+                   OR ($4::bigint IS NOT NULL AND newapi_user_id = $4)
+                 )
+                 AND ($1::date IS NULL OR created_at::date >= $1)
+                 AND ($2::date IS NULL OR created_at::date <= $2)
+               ORDER BY created_at DESC
+               LIMIT 2000"#,
+        )
+        .bind(start)
+        .bind(end)
+        .bind(user_id)
+        .bind(bound_newapi)
+        .fetch_all(&state.pool)
+        .await
+    }
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    for row in api_rows {
+        if let Some(item) = api_row_to_item(&state, &row).await? {
+            items.push(item);
+        }
+    }
+
+    items.sort_by(|a, b| {
+        let ta = a.get("created_at").and_then(|v| v.as_str()).unwrap_or("");
+        let tb = b.get("created_at").and_then(|v| v.as_str()).unwrap_or("");
+        tb.cmp(ta)
+    });
+    items.truncate(2000);
+
+    Ok(Json(json!({ "items": items })))
+}
+
+async fn worker_row_to_item(
+    state: &AppState,
+    row: &sqlx::postgres::PgRow,
+) -> Result<Option<Value>, (StatusCode, String)> {
         let record = JobResultRecord {
             id: row.get("id"),
             job_id: row.get("job_id"),
@@ -298,15 +398,16 @@ async fn list_images(
             None
         };
         if url.is_empty() && thumb_api_url.is_none() {
-            continue;
+            return Ok(None);
         }
         let keywords: Option<serde_json::Value> = row.get("keywords");
         let tags = parse_tags(keywords);
-        items.push(json!({
+        let size_bytes: Option<i64> = row.get("size_bytes");
+        Ok(Some(json!({
             "rel": view.id.to_string(),
             "name": format!("{}.png", view.id),
             "date": created_at.format("%Y-%m-%d").to_string(),
-            "size": 0,
+            "size": size_bytes.unwrap_or(0),
             "url": url,
             "thumbnail_url": thumb.clone().or(Some(url.clone())),
             "thumb_api_url": thumb_api_url,
@@ -316,30 +417,135 @@ async fn list_images(
             "duration_ms": wall_ms,
             "prompt": prompt,
             "tags": tags,
-        }));
+            "source": "studio",
+        })))
+}
+
+async fn api_row_to_item(
+    _state: &AppState,
+    row: &sqlx::postgres::PgRow,
+) -> Result<Option<Value>, (StatusCode, String)> {
+    let id: Uuid = row.get("id");
+    let prompt: String = row
+        .get::<Option<String>, _>("prompt")
+        .filter(|s| !s.is_empty())
+        .or_else(|| row.get("agent_prompt"))
+        .unwrap_or_default();
+    let created_at: DateTime<Utc> = row.get("created_at");
+    let generation_ms: Option<i64> = row.get("generation_ms");
+    let size_bytes: Option<i64> = row.get("size_bytes");
+    let keywords: Option<serde_json::Value> = row.get("keywords");
+    let backup_status: String = row.get("backup_status");
+    let inline_preview_b64: Option<String> = row.get("inline_preview_b64");
+    let source_url: Option<String> = row.get("source_url");
+    let r2_key_thumb: Option<String> = row.get("r2_key_thumb");
+
+    let has_inline = inline_preview_b64
+        .as_ref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    let has_r2_thumb = r2_key_thumb
+        .as_ref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    let thumb_api_url = if has_inline || has_r2_thumb {
+        Some(format!("/api/images/thumb/{}", id))
+    } else {
+        None
+    };
+    let url = source_url.clone().unwrap_or_default();
+    if url.is_empty() && thumb_api_url.is_none() && !has_inline {
+        return Ok(None);
     }
-    Ok(Json(json!({ "items": items })))
+    let tags = parse_tags(keywords);
+    Ok(Some(json!({
+        "rel": id.to_string(),
+        "name": format!("{}.png", id),
+        "date": created_at.format("%Y-%m-%d").to_string(),
+        "size": size_bytes.unwrap_or(0),
+        "url": url,
+        "thumbnail_url": if url.is_empty() { None } else { Some(url.clone()) },
+        "thumb_api_url": thumb_api_url,
+        "preview_b64": inline_preview_b64,
+        "created_at": created_at.to_rfc3339(),
+        "duration_ms": generation_ms.unwrap_or(0),
+        "prompt": prompt,
+        "tags": tags,
+        "source": "api",
+        "backup_status": backup_status,
+        "newapi_token_name": row.get::<Option<String>, _>("newapi_token_name"),
+    })))
 }
 
 async fn delete_images(
     State(state): State<Arc<AppState>>,
-    _admin: AdminUser,
+    user: AuthUser,
     Json(body): Json<DeleteImagesBody>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
+    let user_id = Uuid::parse_str(&user.claims.sub)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "bad user id".into()))?;
+    let is_admin = user.claims.role == Role::Admin;
+
     if body.all_matching {
         let start = parse_date(&body.start_date);
         let end = parse_date(&body.end_date);
-        let result = sqlx::query(
+        if is_admin {
+            let jr = sqlx::query(
+                r#"DELETE FROM job_results jr
+                   WHERE ($1::date IS NULL OR jr.created_at::date >= $1)
+                     AND ($2::date IS NULL OR jr.created_at::date <= $2)"#,
+            )
+            .bind(start)
+            .bind(end)
+            .execute(&state.pool)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            let ur = sqlx::query(
+                r#"DELETE FROM user_image_records
+                   WHERE ($1::date IS NULL OR created_at::date >= $1)
+                     AND ($2::date IS NULL OR created_at::date <= $2)"#,
+            )
+            .bind(start)
+            .bind(end)
+            .execute(&state.pool)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            return Ok(Json(json!({
+                "removed": jr.rows_affected() + ur.rows_affected()
+            })));
+        }
+        let bound_newapi = get_newapi_user_id(&state.pool, user_id)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        let jr = sqlx::query(
             r#"DELETE FROM job_results jr
-               WHERE ($1::date IS NULL OR jr.created_at::date >= $1)
+               USING jobs j
+               WHERE j.id = jr.job_id AND j.user_id = $3
+                 AND ($1::date IS NULL OR jr.created_at::date >= $1)
                  AND ($2::date IS NULL OR jr.created_at::date <= $2)"#,
         )
         .bind(start)
         .bind(end)
+        .bind(user_id)
         .execute(&state.pool)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        return Ok(Json(json!({ "removed": result.rows_affected() })));
+        let ur = sqlx::query(
+            r#"DELETE FROM user_image_records
+               WHERE (owner_user_id = $3 OR ($4::bigint IS NOT NULL AND newapi_user_id = $4))
+                 AND ($1::date IS NULL OR created_at::date >= $1)
+                 AND ($2::date IS NULL OR created_at::date <= $2)"#,
+        )
+        .bind(start)
+        .bind(end)
+        .bind(user_id)
+        .bind(bound_newapi)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        return Ok(Json(json!({
+            "removed": jr.rows_affected() + ur.rows_affected()
+        })));
     }
 
     let ids: Vec<Uuid> = body
@@ -350,22 +556,91 @@ async fn delete_images(
     if ids.is_empty() {
         return Ok(Json(json!({ "removed": 0 })));
     }
-    let result = sqlx::query("DELETE FROM job_results WHERE id = ANY($1)")
+
+    let mut removed = 0u64;
+    if is_admin {
+        removed += sqlx::query("DELETE FROM job_results WHERE id = ANY($1)")
+            .bind(&ids)
+            .execute(&state.pool)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .rows_affected();
+        removed += sqlx::query("DELETE FROM user_image_records WHERE id = ANY($1)")
+            .bind(&ids)
+            .execute(&state.pool)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .rows_affected();
+    } else {
+        let bound_newapi = get_newapi_user_id(&state.pool, user_id)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        removed += sqlx::query(
+            r#"DELETE FROM job_results jr
+               USING jobs j
+               WHERE jr.id = ANY($1) AND j.id = jr.job_id AND j.user_id = $2"#,
+        )
         .bind(&ids)
+        .bind(user_id)
         .execute(&state.pool)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(json!({ "removed": result.rows_affected() })))
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .rows_affected();
+        removed += sqlx::query(
+            r#"DELETE FROM user_image_records
+               WHERE id = ANY($1)
+                 AND (owner_user_id = $2 OR ($3::bigint IS NOT NULL AND newapi_user_id = $3))"#,
+        )
+        .bind(&ids)
+        .bind(user_id)
+        .bind(bound_newapi)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .rows_affected();
+    }
+    Ok(Json(json!({ "removed": removed })))
 }
 
 async fn list_tags(
     State(state): State<Arc<AppState>>,
-    _admin: AdminUser,
+    user: AuthUser,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    let rows = sqlx::query("SELECT keywords FROM job_results WHERE keywords IS NOT NULL")
+    let user_id = Uuid::parse_str(&user.claims.sub)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "bad user id".into()))?;
+    let is_admin = user.claims.role == Role::Admin;
+    let bound_newapi = if is_admin {
+        None
+    } else {
+        get_newapi_user_id(&state.pool, user_id)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    };
+
+    let rows = if is_admin {
+        sqlx::query(
+            r#"SELECT keywords FROM job_results WHERE keywords IS NOT NULL
+               UNION ALL
+               SELECT keywords FROM user_image_records WHERE keywords IS NOT NULL"#,
+        )
         .fetch_all(&state.pool)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    } else {
+        sqlx::query(
+            r#"SELECT jr.keywords FROM job_results jr
+               JOIN jobs j ON j.id = jr.job_id
+               WHERE j.user_id = $1 AND jr.keywords IS NOT NULL
+               UNION ALL
+               SELECT keywords FROM user_image_records
+               WHERE keywords IS NOT NULL
+                 AND (owner_user_id = $1 OR ($2::bigint IS NOT NULL AND newapi_user_id = $2))"#,
+        )
+        .bind(user_id)
+        .bind(bound_newapi)
+        .fetch_all(&state.pool)
+        .await
+    }
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let mut set = std::collections::BTreeSet::new();
     for row in rows {
         let kw: Option<serde_json::Value> = row.get("keywords");
@@ -378,23 +653,70 @@ async fn list_tags(
 
 async fn set_image_tags(
     State(state): State<Arc<AppState>>,
-    _admin: AdminUser,
+    user: AuthUser,
     Json(body): Json<SetImageTagsBody>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     let id = Uuid::parse_str(body.path.trim())
         .map_err(|_| (StatusCode::BAD_REQUEST, "invalid path".into()))?;
+    let user_id = Uuid::parse_str(&user.claims.sub)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "bad user id".into()))?;
+    let is_admin = user.claims.role == Role::Admin;
     let tags = body
         .tags
         .into_iter()
         .map(|t| t.trim().to_string())
         .filter(|t| !t.is_empty())
         .collect::<Vec<_>>();
-    sqlx::query("UPDATE job_results SET keywords = $2 WHERE id = $1")
-        .bind(id)
-        .bind(tags_to_json(&tags))
-        .execute(&state.pool)
+    let tags_json = tags_to_json(&tags);
+
+    if is_admin {
+        let jr = sqlx::query("UPDATE job_results SET keywords = $2 WHERE id = $1")
+            .bind(id)
+            .bind(&tags_json)
+            .execute(&state.pool)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        if jr.rows_affected() > 0 {
+            return Ok(Json(json!({ "ok": true, "tags": tags })));
+        }
+        sqlx::query("UPDATE user_image_records SET keywords = $2 WHERE id = $1")
+            .bind(id)
+            .bind(&tags_json)
+            .execute(&state.pool)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        return Ok(Json(json!({ "ok": true, "tags": tags })));
+    }
+
+    let bound_newapi = get_newapi_user_id(&state.pool, user_id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let jr = sqlx::query(
+        r#"UPDATE job_results jr SET keywords = $3
+           FROM jobs j
+           WHERE jr.id = $1 AND j.id = jr.job_id AND j.user_id = $2"#,
+    )
+    .bind(id)
+    .bind(user_id)
+    .bind(&tags_json)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    if jr.rows_affected() > 0 {
+        return Ok(Json(json!({ "ok": true, "tags": tags })));
+    }
+    sqlx::query(
+        r#"UPDATE user_image_records SET keywords = $4
+           WHERE id = $1
+             AND (owner_user_id = $2 OR ($3::bigint IS NOT NULL AND newapi_user_id = $3))"#,
+    )
+    .bind(id)
+    .bind(user_id)
+    .bind(bound_newapi)
+    .bind(&tags_json)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(json!({ "ok": true, "tags": tags })))
 }
 
@@ -437,7 +759,7 @@ async fn fetch_result_image_row(
     user_id: Uuid,
     is_admin: bool,
 ) -> Result<sqlx::postgres::PgRow, (StatusCode, String)> {
-    if is_admin {
+    let job_row = if is_admin {
         sqlx::query(
             "SELECT inline_preview_b64, r2_key_original, r2_key_thumb, r2_key_preview, source_url FROM job_results WHERE id = $1",
         )
@@ -456,8 +778,43 @@ async fn fetch_result_image_row(
         .fetch_optional(&state.pool)
         .await
     }
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    if let Some(row) = job_row {
+        return Ok(row);
+    }
+
+    let bound_newapi = if is_admin {
+        None
+    } else {
+        get_newapi_user_id(&state.pool, user_id)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    };
+
+    let api_row = if is_admin {
+        sqlx::query(
+            "SELECT inline_preview_b64, r2_key_original, r2_key_thumb, r2_key_preview, source_url
+             FROM user_image_records WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&state.pool)
+        .await
+    } else {
+        sqlx::query(
+            "SELECT inline_preview_b64, r2_key_original, r2_key_thumb, r2_key_preview, source_url
+             FROM user_image_records
+             WHERE id = $1
+               AND (owner_user_id = $2 OR ($3::bigint IS NOT NULL AND newapi_user_id = $3))",
+        )
+        .bind(id)
+        .bind(user_id)
+        .bind(bound_newapi)
+        .fetch_optional(&state.pool)
+        .await
+    }
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-    .ok_or((StatusCode::NOT_FOUND, "image not found".into()))
+    .ok_or((StatusCode::NOT_FOUND, "image not found".into()))?;
+    Ok(api_row)
 }
 
 async fn get_image_thumb(

@@ -17,7 +17,6 @@ pub struct AppConfig {
     pub gptimage_admin_token: Option<String>,
     pub account_ops_base: String,
     pub account_ops_token: Option<String>,
-    pub grok2api_base: String,
     pub director_model: String,
     pub r2: Option<R2Config>,
     pub bootstrap_admin_email: Option<String>,
@@ -73,8 +72,6 @@ impl AppConfig {
             account_ops_token: env::var("ACCOUNT_OPS_TOKEN")
                 .ok()
                 .or_else(|| env::var("HELPER_INTERNAL_TOKEN").ok()),
-            grok2api_base: env::var("GROK2API_BASE")
-                .unwrap_or_else(|_| "http://127.0.0.1:18000".into()),
             director_model: env::var("DIRECTOR_MODEL").unwrap_or_else(|_| "gpt-5".into()),
             r2,
             bootstrap_admin_email: env::var("BOOTSTRAP_ADMIN_EMAIL").ok(),

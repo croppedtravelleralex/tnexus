@@ -9,9 +9,16 @@
 //! `engine` 注入状态。本 crate **不**依赖 `grok2api-rs`，避免循环（39d §1 顶层入口
 //! 归 `grok2api-rs`，gateway 只做 handler/router，不含 main/config）。
 
+pub mod backends;
 pub mod error;
 pub mod handlers;
+pub mod protocol;
 pub mod router;
+pub mod video;
 
+pub use backends::{default_protocol_backends, BuildResponsesBackend, ConsoleMessagesBackend};
 pub use error::GatewayError;
-pub use router::{build_app, with_engine, AppState};
+pub use router::{
+    build_app, with_default_protocol_backends, with_engine, with_engines, with_engines_and_media,
+    with_protocol_backend, with_protocol_backends, with_video_backend, AppState,
+};

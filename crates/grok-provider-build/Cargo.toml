@@ -1,0 +1,16 @@
+[package]
+name = "grok-provider-build"
+version.workspace = true
+edition.workspace = true
+description = "Grok Build/CLI provider — stored response 往返（G5-P1，Go infra/provider/cli 移植）"
+
+[dependencies]
+rand = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

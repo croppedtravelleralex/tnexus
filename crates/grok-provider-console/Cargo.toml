@@ -1,0 +1,17 @@
+[package]
+name = "grok-provider-console"
+version.workspace = true
+edition.workspace = true
+description = "Grok Console provider — chat completions 流式往返（G5-A2/A3，Go infra/provider/console 移植）"
+
+[dependencies]
+grok-domain = { path = "../grok-domain" }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+futures-util = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

@@ -5,6 +5,7 @@ members = [
     "crates/tnexus-domain",
     "crates/tnexus-auth",
     "crates/tnexus-storage",
+    "crates/tnexus-image-archive",
     "crates/tnexus-api",
     "crates/tnexus-worker",
     "crates/tnexus-account-ops",
@@ -20,9 +21,15 @@ members = [
     "crates/grok-egress",
     "crates/grok-conversation",
     "crates/grok-pool",
+    "crates/grok-ops",
     "crates/grok-audit",
     "crates/grok-provider-web",
     "crates/grok-gateway",
+    "crates/grok-chrome-ticket",
+    "crates/grok-provider-build",
+    "crates/grok-provider-console",
+    "crates/grok-admin",
+    "crates/grok-accountsync",
 ]
 
 [workspace.package]
@@ -43,6 +50,7 @@ axum-extra = { version = "0.10", features = ["cookie"] }
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 dotenvy = "0.15"
+fs2 = "0.4"
 futures = "0.3"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 jsonwebtoken = "9"

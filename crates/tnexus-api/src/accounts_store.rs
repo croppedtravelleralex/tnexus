@@ -796,27 +796,20 @@ fn scheduling_state_path() -> PathBuf {
 }
 
 fn load_scheduling_state(path: &Path) -> Result<HashMap<String, String>> {
-    if !path.exists() {
-        return Ok(HashMap::new());
-    }
-    let raw = fs::read_to_string(path).with_context(|| format!("read scheduling state {:?}", path))?;
-    if raw.trim().is_empty() {
-        return Ok(HashMap::new());
-    }
-    let parsed: SchedulingStateFile = serde_json::from_str(&raw).context("parse scheduling state")?;
-    Ok(parsed.by_email)
+    use tnexus_accounts_db::sync_file;
+    Ok(sync_file::read_json::<SchedulingStateFile>(path)
+        .with_context(|| format!("load scheduling state {:?}", path))?
+        .map(|f| f.by_email)
+        .unwrap_or_default())
 }
 
 fn save_scheduling_state(path: &Path, map: &HashMap<String, String>) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).with_context(|| format!("create dir {:?}", parent))?;
-    }
+    use tnexus_accounts_db::sync_file;
     let payload = SchedulingStateFile {
         by_email: map.clone(),
     };
-    let raw = serde_json::to_string_pretty(&payload).context("serialize scheduling state")?;
-    fs::write(path, raw).with_context(|| format!("write scheduling state {:?}", path))?;
-    Ok(())
+    sync_file::write_json(path, &payload)
+        .with_context(|| format!("write scheduling state {:?}", path))
 }
 
 fn load_single(path: PathBuf) -> Result<AccountFile> {

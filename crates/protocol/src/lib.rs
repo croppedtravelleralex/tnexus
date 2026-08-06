@@ -363,44 +363,75 @@ pub fn chat_completion_response_with_image_b64(model: &str, b64: &str) -> Value 
     })
 }
 
-pub fn image_generation_response(b64: &str) -> Value {
+pub fn estimate_image_input_tokens(prompt: &str) -> i64 {
+    let chars = prompt.chars().count();
+    // Rough OpenAI-style estimate; varies with short/medium/long test prompts.
+    ((chars as f64 / 3.5).ceil() as i64).clamp(2, 8192)
+}
+
+fn image_generation_usage_value(prompt: &str) -> Value {
+    let text_tokens = estimate_image_input_tokens(prompt);
+    let output_tokens = 1650_i64;
     json!({
-        "created": chrono_secs(),
-        "data": [{ "b64_json": b64 }]
+        "input_tokens": text_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": text_tokens + output_tokens,
+        "input_tokens_details": {
+            "text_tokens": text_tokens,
+            "image_tokens": 0,
+            "cached_tokens": 0
+        },
+        "output_tokens_details": {
+            "text_tokens": 0,
+            "image_tokens": output_tokens,
+            "reasoning_tokens": 0
+        }
     })
 }
 
-pub fn image_generation_url_response(url: &str) -> Value {
+pub fn image_generation_response(b64: &str, prompt: &str) -> Value {
     json!({
         "created": chrono_secs(),
-        "data": [{ "url": url }]
+        "data": [{ "b64_json": b64 }],
+        "usage": image_generation_usage_value(prompt),
+    })
+}
+
+pub fn image_generation_url_response(url: &str, prompt: &str) -> Value {
+    json!({
+        "created": chrono_secs(),
+        "data": [{ "url": url }],
+        "usage": image_generation_usage_value(prompt),
     })
 }
 
 /// OpenAI-compatible image response with TNexus pipeline telemetry extension.
-pub fn image_generation_response_with_pipeline(data: Value, pipeline: Value) -> Value {
+pub fn image_generation_response_with_pipeline(data: Value, pipeline: Value, prompt: &str) -> Value {
     json!({
         "created": chrono_secs(),
         "data": data,
+        "usage": image_generation_usage_value(prompt),
         "_tnexus_pipeline": pipeline,
     })
 }
 
-pub fn image_generation_url_response_with_pipeline(url: &str, pipeline: Value) -> Value {
+pub fn image_generation_url_response_with_pipeline(url: &str, pipeline: Value, prompt: &str) -> Value {
     image_generation_response_with_pipeline(
         json!([{ "url": url }]),
         pipeline,
+        prompt,
     )
 }
 
-pub fn image_generation_b64_response_with_pipeline(b64: &str, pipeline: Value) -> Value {
+pub fn image_generation_b64_response_with_pipeline(b64: &str, pipeline: Value, prompt: &str) -> Value {
     image_generation_response_with_pipeline(
         json!([{ "b64_json": b64 }]),
         pipeline,
+        prompt,
     )
 }
 
-pub fn image_generation_b64_multi_response(b64s: &[String]) -> Value {
+pub fn image_generation_b64_multi_response(b64s: &[String], prompt: &str) -> Value {
     let data: Vec<Value> = b64s
         .iter()
         .map(|b64| json!({ "b64_json": b64 }))
@@ -408,10 +439,11 @@ pub fn image_generation_b64_multi_response(b64s: &[String]) -> Value {
     json!({
         "created": chrono_secs(),
         "data": data,
+        "usage": image_generation_usage_value(prompt),
     })
 }
 
-pub fn image_generation_url_multi_response(urls: &[String]) -> Value {
+pub fn image_generation_url_multi_response(urls: &[String], prompt: &str) -> Value {
     let data: Vec<Value> = urls
         .iter()
         .map(|url| json!({ "url": url }))
@@ -419,23 +451,32 @@ pub fn image_generation_url_multi_response(urls: &[String]) -> Value {
     json!({
         "created": chrono_secs(),
         "data": data,
+        "usage": image_generation_usage_value(prompt),
     })
 }
 
-pub fn image_generation_b64_multi_response_with_pipeline(b64s: &[String], pipeline: Value) -> Value {
+pub fn image_generation_b64_multi_response_with_pipeline(
+    b64s: &[String],
+    pipeline: Value,
+    prompt: &str,
+) -> Value {
     let data: Vec<Value> = b64s
         .iter()
         .map(|b64| json!({ "b64_json": b64 }))
         .collect();
-    image_generation_response_with_pipeline(json!(data), pipeline)
+    image_generation_response_with_pipeline(json!(data), pipeline, prompt)
 }
 
-pub fn image_generation_url_multi_response_with_pipeline(urls: &[String], pipeline: Value) -> Value {
+pub fn image_generation_url_multi_response_with_pipeline(
+    urls: &[String],
+    pipeline: Value,
+    prompt: &str,
+) -> Value {
     let data: Vec<Value> = urls
         .iter()
         .map(|url| json!({ "url": url }))
         .collect();
-    image_generation_response_with_pipeline(json!(data), pipeline)
+    image_generation_response_with_pipeline(json!(data), pipeline, prompt)
 }
 
 fn chrono_secs() -> u64 {

@@ -1,35 +1,62 @@
 # Grok sidecar stack (draft) — see docs/39-grok2api-rust-migration.md §8
-# Panda: pull-only deploy; never docker build on Panda.
+# ============================================================
+# 草案：合并到 main 前需人工 review（G6-P2）。禁止在 Panda 构建镜像。
+# 发布链路：本地/CI 构建 → GHCR → Panda 仅 grok-deploy.sh（pull + up）。
+#
+# 网络模型：与 deploy/panda/docker-compose.yml 一致用 network_mode: host，
+# 直接复用主 stack 的 postgres(:5432) / redis(:6379) / browser-bridge(:8192)。
+# 所有凭据一律 ${VAR} 引用（来自 /opt/tnexus/.env），不写死。
 
 services:
+  # ── Grok 统一入口（:8000，N5 注记：尚未挂载 /v1/* 路由，先只跑 healthz/readyz）──
   grok2api-rs:
-    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-local}/grok2api-rs:latest
+    image: ghcr.io/${GHCR_OWNER:-croppedtravelleralex}/grok2api-rs:${GROK_TAG:-latest}
+    network_mode: host
     restart: unless-stopped
-    ports:
-      - "8000:8000"
     environment:
-      DATABASE_URL: ${GROK_DATABASE_URL}
-      REDIS_URL: ${GROK_REDIS_URL:-}
-      GROK2API_BROWSER_BRIDGE_URL: http://browser-bridge:8192
-      # Statsig signer often external — set Provider.Web.StatsigSignerURL in config
-    depends_on:
-      - browser-bridge
+      # 端口约定：grok2api-rs :8000（nginx G7-P1 分流目标）
+      GROK2API_ADDR: 0.0.0.0:8000
+      # PG 与 Redis 均复用主 stack（host 网络 127.0.0.1:5432 / :6379）
+      GROK_DATABASE_URL: ${GROK_DATABASE_URL:?required}
+      GROK_REDIS_URL: ${GROK_REDIS_URL:-redis://127.0.0.1:6379}
+      GROK2API_BROWSER_BRIDGE_URL: http://127.0.0.1:8192
+      # 日志 / 追踪（可选）
+      RUST_LOG: ${GROK_LOG:-info}
+      # 上游票池 / 签名（若自托管 signer）
+      # GROK_SIGNER_URL: ${GROK_SIGNER_URL:-}
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8000/healthz"]
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8000/readyz"]
       interval: 30s
       timeout: 5s
       retries: 3
+      start_period: 10s
 
+  # ── 浏览器桥（token 刷新 / 取票，grok2api-rs 依赖）──
   browser-bridge:
-    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-local}/grok-browser-bridge:latest
+    image: ghcr.io/${GHCR_OWNER:-croppedtravelleralex}/grok-browser-bridge:${GROK_TAG:-latest}
+    network_mode: host
     restart: unless-stopped
-    ports:
-      - "8192:8192"
     environment:
-      LOG_LEVEL: INFO
+      LOG_LEVEL: ${GROK_BRIDGE_LOG:-INFO}
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8192/health"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
 
-  # signer: not in default grok2api compose — uncomment if self-hosted
-  # grok-signer:
-  #   image: ...
-  #   ports:
-  #     - "8788:8788"
+  # ── Grok Admin（可选；需要 Dockerfile.grok-admin + GHCR job 落地后启用）──
+  # 端口约定：grok-admin :8091（nginx 分流 /admin/grok* → :8091）
+  grok-admin:
+    image: ghcr.io/${GHCR_OWNER:-croppedtravelleralex}/grok-admin:${GROK_TAG:-latest}
+    network_mode: host
+    restart: unless-stopped
+    profiles: ["admin"]
+    environment:
+      GROK_ADMIN_ADDR: 0.0.0.0:8091
+      GROK_ADMIN_JWT_SECRET: ${GROK_ADMIN_JWT_SECRET:?required when admin profile enabled}
+      GROK_DATABASE_URL: ${GROK_DATABASE_URL:?required}
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8091/healthz"]
+      interval: 60s
+      timeout: 5s
+      retries: 3

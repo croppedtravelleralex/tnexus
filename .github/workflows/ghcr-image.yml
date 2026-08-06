@@ -71,7 +71,9 @@ jobs:
         run: |
           set -euo pipefail
           pkgs=""
-          for p in grok-domain grok-storage grok2api-rs; do
+          for p in grok-domain grok-storage grok2api-rs grok-egress grok-conversation grok-pool \
+                   grok-audit grok-provider-web grok-ops grok-gateway grok-chrome-ticket \
+                   grok-provider-build grok-provider-console grok-admin grok-accountsync; do
             if [ -f "crates/$p/Cargo.toml" ]; then pkgs="$pkgs -p $p"; fi
           done
           if [ -n "$pkgs" ]; then
@@ -81,3 +83,6 @@ jobs:
           fi
       - name: Grok migration gate g0
         run: bash ./scripts/grok_migration_gate.sh g0
+      - name: Grok migration gate g3
+        # G3 全量（pool/ops crate 测试；dispatch diff<5% 属运行验收 G3-A2，不在门禁内）
+        run: bash ./scripts/grok_migration_gate.sh g3

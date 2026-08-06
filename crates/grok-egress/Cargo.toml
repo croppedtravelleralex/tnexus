@@ -8,3 +8,4 @@ grok-domain = { path = "../grok-domain" }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+redis = { workspace = true }

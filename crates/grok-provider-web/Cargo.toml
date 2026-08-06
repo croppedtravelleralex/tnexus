@@ -9,8 +9,10 @@ grok-egress = { path = "../grok-egress" }
 grok-conversation = { path = "../grok-conversation" }
 grok-pool = { path = "../grok-pool" }
 grok-audit = { path = "../grok-audit" }
+grok-image-pipeline = { path = "../grok-image-pipeline" }
 
 async-trait = { workspace = true }
+chrono = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
