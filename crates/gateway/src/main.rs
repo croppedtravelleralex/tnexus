@@ -523,9 +523,29 @@ fn upstream_image_retryable(err: &anyhow::Error) -> bool {
         || msg.contains("sse ended")
         || msg.contains("image sse ended")
         || msg.contains("upstream_unreachable")
+        || msg.contains("token_invalidated")
+        || msg.contains("authentication token has been invalidated")
+        || msg.contains("chat_requirements_prepare http 401")
+        || msg.contains("proxyconnect")
 }
 
-/// Cap admin upstream retries — full-pool rotation caused 200s+ tails when API-key/JWT callers
+#[cfg(test)]
+mod upstream_image_retryable_tests {
+    use super::upstream_image_retryable;
+
+    #[test]
+    fn retries_token_invalidated_and_proxy_errors() {
+        assert!(upstream_image_retryable(&anyhow::anyhow!(
+            "chat_requirements_prepare HTTP 401 Unauthorized: token_invalidated"
+        )));
+        assert!(upstream_image_retryable(&anyhow::anyhow!(
+            "error sending request for uri (https://chatgpt.com/): client error (ProxyConnect)"
+        )));
+        assert!(!upstream_image_retryable(&anyhow::anyhow!("unknown upstream fault")));
+    }
+}
+
+/// Cap admin upstream retries
 /// retried dozens of accounts sequentially (worker parallel batches use admin auth).
 fn image_max_attempts(is_admin: bool, data_plane: DataPlane, candidates_len: usize) -> usize {
     if !is_admin || data_plane != DataPlane::Upstream {

@@ -51,3 +51,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ -x "$SCRIPT_DIR/newapi_grayd_tnexus.sh" ]]; then
   bash "$SCRIPT_DIR/newapi_grayd_tnexus.sh" sync-key || true
 fi
+if [[ -x "$SCRIPT_DIR/newapi_tnexus_dedicated.sh" ]]; then
+  bash "$SCRIPT_DIR/newapi_tnexus_dedicated.sh" sync-key || true
+fi
