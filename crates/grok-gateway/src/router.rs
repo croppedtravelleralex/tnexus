@@ -16,6 +16,7 @@ use crate::handlers::{
     chat_completions, image_generations, media_images, messages_completions, models,
     responses_completions, MediaFetcher, ProtocolBackend,
 };
+use crate::video::{create_video, get_video, VideoBackend};
 
 /// 应用共享状态。
 #[derive(Clone)]
@@ -28,6 +29,8 @@ pub struct AppState {
     pub media_fetcher: Option<Arc<dyn MediaFetcher>>,
     /// G5-P3 协议后端（/v1/responses、/v1/messages）。None 时返回 500。
     pub protocol_backend: Option<Arc<dyn ProtocolBackend>>,
+    /// G5-P4 视频后端（/v1/videos）。None 时返回 500。
+    pub video_backend: Option<Arc<dyn VideoBackend>>,
 }
 
 impl AppState {
@@ -38,6 +41,7 @@ impl AppState {
             image_engine: None,
             media_fetcher: None,
             protocol_backend: None,
+            video_backend: None,
         }
     }
 }
@@ -49,6 +53,7 @@ pub fn with_engine(engine: ChatEngine) -> AppState {
         image_engine: None,
         media_fetcher: None,
         protocol_backend: None,
+        video_backend: None,
     }
 }
 
@@ -59,6 +64,7 @@ pub fn with_engines(engine: ChatEngine, image_engine: ImageEngine) -> AppState {
         image_engine: Some(Arc::new(image_engine)),
         media_fetcher: None,
         protocol_backend: None,
+        video_backend: None,
     }
 }
 
@@ -73,6 +79,7 @@ pub fn with_engines_and_media(
         image_engine: Some(Arc::new(image_engine)),
         media_fetcher: Some(media_fetcher),
         protocol_backend: None,
+        video_backend: None,
     }
 }
 
@@ -83,6 +90,18 @@ pub fn with_protocol_backend(backend: Arc<dyn ProtocolBackend>) -> AppState {
         image_engine: None,
         media_fetcher: None,
         protocol_backend: Some(backend),
+        video_backend: None,
+    }
+}
+
+/// 构建带视频后端（G5-P4）的应用状态。
+pub fn with_video_backend(backend: Arc<dyn VideoBackend>) -> AppState {
+    AppState {
+        engine: None,
+        image_engine: None,
+        media_fetcher: None,
+        protocol_backend: None,
+        video_backend: Some(backend),
     }
 }
 
@@ -95,6 +114,8 @@ pub fn build_app(state: AppState) -> Router {
         .route("/v1/media/images/{id}", get(media_images))
         .route("/v1/responses", post(responses_completions))
         .route("/v1/messages", post(messages_completions))
+        .route("/v1/videos", post(create_video))
+        .route("/v1/videos/{id}", get(get_video))
         .with_state(Arc::new(state))
 }
 
