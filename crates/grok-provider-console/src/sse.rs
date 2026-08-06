@@ -82,7 +82,9 @@ pub fn parse_chat_delta(data: &str) -> Result<Option<ChatDelta>, ProviderError> 
     let value: serde_json::Value = serde_json::from_str(trimmed)
         .map_err(|e| ProviderError::InvalidRequest(format!("解析 SSE data 负载: {e}")))?;
     let Some(payload) = value.as_object() else {
-        return Err(ProviderError::InvalidRequest("SSE data 负载必须是 JSON 对象".into()));
+        return Err(ProviderError::InvalidRequest(
+            "SSE data 负载必须是 JSON 对象".into(),
+        ));
     };
 
     // responses 风格：response.output_text.delta
@@ -112,10 +114,7 @@ pub fn parse_chat_delta(data: &str) -> Result<Option<ChatDelta>, ProviderError> 
     else {
         return Ok(None);
     };
-    let index = choice
-        .get("index")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0) as usize;
+    let index = choice.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
     let finish_reason = choice
         .get("finish_reason")
         .and_then(|v| v.as_str())
@@ -182,11 +181,10 @@ mod tests {
         assert_eq!(delta.content.as_deref(), Some("Hel"));
         assert_eq!(delta.finish_reason, None);
 
-        let delta = parse_chat_delta(
-            r#"{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
-        )
-        .unwrap()
-        .unwrap();
+        let delta =
+            parse_chat_delta(r#"{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#)
+                .unwrap()
+                .unwrap();
         assert_eq!(delta.content, None);
         assert_eq!(delta.finish_reason.as_deref(), Some("stop"));
     }
@@ -200,7 +198,9 @@ mod tests {
         assert_eq!(delta.role, None);
 
         // response.completed / usage 等无文本事件 → 跳过
-        assert!(parse_chat_delta(r#"{"type":"response.completed"}"#).unwrap().is_none());
+        assert!(parse_chat_delta(r#"{"type":"response.completed"}"#)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -209,7 +209,9 @@ mod tests {
         assert!(parse_chat_delta("").unwrap().is_none());
         assert!(parse_chat_delta("   ").unwrap().is_none());
         // 无内容负载（usage 等）→ 跳过
-        assert!(parse_chat_delta(r#"{"usage":{"total_tokens":5}}"#).unwrap().is_none());
+        assert!(parse_chat_delta(r#"{"usage":{"total_tokens":5}}"#)
+            .unwrap()
+            .is_none());
     }
 
     #[test]

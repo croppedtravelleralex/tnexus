@@ -11,10 +11,10 @@ use grok_domain::{
 use sqlx::{postgres::PgRow, PgPool, Row};
 
 use super::account::{provider_from_str, PgAccountRepository};
-use crate::StorageError;
 use super::routing::{
     fetch_billings, fetch_quota_recoveries, fetch_quota_windows_first, to_model_quota_block,
 };
+use crate::StorageError;
 
 /// 路由候选查询（对齐 Go `ListRoutingCandidates` / `ListRoutingCandidatesByIDs`）。
 #[async_trait]
@@ -82,7 +82,9 @@ fn auth_status_from_str_raw(s: &str) -> Result<AuthStatus, StorageError> {
         "restricted" => Ok(AuthStatus::Restricted),
         "banned" => Ok(AuthStatus::Banned),
         "reauth_required" | "reauthRequired" => Ok(AuthStatus::ReauthRequired),
-        other => Err(StorageError::Decode(format!("unknown auth_status: {other}"))),
+        other => Err(StorageError::Decode(format!(
+            "unknown auth_status: {other}"
+        ))),
     }
 }
 
@@ -138,12 +140,19 @@ async fn list_enabled(
          ORDER BY priority DESC, id ASC"
     );
     let rows = match ids {
-        None => sqlx::query(&sql).bind(provider.as_str()).fetch_all(pool).await?,
-        Some(ids) => sqlx::query(&sql)
-            .bind(provider.as_str())
-            .bind(ids)
-            .fetch_all(pool)
-            .await?,
+        None => {
+            sqlx::query(&sql)
+                .bind(provider.as_str())
+                .fetch_all(pool)
+                .await?
+        }
+        Some(ids) => {
+            sqlx::query(&sql)
+                .bind(provider.as_str())
+                .bind(ids)
+                .fetch_all(pool)
+                .await?
+        }
     };
     rows.iter().map(map_routing_row).collect()
 }
@@ -151,9 +160,7 @@ async fn list_enabled(
 impl PgAccountRepository {
     /// 列出全部 Build 账号（含 disabled/deletable，供四池 delete 池巡检与池汇总）。
     /// 全列（ROUTING_COLS），优先级降序（对齐 Go `List(provider)`）。
-    pub async fn list_build_accounts(
-        &self,
-    ) -> Result<Vec<Account>, StorageError> {
+    pub async fn list_build_accounts(&self) -> Result<Vec<Account>, StorageError> {
         let sql = format!(
             "SELECT {ROUTING_COLS} FROM grok_accounts WHERE provider = $1 \
              ORDER BY priority DESC, id ASC"
@@ -166,7 +173,10 @@ impl PgAccountRepository {
     }
 
     /// 批量读额度恢复（Go `GetQuotaRecoveries`）。
-    pub async fn recoveries(&self, ids: &[i64]) -> Result<HashMap<i64, QuotaRecovery>, StorageError> {
+    pub async fn recoveries(
+        &self,
+        ids: &[i64],
+    ) -> Result<HashMap<i64, QuotaRecovery>, StorageError> {
         fetch_quota_recoveries(&self.pool, ids).await
     }
 

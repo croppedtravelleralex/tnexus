@@ -52,15 +52,16 @@ impl Config {
         let browser_bridge_url = env::var("GROK2API_BROWSER_BRIDGE_URL")
             .unwrap_or_else(|_| "http://browser-bridge:8192".into());
 
-        let build_base_url = env::var("GROK2API_BUILD_BASE_URL").ok().filter(|s| !s.trim().is_empty());
-        let console_base_url =
-            env::var("GROK2API_CONSOLE_BASE_URL").ok().filter(|s| !s.trim().is_empty());
+        let build_base_url = env::var("GROK2API_BUILD_BASE_URL")
+            .ok()
+            .filter(|s| !s.trim().is_empty());
+        let console_base_url = env::var("GROK2API_CONSOLE_BASE_URL")
+            .ok()
+            .filter(|s| !s.trim().is_empty());
 
         let admin_secret = env::var("GROK_ADMIN_SECRET").unwrap_or_default();
-        let admin_username =
-            env::var("GROK_ADMIN_USERNAME").unwrap_or_else(|_| "admin".into());
-        let admin_password =
-            env::var("GROK_ADMIN_PASSWORD").unwrap_or_else(|_| "admin".into());
+        let admin_username = env::var("GROK_ADMIN_USERNAME").unwrap_or_else(|_| "admin".into());
+        let admin_password = env::var("GROK_ADMIN_PASSWORD").unwrap_or_else(|_| "admin".into());
 
         let config = Self {
             server_addr,

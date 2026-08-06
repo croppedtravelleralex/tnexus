@@ -16,7 +16,7 @@ pub mod sse;
 pub use adapter::{Config, ConsoleAdapter};
 pub use error::{ProviderError, UpstreamError};
 pub use normalize::build_chat_request;
-pub use sse::{ChatDelta, SseEvent, SseParser, parse_chat_delta};
+pub use sse::{parse_chat_delta, ChatDelta, SseEvent, SseParser};
 
 /// 默认上游基地址（Go 配置默认 `https://console.x.ai`）。
 pub fn default_base_url() -> String {

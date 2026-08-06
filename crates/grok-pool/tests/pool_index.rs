@@ -7,8 +7,8 @@
 use chrono::{DateTime, TimeZone, Utc};
 use grok_domain::{Billing, QuotaRecovery, QuotaRecoveryStatus};
 use grok_pool::poolindex::{
-    dispatch_quota, DispatchEntry, DispatchIndex, DRRScheduler, DueHeap, Lane,
-    WebDRRScheduler, WebMaintenanceLane,
+    dispatch_quota, DRRScheduler, DispatchEntry, DispatchIndex, DueHeap, Lane, WebDRRScheduler,
+    WebMaintenanceLane,
 };
 
 fn utc(secs: i64) -> DateTime<Utc> {
@@ -51,7 +51,10 @@ fn dispatch_index_orders_by_priority_quota_and_fairness() {
 
     idx.touch_selected(3, now + chrono::Duration::hours(1));
     let got = idx.ascend(1);
-    assert_eq!(got[0].id, 2, "after touch id=3 last-selected newest, id=2 first");
+    assert_eq!(
+        got[0].id, 2,
+        "after touch id=3 last-selected newest, id=2 first"
+    );
 
     idx.remove(2);
     assert!(!idx.contains(2), "id=2 removed");
@@ -64,9 +67,27 @@ fn dispatch_index_orders_by_priority_quota_and_fairness() {
 fn dispatch_index_orders_by_quota_at_same_priority() {
     let mut idx = DispatchIndex::new();
     let now = utc(1000);
-    idx.upsert(DispatchEntry { id: 1, priority: 10, quota_remaining: 5.0, quota_known: true, last_selected_at: now });
-    idx.upsert(DispatchEntry { id: 2, priority: 10, quota_remaining: 20.0, quota_known: true, last_selected_at: now });
-    idx.upsert(DispatchEntry { id: 3, priority: 10, quota_remaining: 0.0, quota_known: false, last_selected_at: now });
+    idx.upsert(DispatchEntry {
+        id: 1,
+        priority: 10,
+        quota_remaining: 5.0,
+        quota_known: true,
+        last_selected_at: now,
+    });
+    idx.upsert(DispatchEntry {
+        id: 2,
+        priority: 10,
+        quota_remaining: 20.0,
+        quota_known: true,
+        last_selected_at: now,
+    });
+    idx.upsert(DispatchEntry {
+        id: 3,
+        priority: 10,
+        quota_remaining: 0.0,
+        quota_known: false,
+        last_selected_at: now,
+    });
 
     let got = idx.ascend(10);
     assert_eq!(got.len(), 3);
@@ -80,7 +101,11 @@ fn dispatch_index_orders_by_quota_at_same_priority() {
 #[test]
 fn dispatch_quota_from_billing_and_recovery() {
     // monthly cap with used -> remaining.
-    let b = Billing { monthly_limit: 100.0, used: 25.0, ..Default::default() };
+    let b = Billing {
+        monthly_limit: 100.0,
+        used: 25.0,
+        ..Default::default()
+    };
     let (known, rem) = dispatch_quota(Some(&b), None);
     assert!(known);
     assert_eq!(rem, 75.0);
@@ -130,9 +155,21 @@ fn drr_approximates_weights() {
         let lane = d.next(has).expect("expected lane");
         counts[lane as usize] += 1;
     }
-    assert!((450..=550).contains(&counts[0]), "verify {} ~500", counts[0]);
-    assert!((250..=350).contains(&counts[1]), "normal {} ~300", counts[1]);
-    assert!((150..=250).contains(&counts[2]), "delete {} ~200", counts[2]);
+    assert!(
+        (450..=550).contains(&counts[0]),
+        "verify {} ~500",
+        counts[0]
+    );
+    assert!(
+        (250..=350).contains(&counts[1]),
+        "normal {} ~300",
+        counts[1]
+    );
+    assert!(
+        (150..=250).contains(&counts[2]),
+        "delete {} ~200",
+        counts[2]
+    );
 
     // 7:3 fallback when verify empty.
     let mut d2 = DRRScheduler::new();
@@ -143,8 +180,16 @@ fn drr_approximates_weights() {
         counts2[lane as usize] += 1;
     }
     assert_eq!(counts2[0], 0, "verify lane empty -> never selected");
-    assert!((650..=750).contains(&counts2[1]), "normal {} ~700", counts2[1]);
-    assert!((250..=350).contains(&counts2[2]), "delete {} ~300", counts2[2]);
+    assert!(
+        (650..=750).contains(&counts2[1]),
+        "normal {} ~700",
+        counts2[1]
+    );
+    assert!(
+        (250..=350).contains(&counts2[2]),
+        "delete {} ~300",
+        counts2[2]
+    );
 }
 
 // === WebDRRScheduler（TestWebDRRSchedulerRatio） ===
@@ -159,7 +204,10 @@ fn web_drr_scheduler_ratio() {
         counts[lane as usize] += 1;
     }
     let verify = counts[WebMaintenanceLane::RecoveryVerify as usize];
-    assert!((40..=60).contains(&verify), "verify ratio unexpected: {counts:?}");
+    assert!(
+        (40..=60).contains(&verify),
+        "verify ratio unexpected: {counts:?}"
+    );
 }
 
 // 保留 Lane from_index 的防御性引用，标注未使用的枚举不含 dead_code（已 pub re-export）。

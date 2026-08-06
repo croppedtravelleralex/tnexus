@@ -80,12 +80,9 @@ impl TokenService {
         let mut validation = Validation::new(jsonwebtoken::Algorithm::HS256);
         validation.set_issuer(&[&self.issuer]);
         validation.leeway = 0; // 对齐 Go jwt/v5 默认：exp 严格校验，无宽限
-        let token = decode::<AdminClaims>(
-            raw,
-            &DecodingKey::from_secret(&self.secret),
-            &validation,
-        )
-        .map_err(|_| AdminError::InvalidSession)?;
+        let token =
+            decode::<AdminClaims>(raw, &DecodingKey::from_secret(&self.secret), &validation)
+                .map_err(|_| AdminError::InvalidSession)?;
         let claims = token.claims;
         if claims.admin_id == 0 || claims.session_id == 0 {
             return Err(AdminError::InvalidSession);

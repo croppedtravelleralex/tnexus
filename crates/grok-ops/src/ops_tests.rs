@@ -154,7 +154,6 @@ async fn quota_refresh_reads_window_and_writes_back() {
                 total: 100,
                 reset_at: None,
                 ..Default::default()
-
             }],
         )]))),
         saved: Arc::new(Mutex::new(Vec::new())),
@@ -192,7 +191,6 @@ async fn quota_refresh_prefers_weekly_mode() {
                     total: 50,
                     reset_at: None,
                     ..Default::default()
-
                 },
                 QuotaWindow {
                     account_id: 9,
@@ -201,7 +199,6 @@ async fn quota_refresh_prefers_weekly_mode() {
                     total: 100,
                     reset_at: None,
                     ..Default::default()
-
                 },
             ],
         )]))),

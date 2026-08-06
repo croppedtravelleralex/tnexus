@@ -91,12 +91,7 @@ async fn main() -> anyhow::Result<()> {
 
     // N5：healthz/readyz + grok-gateway /v1/* + grok-admin /admin/* 合并为单一 axum app。
     let state = Arc::new(http::AppState { pool: pool.clone() });
-    let router = build_admin_router(
-        &cfg.admin_username,
-        &cfg.admin_password,
-        &admin_secret,
-    )
-    .await;
+    let router = build_admin_router(&cfg.admin_username, &cfg.admin_password, &admin_secret).await;
     let app = build_router(state)
         .merge(gateway_app(&cfg, shared_pool, lease, bridge))
         .merge(admin::admin_app(router));
@@ -144,10 +139,8 @@ fn gateway_state(
     lease: Arc<dyn LeaseManager>,
 ) -> AppState {
     // /v1/responses + /v1/messages：真实 Build/Console 后端。
-    let (responses, messages) = default_protocol_backends(
-        cfg.build_base_url.clone(),
-        cfg.console_base_url.clone(),
-    );
+    let (responses, messages) =
+        default_protocol_backends(cfg.build_base_url.clone(), cfg.console_base_url.clone());
     let engine = ChatEngine::new(pool, lease, bridge, None);
     AppState {
         engine: Some(Arc::new(engine)),
@@ -229,8 +222,10 @@ mod tests {
             Arc::new(InMemoryLeaseManager::new(&[(Scope::GrokWeb, 4)]));
         let cfg = test_cfg();
         let state = Arc::new(http::AppState { pool: lazy_pool() });
-        let router = build_admin_router(&cfg.admin_username, &cfg.admin_password, &cfg.admin_secret).await;
-        build_router(state).merge(gateway_app(&cfg, pool, lease, Arc::new(mock)))
+        let router =
+            build_admin_router(&cfg.admin_username, &cfg.admin_password, &cfg.admin_secret).await;
+        build_router(state)
+            .merge(gateway_app(&cfg, pool, lease, Arc::new(mock)))
             .merge(admin::admin_app(router))
     }
 
@@ -294,10 +289,7 @@ mod tests {
     async fn responses_messages_routes_not_404() {
         // 协议后端已接线（真实 Build/Console）：body 无效时应是 4xx/5xx，而不是 404。
         let app = app_with_mock_bridge("你好").await;
-        for (uri, body) in [
-            ("/v1/responses", r#"{}"#),
-            ("/v1/messages", r#"{}"#),
-        ] {
+        for (uri, body) in [("/v1/responses", r#"{}"#), ("/v1/messages", r#"{}"#)] {
             let resp = app
                 .clone()
                 .oneshot(
@@ -353,8 +345,13 @@ mod tests {
             chrono::Duration::hours(1),
             chrono::Duration::days(7),
         );
-        auth.bootstrap("admin", "admin123456").await.expect("bootstrap");
-        let (_, tokens) = auth.login("admin", "admin123456", "127.0.0.1").await.expect("login");
+        auth.bootstrap("admin", "admin123456")
+            .await
+            .expect("bootstrap");
+        let (_, tokens) = auth
+            .login("admin", "admin123456", "127.0.0.1")
+            .await
+            .expect("login");
         drop(auth); // token 已签发；HTTP 层使用独立 router（同 secret，session 校验在独立 store 中不通过 → 401）。
 
         // 注：login 签发的 session 在独立内存 store；HTTP 层 router 是另一实例，

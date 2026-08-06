@@ -49,7 +49,9 @@ impl SystemService {
             .as_secs() as i64;
         SystemView {
             version: self.version.clone(),
-            commit: option_env!("GIT_COMMIT_SHORT").unwrap_or("unknown").to_string(),
+            commit: option_env!("GIT_COMMIT_SHORT")
+                .unwrap_or("unknown")
+                .to_string(),
             uptime_seconds: uptime,
             ready: true,
         }

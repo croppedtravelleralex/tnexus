@@ -331,7 +331,9 @@ impl AccountAdminService {
             return Err(AdminError::InvalidRequest("mode 不能为空".into()));
         }
         if input.remaining < 0 || input.total < 0 {
-            return Err(AdminError::InvalidRequest("remaining/total 不能为负".into()));
+            return Err(AdminError::InvalidRequest(
+                "remaining/total 不能为负".into(),
+            ));
         }
         if self.store.get_account(id).await?.is_none() {
             return Err(AdminError::NotFound(format!("account {id}")));
@@ -466,8 +468,6 @@ pub fn parse_quota_source(raw: &str) -> AdminResult<QuotaSource> {
         "default" => Ok(QuotaSource::Default),
         "estimated" => Ok(QuotaSource::Estimated),
         "upstream" => Ok(QuotaSource::Upstream),
-        other => Err(AdminError::InvalidRequest(format!(
-            "无效额度来源: {other}"
-        ))),
+        other => Err(AdminError::InvalidRequest(format!("无效额度来源: {other}"))),
     }
 }

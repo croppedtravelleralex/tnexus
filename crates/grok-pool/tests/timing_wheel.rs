@@ -23,7 +23,10 @@ fn schedule_and_advance_emits_due_id() {
     wheel.schedule(2, t0 + Duration::from_secs(10));
 
     // 未到 3s：不应弹出。
-    assert_eq!(wheel.advance(t0 + Duration::from_secs(2)), Vec::<u64>::new());
+    assert_eq!(
+        wheel.advance(t0 + Duration::from_secs(2)),
+        Vec::<u64>::new()
+    );
 
     // 到 3s：id=1 弹出。
     let due = wheel.advance(t0 + Duration::from_secs(3));
@@ -42,7 +45,10 @@ fn schedule_then_cancel_suppresses_id() {
 
     wheel.schedule(7, t0 + Duration::from_secs(2));
     wheel.cancel(7);
-    assert_eq!(wheel.advance(t0 + Duration::from_secs(5)), Vec::<u64>::new());
+    assert_eq!(
+        wheel.advance(t0 + Duration::from_secs(5)),
+        Vec::<u64>::new()
+    );
 }
 
 #[test]
@@ -54,7 +60,10 @@ fn overslot_goes_to_overflow_and_emits_on_due() {
 
     wheel.schedule(9, t0 + Duration::from_secs(70));
     // 到 70s 前不应弹。
-    assert_eq!(wheel.advance(t0 + Duration::from_secs(69)), Vec::<u64>::new());
+    assert_eq!(
+        wheel.advance(t0 + Duration::from_secs(69)),
+        Vec::<u64>::new()
+    );
     let due = wheel.advance(t0 + Duration::from_secs(70));
     assert_eq!(due, vec![9]);
 }
@@ -70,6 +79,9 @@ fn reschedule_same_id_overrides_old_alarm() {
     wheel.schedule(5, t0 + Duration::from_secs(20));
 
     // 5s 时不应弹（旧闹钟被覆盖）。
-    assert_eq!(wheel.advance(t0 + Duration::from_secs(5)), Vec::<u64>::new());
+    assert_eq!(
+        wheel.advance(t0 + Duration::from_secs(5)),
+        Vec::<u64>::new()
+    );
     assert_eq!(wheel.advance(t0 + Duration::from_secs(20)), vec![5]);
 }

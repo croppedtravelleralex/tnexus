@@ -18,8 +18,8 @@ use axum::http::{Method, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
 use grok_admin::{
-    Admin, AdminAuthService, AdminResult, AdminRouter, AdminSessionRepository, AdminStore,
-    AdminRepository, Session, TokenService,
+    Admin, AdminAuthService, AdminRepository, AdminResult, AdminRouter, AdminSessionRepository,
+    AdminStore, Session, TokenService,
 };
 use grok_domain::{Account, QuotaWindow};
 
@@ -162,7 +162,12 @@ impl AdminStore for InMemoryAdminStore {
             .take(page_size as usize)
             .map(grok_admin::AccountView::from)
             .collect();
-        Ok(grok_admin::AccountPage { items, page, page_size, total })
+        Ok(grok_admin::AccountPage {
+            items,
+            page,
+            page_size,
+            total,
+        })
     }
     async fn get_account(&self, _id: i64) -> AdminResult<Option<Account>> {
         Ok(None)
@@ -204,7 +209,10 @@ impl AdminStore for InMemoryAdminStore {
     async fn reauth(&self, _id: i64) -> AdminResult<bool> {
         Ok(false)
     }
-    async fn import_accounts(&self, _inputs: &[grok_admin::ImportAccountInput]) -> AdminResult<grok_admin::ImportResult> {
+    async fn import_accounts(
+        &self,
+        _inputs: &[grok_admin::ImportAccountInput],
+    ) -> AdminResult<grok_admin::ImportResult> {
         Ok(Default::default())
     }
     async fn timeseries(&self, _days: i64) -> AdminResult<Vec<grok_admin::TimeseriesPoint>> {
@@ -233,7 +241,9 @@ pub async fn build_admin_router(username: &str, password: &str, secret: &str) ->
 
 /// 构建 `/admin/*` 路由（axum 泛型 handler 映射到 [`AdminRouter::handle`]）。
 pub fn admin_app(router: AdminRouter) -> axum::Router {
-    let state = AdminState { router: Arc::new(router) };
+    let state = AdminState {
+        router: Arc::new(router),
+    };
     axum::Router::new()
         .route("/admin/{*path}", axum::routing::any(admin_handle))
         .with_state(state)

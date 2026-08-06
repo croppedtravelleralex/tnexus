@@ -95,10 +95,7 @@ impl Eq for DispatchKey {}
 /// 从 billing 快照或活跃 recovery 推导调度额度序字段（Go `DispatchQuota`）。
 ///
 /// 复用 `grok_domain::Billing` / `grok_domain::QuotaRecovery`。
-pub fn dispatch_quota(
-    billing: Option<&Billing>,
-    recovery: Option<&QuotaRecovery>,
-) -> (bool, f64) {
+pub fn dispatch_quota(billing: Option<&Billing>, recovery: Option<&QuotaRecovery>) -> (bool, f64) {
     if let Some(b) = billing {
         if b.monthly_limit > 0.0 {
             return (true, b.remaining());

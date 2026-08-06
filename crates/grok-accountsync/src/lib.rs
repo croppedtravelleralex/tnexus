@@ -5,6 +5,6 @@ pub mod service;
 
 pub use error::Error;
 pub use service::{
-    AccountSyncService, DEFAULT_WORKER_COUNT, OPERATION_TIMEOUT, Provider, QuotaKind, SyncBackend,
-    SyncResult,
+    AccountSyncService, Provider, QuotaKind, SyncBackend, SyncResult, DEFAULT_WORKER_COUNT,
+    OPERATION_TIMEOUT,
 };

@@ -257,7 +257,13 @@ impl BuildProbeMonitor {
                 ProbeFailure::PurgeDeleted => PURGE_DELETED_MARK.to_string(),
                 ProbeFailure::Other(text) => text.trim().to_string(),
             })
-            .map(|t| if t.len() > 512 { t[..512].to_string() } else { t })
+            .map(|t| {
+                if t.len() > 512 {
+                    t[..512].to_string()
+                } else {
+                    t
+                }
+            })
             .unwrap_or_default();
 
         s.statistics.attempts += 1;
@@ -349,8 +355,7 @@ pub fn build_probe_outcome(
     if matches!(probe_err, Some(ProbeFailure::PurgeDeleted)) {
         return BuildProbeOutcome::Deleted;
     }
-    if (matches!(probe_err, Some(ProbeFailure::PurgeDeletable))
-        || pool == Some(BuildPool::Delete))
+    if (matches!(probe_err, Some(ProbeFailure::PurgeDeletable)) || pool == Some(BuildPool::Delete))
         && probe_err.is_some()
     {
         return BuildProbeOutcome::Deletable;
@@ -442,16 +447,30 @@ mod tests {
 
         // finish(): success path updates stats
         let m = BuildProbeMonitor::new();
-        m.configure(now, Duration::seconds(30), Duration::minutes(5), Duration::minutes(2));
+        m.configure(
+            now,
+            Duration::seconds(30),
+            Duration::minutes(5),
+            Duration::minutes(2),
+        );
         let a = account(7);
         m.start(&a, BuildProbeMode::Verification, now);
         let s = m.snapshot(BuildProbePoolSummary::default());
         assert!(s.enabled && s.running);
         assert_eq!(s.current.as_ref().unwrap().account_id, 7);
-        assert_eq!(s.current.as_ref().unwrap().mode, BuildProbeMode::Verification);
+        assert_eq!(
+            s.current.as_ref().unwrap().mode,
+            BuildProbeMode::Verification
+        );
         assert_eq!(s.next_run_at, None, "running clears next_run_at");
 
-        m.finish(&a, BuildProbeMode::Verification, now, now + Duration::seconds(1), None);
+        m.finish(
+            &a,
+            BuildProbeMode::Verification,
+            now,
+            now + Duration::seconds(1),
+            None,
+        );
         let s = m.snapshot(BuildProbePoolSummary::default());
         assert!(!s.running);
         assert_eq!(s.statistics.attempts, 1);

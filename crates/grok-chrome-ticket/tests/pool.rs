@@ -4,9 +4,7 @@ use std::sync::Arc;
 use std::time::Duration as StdDuration;
 
 use chrono::Duration;
-use grok_chrome_ticket::domain::{
-    AccountCount, STATUS_CONSUMED, STATUS_EXPIRED,
-};
+use grok_chrome_ticket::domain::{AccountCount, STATUS_CONSUMED, STATUS_EXPIRED};
 use grok_chrome_ticket::{
     normalize_push_input, normalize_push_input_from_fields, MemoryChromeTicketRepository, Pool,
     TicketError,
@@ -33,17 +31,17 @@ async fn pool_push_pop_sweep() {
     assert!(!pushed.id.is_empty(), "expected ticket id");
     assert_eq!(pushed.status, "available");
 
-    let popped = pool
-        .pop_for_account(1467)
-        .await
-        .expect("pop ok");
+    let popped = pool.pop_for_account(1467).await.expect("pop ok");
     assert_eq!(popped.statsig_meta, "meta-abc");
     assert_eq!(popped.device_cookie, "grok_device_id=dev1");
     assert_eq!(popped.status, STATUS_CONSUMED);
     assert!(popped.consumed_at.is_some());
 
     // 已消费 → 再取报 NotFound
-    let err = pool.pop_for_account(1467).await.expect_err("expected not found");
+    let err = pool
+        .pop_for_account(1467)
+        .await
+        .expect_err("expected not found");
     assert_eq!(err, TicketError::NotFound);
 
     // 推一张毫秒过期的票 → sweep 标记 expired → stats 计数
@@ -59,7 +57,11 @@ async fn pool_push_pop_sweep() {
     let n = pool.sweep().await.expect("sweep ok");
     assert!(n >= 1, "expected sweep count >= 1, got {n}");
     let stats = pool.stats().await.expect("stats ok");
-    assert_eq!(stats.by_status.get(STATUS_CONSUMED), Some(&1), "one consumed");
+    assert_eq!(
+        stats.by_status.get(STATUS_CONSUMED),
+        Some(&1),
+        "one consumed"
+    );
     assert_eq!(stats.by_status.get(STATUS_EXPIRED), Some(&1), "one expired");
 }
 
@@ -105,14 +107,8 @@ fn normalize_push_input_rejects_bad_account_or_missing_meta() {
 
 #[test]
 fn normalize_push_input_from_fields_builds_struct() {
-    let input = normalize_push_input_from_fields(
-        42,
-        "meta",
-        "cookie",
-        "ua",
-        "chrome",
-        Duration::hours(3),
-    );
+    let input =
+        normalize_push_input_from_fields(42, "meta", "cookie", "ua", "chrome", Duration::hours(3));
     assert_eq!(
         input,
         grok_chrome_ticket::PushInput {
@@ -171,10 +167,7 @@ async fn pop_does_not_consume_other_accounts_tickets() {
     // 账号 2 的票不受影响
     let popped2 = pool.pop_for_account(2).await.expect("pop a2");
     assert_eq!(popped2.statsig_meta, "a2");
-    assert_eq!(
-        pool.pop_for_account(1).await,
-        Err(TicketError::NotFound)
-    );
+    assert_eq!(pool.pop_for_account(1).await, Err(TicketError::NotFound));
 }
 
 #[tokio::test]
@@ -214,8 +207,14 @@ async fn stats_summarizes_status_accounts_and_ttl() {
     assert_eq!(
         stats.available_by_account,
         vec![
-            AccountCount { account_id: 11, count: 1 },
-            AccountCount { account_id: 22, count: 1 },
+            AccountCount {
+                account_id: 11,
+                count: 1
+            },
+            AccountCount {
+                account_id: 22,
+                count: 1
+            },
         ]
     );
     assert_eq!(stats.available_tickets.len(), 2);
@@ -253,7 +252,11 @@ async fn sweep_expired_marks_only_available_tickets() {
     assert_eq!(n, 1, "only the expired available ticket is swept");
     let stats = pool.stats().await.expect("stats");
     assert_eq!(stats.by_status.get(STATUS_EXPIRED), Some(&1));
-    assert_eq!(stats.by_status.get(STATUS_CONSUMED), Some(&1), "consumed untouched");
+    assert_eq!(
+        stats.by_status.get(STATUS_CONSUMED),
+        Some(&1),
+        "consumed untouched"
+    );
 }
 
 #[test]

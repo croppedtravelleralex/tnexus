@@ -182,10 +182,13 @@ fn build_probe_account(id: i64) -> Account {
 
 #[tokio::test]
 async fn monitor_tracks_running_account_and_delete_transition() {
-    let (ops, mut started, release) =
-        FakeBuildProbeOps::new(vec![build_probe_account(42)]);
+    let (ops, mut started, release) = FakeBuildProbeOps::new(vec![build_probe_account(42)]);
     let pool = Arc::new(BuildFourPool::with_clock(Arc::new(ops), base_time));
-    pool.configure(Duration::seconds(30), Duration::minutes(5), Duration::minutes(2));
+    pool.configure(
+        Duration::seconds(30),
+        Duration::minutes(5),
+        Duration::minutes(2),
+    );
 
     let pool2 = pool.clone();
     let handle = tokio::spawn(async move { pool2.maintenance_tick().await });
@@ -230,19 +233,22 @@ async fn monitor_tracks_running_account_and_delete_transition() {
 
 #[tokio::test]
 async fn purge_apply_disabled_blocks_delete_lane() {
-    let (ops, mut _started, _release) =
-        FakeBuildProbeOps::new(vec![Account {
-            id: 7,
-            identity_key: "dead".into(),
-            provider: Provider::GrokBuild,
-            enabled: false,
-            auth_status: AuthStatus::ReauthRequired,
-            last_error: Some("deletable: old".into()),
-            updated_at: Some(base_time() - Duration::hours(1)),
-            ..Default::default()
-        }]);
+    let (ops, mut _started, _release) = FakeBuildProbeOps::new(vec![Account {
+        id: 7,
+        identity_key: "dead".into(),
+        provider: Provider::GrokBuild,
+        enabled: false,
+        auth_status: AuthStatus::ReauthRequired,
+        last_error: Some("deletable: old".into()),
+        updated_at: Some(base_time() - Duration::hours(1)),
+        ..Default::default()
+    }]);
     let pool = Arc::new(BuildFourPool::with_clock(Arc::new(ops), base_time));
-    pool.configure(Duration::seconds(30), Duration::minutes(5), Duration::minutes(2));
+    pool.configure(
+        Duration::seconds(30),
+        Duration::minutes(5),
+        Duration::minutes(2),
+    );
     // purge apply 默认关闭（Go `ConfigureBuildProbePurgeApply` 未开启）
     assert!(!pool.monitor().purge_apply_enabled());
 

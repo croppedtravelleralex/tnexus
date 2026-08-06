@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 use grok_domain::{Account, Billing, QuotaRecovery, QuotaRecoveryStatus};
 
-use crate::poolindex::{DispatchEntry, DispatchIndex, DueHeap, Lane, DRRScheduler};
+use crate::poolindex::{DRRScheduler, DispatchEntry, DispatchIndex, DueHeap, Lane};
 
 /// 四池池名（对齐 Go `PoolDispatch` 等）。
 pub const POOL_DISPATCH: &str = "dispatch";
@@ -69,7 +69,12 @@ pub fn build_account_pool_at(
         return Some(BuildPool::Delete);
     }
     if account.provider == grok_domain::Provider::GrokBuild
-        && account.observed_model.as_deref().unwrap_or("").trim().is_empty()
+        && account
+            .observed_model
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .is_empty()
     {
         return Some(BuildPool::Verification);
     }
@@ -80,10 +85,7 @@ pub fn build_account_pool_at(
             return Some(BuildPool::Normal);
         }
     }
-    if account
-        .cooldown_until
-        .is_some_and(|until| until > now)
-    {
+    if account.cooldown_until.is_some_and(|until| until > now) {
         return Some(BuildPool::Normal);
     }
     Some(BuildPool::Dispatch)
@@ -175,7 +177,8 @@ impl BuildPoolIndex {
         }
         match pool {
             BuildPool::Verification => {
-                self.verify_heap.upsert(account.id as u64, account.created_at.unwrap_or(now));
+                self.verify_heap
+                    .upsert(account.id as u64, account.created_at.unwrap_or(now));
             }
             BuildPool::Normal => {
                 if let Some(recovery) = recovery {
@@ -202,7 +205,9 @@ impl BuildPoolIndex {
                     quota_remaining,
                     last_selected_at: last_selected,
                 });
-                let probe_at = account.updated_at.unwrap_or_else(|| now - chrono::Duration::hours(1));
+                let probe_at = account
+                    .updated_at
+                    .unwrap_or_else(|| now - chrono::Duration::hours(1));
                 self.dispatch_probe_heap.upsert(account.id as u64, probe_at);
             }
         }
@@ -213,7 +218,7 @@ impl BuildPoolIndex {
         self.dispatch_index
             .ascend(limit)
             .into_iter()
-             .map(|entry| entry.id as i64)
+            .map(|entry| entry.id as i64)
             .collect()
     }
 
@@ -224,7 +229,11 @@ impl BuildPoolIndex {
 
     /// 普通池到期探针候选（对齐 `DueNormalProbeIDs`）。
     pub fn due_normal_probe_ids(&self, now: DateTime<Utc>, limit: usize) -> Vec<i64> {
-        self.normal_heap.due_ids(now, limit).into_iter().map(|id| id as i64).collect()
+        self.normal_heap
+            .due_ids(now, limit)
+            .into_iter()
+            .map(|id| id as i64)
+            .collect()
     }
 
     /// 弹出下一个调度探针账号：到期优先，否则任意（对齐 `DispatchProbeTick` 头部）。
@@ -245,7 +254,9 @@ impl BuildPoolIndex {
         let verify_ready = self.verify_heap.peek_due(now).is_some();
         let normal_ready = self.normal_heap.peek_due(now).is_some();
         let delete_ready = !self.delete_heap.is_empty();
-        let lane = self.maintenance_drr.next([verify_ready, normal_ready, delete_ready])?;
+        let lane = self
+            .maintenance_drr
+            .next([verify_ready, normal_ready, delete_ready])?;
         let id = match lane {
             Lane::Verification => self.verify_heap.pop_due(now),
             Lane::Normal => self.normal_heap.pop_due(now),

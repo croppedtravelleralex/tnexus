@@ -9,8 +9,8 @@ use chrono::{DateTime, Duration, Utc};
 use thiserror::Error;
 
 use crate::domain::{
-    ttl_bucket, AccountCount, PushInput, Stats, Ticket, TicketSummary, STATUS_AVAILABLE,
-    STATUS_CONSUMED, STATUS_EXPIRED, DEFAULT_TICKET_TTL,
+    ttl_bucket, AccountCount, PushInput, Stats, Ticket, TicketSummary, DEFAULT_TICKET_TTL,
+    STATUS_AVAILABLE, STATUS_CONSUMED, STATUS_EXPIRED,
 };
 
 /// Chrome 票池错误（对齐 Go `repository.ErrNotFound` 等哨兵）。
@@ -40,7 +40,11 @@ pub trait ChromeTicketRepository: Send + Sync {
     /// 状态汇总（内部先清扫）。
     async fn stats(&self, now: DateTime<Utc>) -> Result<Stats, TicketError>;
     /// 列出可用票（按过期时刻升序），limit <= 0 时默认 200。
-    async fn list_available(&self, now: DateTime<Utc>, limit: usize) -> Result<Vec<Ticket>, TicketError>;
+    async fn list_available(
+        &self,
+        now: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<Vec<Ticket>, TicketError>;
 }
 
 /// 票池门面（Go `Pool`）。
@@ -52,7 +56,10 @@ pub struct Pool {
 impl Pool {
     /// 使用默认 TTL（12h）。
     pub fn new(repo: Arc<dyn ChromeTicketRepository>) -> Self {
-        Self { repo, ttl: DEFAULT_TICKET_TTL }
+        Self {
+            repo,
+            ttl: DEFAULT_TICKET_TTL,
+        }
     }
 
     /// 自定义默认 TTL。
@@ -138,8 +145,16 @@ pub fn normalize_push_input(
         account_id,
         statsig_meta: meta,
         device_cookie,
-        user_agent: raw.get("user_agent").and_then(string_value).map(|s| s.trim().to_string()).unwrap_or_default(),
-        sign_source: raw.get("sign_source").and_then(string_value).map(|s| s.trim().to_string()).unwrap_or_default(),
+        user_agent: raw
+            .get("user_agent")
+            .and_then(string_value)
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default(),
+        sign_source: raw
+            .get("sign_source")
+            .and_then(string_value)
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default(),
         ttl,
     })
 }
@@ -154,7 +169,9 @@ fn string_value(value: &serde_json::Value) -> Option<String> {
 
 /// 正整数值提取（Go `uint64Value`）：数字（int/uint/float）且 > 0。
 fn uint64_value(value: &serde_json::Value) -> Option<i64> {
-    let n = value.as_i64().or_else(|| value.as_u64().map(|u| u as i64))?;
+    let n = value
+        .as_i64()
+        .or_else(|| value.as_u64().map(|u| u as i64))?;
     if n > 0 {
         Some(n)
     } else {
@@ -195,7 +212,8 @@ impl ChromeTicketRepository for MemoryChromeTicketRepository {
         let now = Utc::now();
         let id = format!(
             "mem-{:032x}",
-            self.next_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            self.next_id
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
         );
         let ticket = Ticket {
             id,
@@ -224,9 +242,7 @@ impl ChromeTicketRepository for MemoryChromeTicketRepository {
             .iter()
             .enumerate()
             .filter(|(_, t)| {
-                t.status == STATUS_AVAILABLE
-                    && t.expires_at >= now
-                    && t.account_id == account_id
+                t.status == STATUS_AVAILABLE && t.expires_at >= now && t.account_id == account_id
             })
             .min_by_key(|(_, t)| t.created_at)
             .map(|(i, _)| i);
@@ -274,8 +290,14 @@ impl ChromeTicketRepository for MemoryChromeTicketRepository {
                 ttl_remaining_seconds: remaining,
                 sign_source: ticket.sign_source,
             });
-            *stats.ttl_distribution.entry(ttl_bucket(remaining).to_string()).or_insert(0) += 1;
-            if stats.earliest_expires_at.is_none_or(|earliest| ticket.expires_at < earliest) {
+            *stats
+                .ttl_distribution
+                .entry(ttl_bucket(remaining).to_string())
+                .or_insert(0) += 1;
+            if stats
+                .earliest_expires_at
+                .is_none_or(|earliest| ticket.expires_at < earliest)
+            {
                 stats.earliest_expires_at = Some(ticket.expires_at);
             }
         }
@@ -285,7 +307,11 @@ impl ChromeTicketRepository for MemoryChromeTicketRepository {
         Ok(stats)
     }
 
-    async fn list_available(&self, now: DateTime<Utc>, limit: usize) -> Result<Vec<Ticket>, TicketError> {
+    async fn list_available(
+        &self,
+        now: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<Vec<Ticket>, TicketError> {
         let limit = if limit == 0 { 200 } else { limit };
         let tickets = self.tickets.lock().unwrap();
         Ok(list_available_locked(&tickets, now, limit))

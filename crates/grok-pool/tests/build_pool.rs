@@ -8,7 +8,9 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Duration, Utc};
-use grok_domain::{Account, AuthStatus, Billing, Provider, QuotaRecovery, QuotaRecoveryKind, QuotaRecoveryStatus};
+use grok_domain::{
+    Account, AuthStatus, Billing, Provider, QuotaRecovery, QuotaRecoveryKind, QuotaRecoveryStatus,
+};
 use grok_pool::build_pool::{
     build_account_pool_at, summarize_build_probe_pools, BuildPool, BuildPoolIndex,
     BuildProbePoolSummary,
@@ -48,10 +50,7 @@ fn rebuild_orders_dispatch_by_billing_quota() {
     let high = build_account(2, 10);
     let accounts = vec![low.clone(), high.clone()];
     let recoveries = HashMap::new();
-    let billings = HashMap::from([
-        (1i64, billing(1, 90.0)),
-        (2i64, billing(2, 10.0)),
-    ]);
+    let billings = HashMap::from([(1i64, billing(1, 90.0)), (2i64, billing(2, 10.0))]);
 
     let mut index = BuildPoolIndex::new();
     index.rebuild(&accounts, &recoveries, &billings, now());
@@ -81,7 +80,11 @@ fn pool_classification_matches_go_account_pool_at() {
     assert_eq!(build_account_pool_at(&a, t, None), Some(BuildPool::Delete));
 
     // 手动禁用（无前缀）→ None，不进索引
-    let a = Account { id: 2, enabled: false, ..build_account(2, 0) };
+    let a = Account {
+        id: 2,
+        enabled: false,
+        ..build_account(2, 0)
+    };
     assert_eq!(build_account_pool_at(&a, t, None), None);
 
     // reauth_required → delete
@@ -93,8 +96,15 @@ fn pool_classification_matches_go_account_pool_at() {
     assert_eq!(build_account_pool_at(&a, t, None), Some(BuildPool::Delete));
 
     // Build + 无 observed_model → verification
-    let a = Account { id: 4, observed_model: None, ..build_account(4, 0) };
-    assert_eq!(build_account_pool_at(&a, t, None), Some(BuildPool::Verification));
+    let a = Account {
+        id: 4,
+        observed_model: None,
+        ..build_account(4, 0)
+    };
+    assert_eq!(
+        build_account_pool_at(&a, t, None),
+        Some(BuildPool::Verification)
+    );
 
     // recovery Exhausted/Probing → normal
     for status in [QuotaRecoveryStatus::Exhausted, QuotaRecoveryStatus::Probing] {
@@ -119,15 +129,22 @@ fn pool_classification_matches_go_account_pool_at() {
     assert_eq!(build_account_pool_at(&a, t, None), Some(BuildPool::Normal));
 
     // 其余 → dispatch
-    assert_eq!(build_account_pool_at(&build_account(7, 0), t, None), Some(BuildPool::Dispatch));
+    assert_eq!(
+        build_account_pool_at(&build_account(7, 0), t, None),
+        Some(BuildPool::Dispatch)
+    );
 }
 
 #[test]
 fn summarize_counts_four_pools() {
     let t = now();
     let accounts = vec![
-        build_account(1, 0),                                            // dispatch
-        Account { id: 2, observed_model: None, ..build_account(2, 0) }, // verification
+        build_account(1, 0), // dispatch
+        Account {
+            id: 2,
+            observed_model: None,
+            ..build_account(2, 0)
+        }, // verification
         Account {
             id: 3,
             auth_status: AuthStatus::ReauthRequired,
@@ -138,13 +155,22 @@ fn summarize_counts_four_pools() {
             cooldown_until: Some(t + Duration::minutes(5)),
             ..build_account(4, 0)
         }, // normal
-        Account { id: 5, enabled: false, ..build_account(5, 0) }, // 不计
+        Account {
+            id: 5,
+            enabled: false,
+            ..build_account(5, 0)
+        }, // 不计
     ];
     let recoveries = HashMap::new();
     let summary = summarize_build_probe_pools(&accounts, &recoveries, t);
     assert_eq!(
         summary,
-        BuildProbePoolSummary { dispatch: 1, normal: 1, verification: 1, delete: 1 }
+        BuildProbePoolSummary {
+            dispatch: 1,
+            normal: 1,
+            verification: 1,
+            delete: 1
+        }
     );
 }
 
@@ -164,12 +190,18 @@ fn maintenance_drr_picks_verification_first() {
             cooldown_until: Some(t + Duration::minutes(30)),
             ..build_account(2, 0)
         }, // normal（冷却到期前不该被选）
-        Account { id: 3, last_error: Some("deletable: old".into()), ..build_account(3, 0) },
+        Account {
+            id: 3,
+            last_error: Some("deletable: old".into()),
+            ..build_account(3, 0)
+        },
     ];
     let mut index = BuildPoolIndex::new();
     index.rebuild(&accounts, &HashMap::new(), &HashMap::new(), t);
 
-    let (lane, id) = index.maintenance_next(t).expect("verification lane has work");
+    let (lane, id) = index
+        .maintenance_next(t)
+        .expect("verification lane has work");
     assert_eq!(lane, grok_pool::poolindex::Lane::Verification);
     assert_eq!(id, 1);
 

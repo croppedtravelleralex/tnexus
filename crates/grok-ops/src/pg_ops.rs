@@ -69,31 +69,45 @@ impl ProbeRepo for PgAccountRepository {
     }
 
     async fn list_build_accounts(&self, _now: DateTime<Utc>) -> OpsResult<Vec<Account>> {
-        PgAccountRepository::list_build_accounts(self).await.map_err(Into::into)
+        PgAccountRepository::list_build_accounts(self)
+            .await
+            .map_err(Into::into)
     }
 
     async fn recoveries_for(&self, ids: &[i64]) -> OpsResult<HashMap<i64, QuotaRecovery>> {
-        PgAccountRepository::recoveries(self, ids).await.map_err(Into::into)
+        PgAccountRepository::recoveries(self, ids)
+            .await
+            .map_err(Into::into)
     }
 
     async fn billings_for(&self, ids: &[i64]) -> OpsResult<HashMap<i64, Billing>> {
-        PgAccountRepository::billings(self, ids).await.map_err(Into::into)
+        PgAccountRepository::billings(self, ids)
+            .await
+            .map_err(Into::into)
     }
 
     async fn get_recovery(&self, id: i64) -> OpsResult<Option<QuotaRecovery>> {
-        PgAccountRepository::recovery(self, id).await.map_err(Into::into)
+        PgAccountRepository::recovery(self, id)
+            .await
+            .map_err(Into::into)
     }
 
     async fn get_billing(&self, id: i64) -> OpsResult<Option<Billing>> {
-        PgAccountRepository::billing(self, id).await.map_err(Into::into)
+        PgAccountRepository::billing(self, id)
+            .await
+            .map_err(Into::into)
     }
 
     async fn observe_model(&self, id: i64, model: &str) -> OpsResult<()> {
-        AccountOps::observe_model(self, id, model).await.map_err(Into::into)
+        AccountOps::observe_model(self, id, model)
+            .await
+            .map_err(Into::into)
     }
 
     async fn save_model_state(&self, state: ModelState) -> OpsResult<()> {
-        AccountOps::save_model_state(self, state).await.map_err(Into::into)
+        AccountOps::save_model_state(self, state)
+            .await
+            .map_err(Into::into)
     }
 
     async fn update_health(
@@ -104,21 +118,34 @@ impl ProbeRepo for PgAccountRepository {
         reason: &str,
         reset_last_success: bool,
     ) -> OpsResult<()> {
-        AccountOps::update_health(self, id, failure_count, cooldown_until, reason, reset_last_success)
+        AccountOps::update_health(
+            self,
+            id,
+            failure_count,
+            cooldown_until,
+            reason,
+            reset_last_success,
+        )
+        .await
+        .map_err(Into::into)
+    }
+
+    async fn mark_deletable(&self, id: i64, reason: &str) -> OpsResult<()> {
+        AccountOps::mark_deletable(self, id, reason)
             .await
             .map_err(Into::into)
     }
 
-    async fn mark_deletable(&self, id: i64, reason: &str) -> OpsResult<()> {
-        AccountOps::mark_deletable(self, id, reason).await.map_err(Into::into)
-    }
-
     async fn clear_recovery(&self, id: i64) -> OpsResult<()> {
-        AccountOps::clear_quota_recovery(self, id).await.map_err(Into::into)
+        AccountOps::clear_quota_recovery(self, id)
+            .await
+            .map_err(Into::into)
     }
 
     async fn delete_account(&self, id: i64) -> OpsResult<()> {
-        AccountOps::delete_account(self, id).await.map_err(Into::into)
+        AccountOps::delete_account(self, id)
+            .await
+            .map_err(Into::into)
     }
 }
 
@@ -156,7 +183,10 @@ pub enum CredentialProbeAction {
     /// 2xx：携带观察到的模型名。
     Verified(String),
     /// 终端失败：标记可删（reason 传给 `mark_deletable`，message 对外返回）。
-    Deletable { reason: &'static str, message: &'static str },
+    Deletable {
+        reason: &'static str,
+        message: &'static str,
+    },
     /// 其它失败：进入冷却（携带 HTTP 状态码）。
     Cooldown(i32),
 }
@@ -226,7 +256,10 @@ impl PgBuildProbeOps {
     }
 
     /// 注入上游探测 transport。
-    pub fn with_transport(repo: Arc<dyn ProbeRepo>, transport: Arc<dyn BuildProbeTransport>) -> Self {
+    pub fn with_transport(
+        repo: Arc<dyn ProbeRepo>,
+        transport: Arc<dyn BuildProbeTransport>,
+    ) -> Self {
         Self { repo, transport }
     }
 }
@@ -257,7 +290,11 @@ impl BuildProbeOps for PgBuildProbeOps {
         self.repo.get_billing(id).await
     }
 
-    async fn prepare_credential(&self, account: &Account, _refresh_tokens: bool) -> OpsResult<Account> {
+    async fn prepare_credential(
+        &self,
+        account: &Account,
+        _refresh_tokens: bool,
+    ) -> OpsResult<Account> {
         // Go `prepareBuildProbeCredential` 在令牌过期时经 sidecar 浏览器刷新；
         // Rust 侧该链路未接线，直接放行（过期判定与刷新由接线方负责）。
         Ok(account.clone())
@@ -275,10 +312,7 @@ impl BuildProbeOps for PgBuildProbeOps {
             CredentialProbeAction::Verified(model) => {
                 // 对齐 Go 2xx 分支：ObserveResponseModel + UpdateHealth(0)。
                 let _ = self.repo.observe_model(account.id, &model).await;
-                let _ = self
-                    .repo
-                    .update_health(account.id, 0, None, "", true)
-                    .await;
+                let _ = self.repo.update_health(account.id, 0, None, "", true).await;
                 Ok(model)
             }
             CredentialProbeAction::Deletable { reason, message } => {
@@ -291,7 +325,13 @@ impl BuildProbeOps for PgBuildProbeOps {
                 let msg = format!("build chat capability probe status {status}");
                 let _ = self
                     .repo
-                    .update_health(account.id, account.failure_count + 1, Some(until), &msg, false)
+                    .update_health(
+                        account.id,
+                        account.failure_count + 1,
+                        Some(until),
+                        &msg,
+                        false,
+                    )
                     .await;
                 Err(format!("Build Chat 能力探测返回 {status}"))
             }
@@ -334,7 +374,13 @@ impl BuildProbeOps for PgBuildProbeOps {
         reset_last_success: bool,
     ) -> OpsResult<()> {
         self.repo
-            .update_health(id, failure_count, cooldown_until, reason, reset_last_success)
+            .update_health(
+                id,
+                failure_count,
+                cooldown_until,
+                reason,
+                reset_last_success,
+            )
             .await
     }
 
@@ -377,7 +423,10 @@ mod tests {
     fn classify_credential_probe_matches_go_branches() {
         // 2xx → verified + 提取模型
         let action = classify_credential_probe(200, r#"{"model":"grok-4.5-build-free"}"#);
-        assert_eq!(action, CredentialProbeAction::Verified("grok-4.5-build-free".into()));
+        assert_eq!(
+            action,
+            CredentialProbeAction::Verified("grok-4.5-build-free".into())
+        );
         // 2xx 空 body → 回退 grok-4.5
         let action = classify_credential_probe(200, "");
         assert_eq!(action, CredentialProbeAction::Verified("grok-4.5".into()));
@@ -415,8 +464,14 @@ mod tests {
 
     #[test]
     fn observed_model_parses_envelope_with_default() {
-        assert_eq!(observed_model_from_body(r#"{"model":"grok-4.5-build-free"}"#), "grok-4.5-build-free");
-        assert_eq!(observed_model_from_body(r#"{"model": "  grok-3  "}"#), "grok-3");
+        assert_eq!(
+            observed_model_from_body(r#"{"model":"grok-4.5-build-free"}"#),
+            "grok-4.5-build-free"
+        );
+        assert_eq!(
+            observed_model_from_body(r#"{"model": "  grok-3  "}"#),
+            "grok-3"
+        );
         assert_eq!(observed_model_from_body(""), "grok-4.5");
         assert_eq!(observed_model_from_body("not json"), "grok-4.5");
     }
@@ -424,10 +479,17 @@ mod tests {
     #[test]
     fn capability_error_formats_status_snippet() {
         assert_eq!(capability_probe_error(200, "ok"), None);
-        assert_eq!(capability_probe_error(403, "denied"), Some("status 403: denied".into()));
+        assert_eq!(
+            capability_probe_error(403, "denied"),
+            Some("status 403: denied".into())
+        );
         let long = "x".repeat(300);
         let got = capability_probe_error(500, &long).unwrap();
-        assert_eq!(got.len(), "status 500: ".len() + 200, "snippet truncated to 200");
+        assert_eq!(
+            got.len(),
+            "status 500: ".len() + 200,
+            "snippet truncated to 200"
+        );
     }
 
     // ── adapter 端到端（fake repo + fake transport，副作用断言）────────
@@ -560,7 +622,11 @@ mod tests {
 
     #[tokio::test]
     async fn probe_chat_credential_401_marks_deletable() {
-        let (ops, repo) = adapter_with(repo_with(account(1)), 401, r#"{"error":{"code":"unauthorized"}}"#);
+        let (ops, repo) = adapter_with(
+            repo_with(account(1)),
+            401,
+            r#"{"error":{"code":"unauthorized"}}"#,
+        );
         let err = ops.probe_chat_credential(&account(1)).await.unwrap_err();
         assert_eq!(err, "Build Chat 能力探测认证失败");
         assert_eq!(
@@ -600,7 +666,10 @@ mod tests {
     #[tokio::test]
     async fn probe_chat_capability_ok_and_err() {
         let (ops, repo) = adapter_with(repo_with(account(1)), 200, r#"{"model":"grok-3"}"#);
-        assert_eq!(ops.probe_chat_capability(&account(1)).await.unwrap(), "grok-3");
+        assert_eq!(
+            ops.probe_chat_capability(&account(1)).await.unwrap(),
+            "grok-3"
+        );
         assert!(repo.mark_deletable_calls.lock().unwrap().is_empty());
 
         let (ops, _) = adapter_with(repo_with(account(1)), 403, "denied");

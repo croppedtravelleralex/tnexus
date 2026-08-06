@@ -27,10 +27,30 @@ fn fresh_window(total: i64, remaining: i64, synced: DateTime<Utc>) -> QuotaWindo
 #[test]
 fn select_web_pool_ids_respects_cap_and_ordering() {
     let candidates = vec![
-        WebPoolCandidate { id: 1, priority: 1, fast_rem: 10, ..Default::default() },
-        WebPoolCandidate { id: 2, priority: 5, fast_rem: 1, ..Default::default() },
-        WebPoolCandidate { id: 3, priority: 5, fast_rem: 9, ..Default::default() },
-        WebPoolCandidate { id: 4, priority: 0, fast_rem: 30, ..Default::default() },
+        WebPoolCandidate {
+            id: 1,
+            priority: 1,
+            fast_rem: 10,
+            ..Default::default()
+        },
+        WebPoolCandidate {
+            id: 2,
+            priority: 5,
+            fast_rem: 1,
+            ..Default::default()
+        },
+        WebPoolCandidate {
+            id: 3,
+            priority: 5,
+            fast_rem: 9,
+            ..Default::default()
+        },
+        WebPoolCandidate {
+            id: 4,
+            priority: 0,
+            fast_rem: 30,
+            ..Default::default()
+        },
     ];
     let ids = select_web_pool_ids(
         &candidates,
@@ -60,14 +80,24 @@ fn image_pool_eligibility_cases() {
     let cases: Vec<(&str, WebPoolCandidate, bool)> = vec![
         (
             "zero over zero is blocked",
-            WebPoolCandidate { enabled: true, active: true, imagine_window: Some(findex(0, 0)), ..Default::default() },
+            WebPoolCandidate {
+                enabled: true,
+                active: true,
+                imagine_window: Some(findex(0, 0)),
+                ..Default::default()
+            },
             false,
         ),
         (
             "zero over zero quota available awaits probe",
             WebPoolCandidate {
-                enabled: true, active: true, imagine_window: Some(findex(0, 0)),
-                model_state: Some(ModelState { status: ModelStatus::QuotaAvailable, ..Default::default() }),
+                enabled: true,
+                active: true,
+                imagine_window: Some(findex(0, 0)),
+                model_state: Some(ModelState {
+                    status: ModelStatus::QuotaAvailable,
+                    ..Default::default()
+                }),
                 ..Default::default()
             },
             true,
@@ -75,7 +105,9 @@ fn image_pool_eligibility_cases() {
         (
             "zero over zero recent lite success",
             WebPoolCandidate {
-                enabled: true, active: true, imagine_window: Some(findex(0, 0)),
+                enabled: true,
+                active: true,
+                imagine_window: Some(findex(0, 0)),
                 model_state: Some(ModelState {
                     status: ModelStatus::Available,
                     last_success_at: Some(now - chrono::Duration::minutes(10)),
@@ -87,20 +119,34 @@ fn image_pool_eligibility_cases() {
         ),
         (
             "known zero is exhausted",
-            WebPoolCandidate { enabled: true, active: true, imagine_window: Some(findex(10, 0)), ..Default::default() },
+            WebPoolCandidate {
+                enabled: true,
+                active: true,
+                imagine_window: Some(findex(10, 0)),
+                ..Default::default()
+            },
             false,
         ),
         (
             "known positive is available",
-            WebPoolCandidate { enabled: true, active: true, imagine_window: Some(findex(10, 3)), ..Default::default() },
+            WebPoolCandidate {
+                enabled: true,
+                active: true,
+                imagine_window: Some(findex(10, 3)),
+                ..Default::default()
+            },
             true,
         ),
         (
             "stale positive with unknown state is blocked",
             WebPoolCandidate {
-                enabled: true, active: true,
+                enabled: true,
+                active: true,
                 imagine_window: Some(fresh_window(10, 3, now - chrono::Duration::hours(2))),
-                model_state: Some(ModelState { status: ModelStatus::Unknown, ..Default::default() }),
+                model_state: Some(ModelState {
+                    status: ModelStatus::Unknown,
+                    ..Default::default()
+                }),
                 ..Default::default()
             },
             false,
@@ -108,8 +154,12 @@ fn image_pool_eligibility_cases() {
         (
             "signature failure is unavailable",
             WebPoolCandidate {
-                enabled: true, active: true,
-                model_state: Some(ModelState { status: ModelStatus::SignatureFailed, ..Default::default() }),
+                enabled: true,
+                active: true,
+                model_state: Some(ModelState {
+                    status: ModelStatus::SignatureFailed,
+                    ..Default::default()
+                }),
                 ..Default::default()
             },
             false,
@@ -117,8 +167,14 @@ fn image_pool_eligibility_cases() {
         (
             "old quota exhaustion cleared by positive refresh",
             WebPoolCandidate {
-                enabled: true, active: true, imagine_blocked: true, imagine_window: Some(findex(10, 3)),
-                model_state: Some(ModelState { status: ModelStatus::QuotaExhausted, ..Default::default() }),
+                enabled: true,
+                active: true,
+                imagine_blocked: true,
+                imagine_window: Some(findex(10, 3)),
+                model_state: Some(ModelState {
+                    status: ModelStatus::QuotaExhausted,
+                    ..Default::default()
+                }),
                 ..Default::default()
             },
             true,
@@ -126,7 +182,8 @@ fn image_pool_eligibility_cases() {
         (
             "active soft stop is unavailable",
             WebPoolCandidate {
-                enabled: true, active: true,
+                enabled: true,
+                active: true,
                 model_state: Some(ModelState {
                     status: ModelStatus::SoftStop,
                     cooldown_until: Some(now + chrono::Duration::minutes(1)),
@@ -139,8 +196,13 @@ fn image_pool_eligibility_cases() {
         (
             "dispatch requires available state",
             WebPoolCandidate {
-                enabled: true, active: true, imagine_window: Some(findex(10, 3)),
-                model_state: Some(ModelState { status: ModelStatus::Available, ..Default::default() }),
+                enabled: true,
+                active: true,
+                imagine_window: Some(findex(10, 3)),
+                model_state: Some(ModelState {
+                    status: ModelStatus::Available,
+                    ..Default::default()
+                }),
                 ..Default::default()
             },
             true,
@@ -163,24 +225,42 @@ fn image_dispatch_admissible_stricter_than_eligible() {
 
     // exhausted + blocked: eligible allows refreshed exhaustion, dispatch rejects.
     let exhausted = WebPoolCandidate {
-        enabled: true, active: true, imagine_blocked: true, imagine_window: Some(fresh.clone()),
-        model_state: Some(ModelState { status: ModelStatus::QuotaExhausted, ..Default::default() }),
+        enabled: true,
+        active: true,
+        imagine_blocked: true,
+        imagine_window: Some(fresh.clone()),
+        model_state: Some(ModelState {
+            status: ModelStatus::QuotaExhausted,
+            ..Default::default()
+        }),
         ..Default::default()
     };
-    assert!(image_pool_eligible(&exhausted, now), "eligible should allow refreshed exhaustion");
-    assert!(!image_dispatch_admissible(&exhausted, now), "dispatch must reject quota_exhausted");
+    assert!(
+        image_pool_eligible(&exhausted, now),
+        "eligible should allow refreshed exhaustion"
+    );
+    assert!(
+        !image_dispatch_admissible(&exhausted, now),
+        "dispatch must reject quota_exhausted"
+    );
 
     // available + fresh quota: dispatch accepts.
     let available = WebPoolCandidate {
-        enabled: true, active: true, imagine_window: Some(fresh.clone()),
-        model_state: Some(ModelState { status: ModelStatus::Available, ..Default::default() }),
+        enabled: true,
+        active: true,
+        imagine_window: Some(fresh.clone()),
+        model_state: Some(ModelState {
+            status: ModelStatus::Available,
+            ..Default::default()
+        }),
         ..Default::default()
     };
     assert!(image_dispatch_admissible(&available, now));
 
     // unknown gate + recent lite success: dispatch accepts.
     let unknown_recent = WebPoolCandidate {
-        enabled: true, active: true,
+        enabled: true,
+        active: true,
         imagine_window: Some(fresh_window(0, 0, synced)),
         model_state: Some(ModelState {
             status: ModelStatus::Available,
@@ -189,7 +269,10 @@ fn image_dispatch_admissible_stricter_than_eligible() {
         }),
         ..Default::default()
     };
-    assert!(image_dispatch_admissible(&unknown_recent, now), "dispatch should accept unknown gate w/ recent success");
+    assert!(
+        image_dispatch_admissible(&unknown_recent, now),
+        "dispatch should accept unknown gate w/ recent success"
+    );
 }
 
 // === pins：imageDispatchPinTargetIDs + SlotRegistry ===

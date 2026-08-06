@@ -73,9 +73,7 @@ impl TimingWheel {
         self.remove_locked(&mut g, id);
         let now = (self.now)();
         let due = if due_at <= now { now + g.tick } else { due_at };
-        let delay = due
-            .duration_since(now)
-            .unwrap_or_else(|_| g.tick);
+        let delay = due.duration_since(now).unwrap_or_else(|_| g.tick);
         let steps = (delay.as_nanos() / g.tick.as_nanos()) as usize;
         let steps = if steps < 1 { 1 } else { steps };
         if steps >= g.slots.len() {

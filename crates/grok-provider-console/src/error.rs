@@ -159,7 +159,10 @@ mod tests {
             console_retry_after("Rate limit reached. Resets in: 1h 2m 3s"),
             std::time::Duration::from_secs(3723)
         );
-        assert_eq!(console_retry_after("ordinary error"), std::time::Duration::ZERO);
+        assert_eq!(
+            console_retry_after("ordinary error"),
+            std::time::Duration::ZERO
+        );
     }
 
     #[test]

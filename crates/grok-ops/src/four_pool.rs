@@ -10,14 +10,14 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use crate::build_probe::{BuildProbeMode, BuildProbeMonitor, BuildProbeStatus, ProbeFailure};
+use crate::error::OpsResult;
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use grok_domain::{Account, Billing, QuotaRecovery};
 use grok_pool::build_pool::{
     build_account_pool_at, summarize_build_probe_pools, BuildPool, BuildPoolIndex,
 };
-use crate::build_probe::{BuildProbeMode, BuildProbeMonitor, BuildProbeStatus, ProbeFailure};
-use crate::error::OpsResult;
 
 /// dispatch 探针连续失败上限（Go `buildDispatchFailLimit`）。
 pub const BUILD_DISPATCH_FAIL_LIMIT: i32 = 2;
@@ -35,10 +35,18 @@ pub struct TickResult {
 
 impl TickResult {
     pub fn none() -> Self {
-        Self { account_id: 0, found: false, failure: None }
+        Self {
+            account_id: 0,
+            found: false,
+            failure: None,
+        }
     }
     fn account(id: i64, failure: Option<ProbeFailure>) -> Self {
-        Self { account_id: id, found: true, failure }
+        Self {
+            account_id: id,
+            found: true,
+            failure,
+        }
     }
 }
 
@@ -53,7 +61,11 @@ pub trait BuildProbeOps: Send + Sync {
     async fn get_billing(&self, id: i64) -> OpsResult<Option<Billing>>;
 
     /// 对齐 Go `prepareBuildProbeCredential`：必要时刷新令牌，返回 ready 账号。
-    async fn prepare_credential(&self, account: &Account, refresh_tokens: bool) -> OpsResult<Account>;
+    async fn prepare_credential(
+        &self,
+        account: &Account,
+        refresh_tokens: bool,
+    ) -> OpsResult<Account>;
     /// 对齐 Go `refreshBuildProbeBilling`。
     async fn refresh_billing(&self, id: i64) -> OpsResult<()>;
 
@@ -106,7 +118,8 @@ impl BuildFourPool {
     }
 
     pub fn configure(&self, interval: Duration, idle_interval: Duration, initial_delay: Duration) {
-        self.monitor.configure((self.now)(), interval, idle_interval, initial_delay);
+        self.monitor
+            .configure((self.now)(), interval, idle_interval, initial_delay);
     }
 
     pub fn set_purge_apply(&self, enabled: bool) {
@@ -124,7 +137,10 @@ impl BuildFourPool {
         let ids: Vec<i64> = accounts.iter().map(|a| a.id).collect();
         let recoveries = self.ops.recoveries_for(&ids).await?;
         let billings = self.ops.billings_for(&ids).await?;
-        self.index.lock().unwrap().rebuild(&accounts, &recoveries, &billings, now);
+        self.index
+            .lock()
+            .unwrap()
+            .rebuild(&accounts, &recoveries, &billings, now);
         Ok(())
     }
 
@@ -198,8 +214,7 @@ impl BuildFourPool {
             }
         };
         let recovery = self.ops.get_recovery(id).await.ok().flatten();
-        if build_account_pool_at(&candidate, now, recovery.as_ref()) != Some(BuildPool::Dispatch)
-        {
+        if build_account_pool_at(&candidate, now, recovery.as_ref()) != Some(BuildPool::Dispatch) {
             self.sync_account_index(id).await;
             return Ok(TickResult::account(id, None));
         }
@@ -247,9 +262,14 @@ impl BuildFourPool {
             Ok(ready) => ready,
             Err(e) => {
                 if is_terminal(&e) {
-                    self.mark_deletable_and_index(candidate.id, &format!("verification refresh failed: {e}")).await;
+                    self.mark_deletable_and_index(
+                        candidate.id,
+                        &format!("verification refresh failed: {e}"),
+                    )
+                    .await;
                 } else {
-                    self.cooldown_health(candidate.id, candidate.failure_count, "", "probe", 0).await;
+                    self.cooldown_health(candidate.id, candidate.failure_count, "", "probe", 0)
+                        .await;
                     self.sync_account_index(candidate.id).await;
                 }
                 return TickResult::account(candidate.id, Some(ProbeFailure::Other(e.to_string())));
@@ -271,10 +291,21 @@ impl BuildFourPool {
             Ok(ready) => ready,
             Err(e) => {
                 if is_terminal(&e) {
-                    self.mark_deletable_and_index(candidate.id, &format!("normal refresh failed: {e}")).await;
+                    self.mark_deletable_and_index(
+                        candidate.id,
+                        &format!("normal refresh failed: {e}"),
+                    )
+                    .await;
                     return TickResult::account(candidate.id, Some(ProbeFailure::PurgeDeletable));
                 }
-                self.cooldown_health(candidate.id, candidate.failure_count, "normal probe refresh failed", "normal", 0).await;
+                self.cooldown_health(
+                    candidate.id,
+                    candidate.failure_count,
+                    "normal probe refresh failed",
+                    "normal",
+                    0,
+                )
+                .await;
                 self.sync_account_index(candidate.id).await;
                 return TickResult::account(candidate.id, Some(ProbeFailure::Other(e.to_string())));
             }
@@ -294,7 +325,14 @@ impl BuildFourPool {
                     self.mark_deletable_and_index(ready.id, &text).await;
                     return TickResult::account(ready.id, Some(ProbeFailure::PurgeDeletable));
                 }
-                self.cooldown_health(ready.id, ready.failure_count, &format!("normal probe: {text}"), "normal", 0).await;
+                self.cooldown_health(
+                    ready.id,
+                    ready.failure_count,
+                    &format!("normal probe: {text}"),
+                    "normal",
+                    0,
+                )
+                .await;
                 self.sync_account_index(ready.id).await;
                 TickResult::account(ready.id, Some(ProbeFailure::Other(text)))
             }
@@ -307,10 +345,21 @@ impl BuildFourPool {
             Ok(ready) => ready,
             Err(e) => {
                 if is_terminal(&e) {
-                    self.mark_deletable_and_index(candidate.id, &format!("dispatch refresh failed: {e}")).await;
+                    self.mark_deletable_and_index(
+                        candidate.id,
+                        &format!("dispatch refresh failed: {e}"),
+                    )
+                    .await;
                     return TickResult::account(candidate.id, Some(ProbeFailure::PurgeDeletable));
                 }
-                self.cooldown_health(candidate.id, candidate.failure_count, "dispatch probe refresh failed", "dispatch", 0).await;
+                self.cooldown_health(
+                    candidate.id,
+                    candidate.failure_count,
+                    "dispatch probe refresh failed",
+                    "dispatch",
+                    0,
+                )
+                .await;
                 self.sync_account_index(candidate.id).await;
                 return TickResult::account(candidate.id, Some(ProbeFailure::Other(e.to_string())));
             }
@@ -331,7 +380,14 @@ impl BuildFourPool {
                     self.mark_deletable_and_index(ready.id, &text).await;
                     return TickResult::account(ready.id, Some(ProbeFailure::PurgeDeletable));
                 }
-                self.cooldown_health(ready.id, ready.failure_count, &format!("dispatch probe: {text}"), "dispatch", 0).await;
+                self.cooldown_health(
+                    ready.id,
+                    ready.failure_count,
+                    &format!("dispatch probe: {text}"),
+                    "dispatch",
+                    0,
+                )
+                .await;
                 self.sync_account_index(ready.id).await;
                 TickResult::account(ready.id, Some(ProbeFailure::Other(text)))
             }
@@ -341,10 +397,7 @@ impl BuildFourPool {
     /// 删除轨（对齐 Go `runDeleteProbe`）。
     async fn run_delete(&self, candidate: Account) -> TickResult {
         if !self.monitor.purge_apply_enabled() {
-            return TickResult::account(
-                candidate.id,
-                Some(ProbeFailure::PurgeDeletable),
-            );
+            return TickResult::account(candidate.id, Some(ProbeFailure::PurgeDeletable));
         }
         let err_text = candidate
             .last_error
@@ -361,7 +414,10 @@ impl BuildFourPool {
         }
         if self.ops.delete_account(candidate.id).await.is_err() {
             self.sync_account_index(candidate.id).await;
-            return TickResult::account(candidate.id, Some(ProbeFailure::Other("delete failed".into())));
+            return TickResult::account(
+                candidate.id,
+                Some(ProbeFailure::Other("delete failed".into())),
+            );
         }
         self.sync_account_index(candidate.id).await;
         TickResult::account(candidate.id, Some(ProbeFailure::PurgeDeleted))
@@ -391,7 +447,13 @@ impl BuildFourPool {
         };
         let _ = self
             .ops
-            .update_health(id, failure_count + 1, Some((self.now)() + PROBE_COOLDOWN), &msg, false)
+            .update_health(
+                id,
+                failure_count + 1,
+                Some((self.now)() + PROBE_COOLDOWN),
+                &msg,
+                false,
+            )
             .await;
     }
 }

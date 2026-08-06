@@ -27,7 +27,10 @@ struct BillingStub {
 
 impl BillingStub {
     fn counts(&self) -> (usize, usize) {
-        (self.checks.load(Ordering::Relaxed), self.syncs.load(Ordering::Relaxed))
+        (
+            self.checks.load(Ordering::Relaxed),
+            self.syncs.load(Ordering::Relaxed),
+        )
     }
 }
 
@@ -49,7 +52,10 @@ struct ModelStub {
 
 impl ModelStub {
     fn counts(&self) -> (usize, usize) {
-        (self.checks.load(Ordering::Relaxed), self.syncs.load(Ordering::Relaxed))
+        (
+            self.checks.load(Ordering::Relaxed),
+            self.syncs.load(Ordering::Relaxed),
+        )
     }
 }
 
@@ -76,7 +82,10 @@ struct Backend {
 impl Backend {
     fn build(provider: Provider) -> Self {
         Self {
-            provider: AccountReader { provider, quota: None },
+            provider: AccountReader {
+                provider,
+                quota: None,
+            },
             billing: Default::default(),
             quota: Default::default(),
             models: Default::default(),
@@ -86,7 +95,10 @@ impl Backend {
 
     fn with_quota_policy(provider: Provider, quota: QuotaKind) -> Self {
         Self {
-            provider: AccountReader { provider, quota: Some(quota) },
+            provider: AccountReader {
+                provider,
+                quota: Some(quota),
+            },
             billing: Default::default(),
             quota: Default::default(),
             models: Default::default(),
@@ -109,7 +121,10 @@ fn quota_kind_for(reader: &AccountReader, provider: Provider) -> QuotaKind {
 #[async_trait::async_trait]
 impl SyncBackend for Backend {
     async fn get_provider(&self, _account_id: i64) -> Result<(Provider, QuotaKind), Error> {
-        Ok((self.provider.provider, quota_kind_for(&self.provider, self.provider.provider)))
+        Ok((
+            self.provider.provider,
+            quota_kind_for(&self.provider, self.provider.provider),
+        ))
     }
 
     async fn has_billing(&self, _account_id: i64) -> Result<bool, Error> {
@@ -126,7 +141,10 @@ impl SyncBackend for Backend {
             self.probe.active.fetch_add(1, Ordering::Relaxed);
             let cur = self.probe.active.load(Ordering::Relaxed);
             self.probe.peak.fetch_max(cur, Ordering::Relaxed);
-            tokio::time::sleep(Duration::from_millis(self.billing.delay_ms.load(Ordering::Relaxed))).await;
+            tokio::time::sleep(Duration::from_millis(
+                self.billing.delay_ms.load(Ordering::Relaxed),
+            ))
+            .await;
             self.probe.active.fetch_sub(1, Ordering::Relaxed);
         }
         if self.billing.sync_err.load(Ordering::Relaxed) {
@@ -209,7 +227,10 @@ async fn sync_account_uses_quota_for_console_provider() {
 
 #[tokio::test]
 async fn sync_account_uses_declared_quota_policy_instead_of_provider_name() {
-    let backend = Arc::new(Backend::with_quota_policy(Provider::GrokBuild, QuotaKind::RemoteWindow));
+    let backend = Arc::new(Backend::with_quota_policy(
+        Provider::GrokBuild,
+        QuotaKind::RemoteWindow,
+    ));
     backend.models.has_snapshot.store(TRUE, Ordering::Relaxed);
     let service = AccountSyncService::new(backend.clone());
 
@@ -229,7 +250,13 @@ async fn sync_deduplicates_accounts_and_waits_for_completion() {
     let service = AccountSyncService::new(backend.clone());
 
     let result = service.sync(&[1, 1, 2, 0]).await;
-    assert_eq!(result, SyncResult { succeeded: 2, failed: 0 });
+    assert_eq!(
+        result,
+        SyncResult {
+            succeeded: 2,
+            failed: 0
+        }
+    );
 
     let (bc, bs) = backend.billing.counts();
     let (mc, ms) = backend.models.counts();
@@ -256,7 +283,10 @@ async fn sync_stream_starts_before_import_completes_and_deduplicates() {
         if checks > 0 {
             break;
         }
-        assert!(tokio::time::Instant::now() < deadline, "stream did not start");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "stream did not start"
+        );
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
     tx.send(1).unwrap();
@@ -264,7 +294,13 @@ async fn sync_stream_starts_before_import_completes_and_deduplicates() {
     drop(tx);
 
     let result = handle.await.expect("sync stream finished");
-    assert_eq!(result, SyncResult { succeeded: 2, failed: 0 });
+    assert_eq!(
+        result,
+        SyncResult {
+            succeeded: 2,
+            failed: 0
+        }
+    );
     let (checks, syncs) = backend.billing.counts();
     assert_eq!(checks, 2);
     assert_eq!(syncs, 2);
@@ -291,7 +327,13 @@ async fn sync_stream_observed_reports_deduplicated_completion() {
     }));
 
     let result = service.sync_stream_observed(rx, observer).await;
-    assert_eq!(result, SyncResult { succeeded: 2, failed: 0 });
+    assert_eq!(
+        result,
+        SyncResult {
+            succeeded: 2,
+            failed: 0
+        }
+    );
     let progress = progress.lock().unwrap();
     let totals = totals.lock().unwrap();
     assert_eq!(progress.len(), 2);
@@ -310,7 +352,13 @@ async fn sync_reports_initial_sync_failure() {
     let service = AccountSyncService::new(backend.clone());
 
     let result = service.sync(&[9]).await;
-    assert_eq!(result, SyncResult { succeeded: 0, failed: 1 });
+    assert_eq!(
+        result,
+        SyncResult {
+            succeeded: 0,
+            failed: 1
+        }
+    );
     let (_, bs) = backend.billing.counts();
     let (_, ms) = backend.models.counts();
     assert_eq!(bs, 1);
@@ -328,7 +376,13 @@ async fn concurrency_is_bounded_by_worker_count() {
 
     let ids: Vec<i64> = (1..=ACCOUNTS as i64).collect();
     let result = service.sync(&ids).await;
-    assert_eq!(result, SyncResult { succeeded: ACCOUNTS, failed: 0 });
+    assert_eq!(
+        result,
+        SyncResult {
+            succeeded: ACCOUNTS,
+            failed: 0
+        }
+    );
     let peak = backend.probe.peak.load(Ordering::Relaxed);
     assert!(peak <= WORKERS, "peak concurrency {peak} > {WORKERS}");
     assert!(peak >= 1);
@@ -340,6 +394,12 @@ async fn zero_account_id_is_ignored() {
     let service = AccountSyncService::new(backend.clone());
 
     let result = service.sync(&[0, 3, 0]).await;
-    assert_eq!(result, SyncResult { succeeded: 1, failed: 0 });
+    assert_eq!(
+        result,
+        SyncResult {
+            succeeded: 1,
+            failed: 0
+        }
+    );
     assert_eq!(backend.billing.checks.load(Ordering::Relaxed), 1);
 }

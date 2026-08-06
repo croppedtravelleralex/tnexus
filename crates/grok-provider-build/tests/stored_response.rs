@@ -125,7 +125,13 @@ async fn stored_response_round_trip_with_build_headers() {
 
     let adapter = BuildAdapter::new(test_config(base));
     let response = adapter
-        .forward_stored("grok-4.5", json!({"role": "user", "content": "hi"}), 16, "access-token", "official-key")
+        .forward_stored(
+            "grok-4.5",
+            json!({"role": "user", "content": "hi"}),
+            16,
+            "access-token",
+            "official-key",
+        )
         .await
         .expect("stored round trip");
 
@@ -139,21 +145,58 @@ async fn stored_response_round_trip_with_build_headers() {
     let req = &reqs[0];
     assert_eq!(req.method, "POST");
     assert_eq!(req.path, "/responses");
-    assert_eq!(req.header("Authorization").as_deref(), Some("Bearer access-token"));
-    assert_eq!(req.header("x-grok-client-version").as_deref(), Some("0.2.99"));
-    assert_eq!(req.header("x-grok-client-identifier").as_deref(), Some("grok-shell"));
+    assert_eq!(
+        req.header("Authorization").as_deref(),
+        Some("Bearer access-token")
+    );
+    assert_eq!(
+        req.header("x-grok-client-version").as_deref(),
+        Some("0.2.99")
+    );
+    assert_eq!(
+        req.header("x-grok-client-identifier").as_deref(),
+        Some("grok-shell")
+    );
     assert_eq!(req.header("x-grok-client-surface").as_deref(), Some("tui"));
-    assert_eq!(req.header("x-grok-client-name").as_deref(), Some("grok-shell"));
-    assert_eq!(req.header("User-Agent").as_deref(), Some("grok-shell/0.2.99 (linux; x86_64)"));
-    assert_eq!(req.header("x-grok-conv-id").as_deref(), Some("official-key"), "prompt cache key → conv id");
-    assert_eq!(req.header("x-grok-conversation-id").as_deref(), Some("official-key"));
+    assert_eq!(
+        req.header("x-grok-client-name").as_deref(),
+        Some("grok-shell")
+    );
+    assert_eq!(
+        req.header("User-Agent").as_deref(),
+        Some("grok-shell/0.2.99 (linux; x86_64)")
+    );
+    assert_eq!(
+        req.header("x-grok-conv-id").as_deref(),
+        Some("official-key"),
+        "prompt cache key → conv id"
+    );
+    assert_eq!(
+        req.header("x-grok-conversation-id").as_deref(),
+        Some("official-key")
+    );
     assert_eq!(req.header("Accept").as_deref(), Some("application/json"));
     assert_eq!(req.header("Accept-Encoding").as_deref(), Some("gzip"));
-    assert_eq!(req.header("x-grok-agent-id").as_deref().map(str::len), Some(32));
-    assert_eq!(req.header("x-grok-session-id").as_deref().map(str::len), Some(36));
-    assert_eq!(req.header("x-grok-req-id").as_deref().map(str::len), Some(32));
-    assert_eq!(req.header("x-grok-request-id").as_deref(), req.header("x-grok-req-id").as_deref());
-    assert_eq!(req.header("x-grok-session-id-legacy").as_deref(), req.header("x-grok-session-id").as_deref());
+    assert_eq!(
+        req.header("x-grok-agent-id").as_deref().map(str::len),
+        Some(32)
+    );
+    assert_eq!(
+        req.header("x-grok-session-id").as_deref().map(str::len),
+        Some(36)
+    );
+    assert_eq!(
+        req.header("x-grok-req-id").as_deref().map(str::len),
+        Some(32)
+    );
+    assert_eq!(
+        req.header("x-grok-request-id").as_deref(),
+        req.header("x-grok-req-id").as_deref()
+    );
+    assert_eq!(
+        req.header("x-grok-session-id-legacy").as_deref(),
+        req.header("x-grok-session-id").as_deref()
+    );
     assert_eq!(req.header("traceparent").as_deref().map(str::len), Some(55));
 
     // 请求体：模型被覆盖为 grok-4.5，store/stream false
@@ -168,7 +211,10 @@ async fn stored_response_round_trip_with_build_headers() {
 async fn forward_normalizes_model_and_preserves_reasoning_input() {
     // Go TestForwardResponseMatchesGrokBuildHeadersAndPreservesReasoning 的 body 断言
     let captured = Arc::new(Mutex::new(Vec::new()));
-    let base = spawn_mock(captured.clone(), |_| (200, r#"{"id":"resp_1","object":"response"}"#)).await;
+    let base = spawn_mock(captured.clone(), |_| {
+        (200, r#"{"id":"resp_1","object":"response"}"#)
+    })
+    .await;
     let adapter = BuildAdapter::new(test_config(base));
 
     let request = ForwardRequest {
@@ -196,13 +242,19 @@ async fn forward_normalizes_model_and_preserves_reasoning_input() {
     assert_eq!(body["prompt_cache_key"], "official-key");
     let input = body["input"].as_array().unwrap();
     assert_eq!(input.len(), 1);
-    assert_eq!(input[0]["encrypted_content"], "cipher", "reasoning replay preserved");
+    assert_eq!(
+        input[0]["encrypted_content"], "cipher",
+        "reasoning replay preserved"
+    );
 }
 
 #[tokio::test]
 async fn forward_reports_upstream_non_success() {
     let captured = Arc::new(Mutex::new(Vec::new()));
-    let base = spawn_mock(captured.clone(), |_| (429, r#"{"error":{"message":"rate limited"}}"#)).await;
+    let base = spawn_mock(captured.clone(), |_| {
+        (429, r#"{"error":{"message":"rate limited"}}"#)
+    })
+    .await;
     let adapter = BuildAdapter::new(test_config(base));
 
     let request = ForwardRequest {
@@ -246,9 +298,18 @@ async fn forward_supports_resource_methods_and_query() {
     let reqs = captured.lock().unwrap();
     assert_eq!(reqs.len(), 2);
     assert_eq!(reqs[0].method, "GET");
-    assert_eq!(reqs[0].path, "/responses/resp_1?include=reasoning.encrypted_content");
+    assert_eq!(
+        reqs[0].path,
+        "/responses/resp_1?include=reasoning.encrypted_content"
+    );
     assert_eq!(reqs[1].method, "DELETE");
-    assert_eq!(reqs[1].path, "/responses/resp_1?include=reasoning.encrypted_content");
+    assert_eq!(
+        reqs[1].path,
+        "/responses/resp_1?include=reasoning.encrypted_content"
+    );
     // 无 prompt_cache_key → 随机 32-hex conv id（对齐 Go `randomHex(16)`）
-    assert_eq!(reqs[0].header("x-grok-conv-id").as_deref().map(str::len), Some(32));
+    assert_eq!(
+        reqs[0].header("x-grok-conv-id").as_deref().map(str::len),
+        Some(32)
+    );
 }

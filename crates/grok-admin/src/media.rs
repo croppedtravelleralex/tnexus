@@ -61,7 +61,9 @@ impl MediaService {
     }
 
     pub async fn list_images(&self, page: i64, page_size: i64) -> AdminResult<Vec<MediaImageView>> {
-        self.store.list_images(page.max(1), page_size.clamp(1, 100)).await
+        self.store
+            .list_images(page.max(1), page_size.clamp(1, 100))
+            .await
     }
 
     pub async fn media_stats(&self) -> AdminResult<MediaStatsView> {

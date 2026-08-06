@@ -127,9 +127,7 @@ pub fn normalize_messages_input(
 ) -> Result<NormalizedChatInput, GatewayError> {
     if let Some(max_tokens) = req.max_tokens {
         if max_tokens < 1 {
-            return Err(GatewayError::InvalidRequest(
-                "max_tokens 必须大于 0".into(),
-            ));
+            return Err(GatewayError::InvalidRequest("max_tokens 必须大于 0".into()));
         }
     }
     let mut messages = Vec::new();
@@ -179,9 +177,16 @@ fn anthropic_content_to_compat(value: &Value) -> Result<Value, GatewayError> {
         .ok_or_else(|| GatewayError::InvalidRequest("content 必须是字符串或块数组".into()))?;
     let mut parts = Vec::new();
     for block in blocks {
-        match block.get("type").and_then(Value::as_str).unwrap_or_default() {
+        match block
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+        {
             "text" => {
-                let text = block.get("text").and_then(Value::as_str).unwrap_or_default();
+                let text = block
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
                 parts.push(json!({"type": "text", "text": text}));
             }
             "image" => {
@@ -204,7 +209,10 @@ fn anthropic_image_data_uri(block: &Value) -> Result<String, GatewayError> {
     let source = block
         .get("source")
         .ok_or_else(|| GatewayError::InvalidRequest("image 块缺少 source".into()))?;
-    let source_type = source.get("type").and_then(Value::as_str).unwrap_or_default();
+    let source_type = source
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     if source_type != "base64" {
         return Err(GatewayError::InvalidRequest(format!(
             "不支持的 image source 类型: {source_type}"
@@ -389,7 +397,9 @@ mod tests {
             .collect();
         let req = responses(json!([{ "type": "message", "role": "user", "content": parts }]));
         let err = normalize_responses_input(&req).unwrap_err();
-        assert!(err.to_string().contains(&MAX_CHAT_IMAGE_ATTACHMENTS.to_string()));
+        assert!(err
+            .to_string()
+            .contains(&MAX_CHAT_IMAGE_ATTACHMENTS.to_string()));
     }
 
     #[test]
@@ -413,7 +423,9 @@ mod tests {
     fn messages_system_block_array_concat() {
         let req = MessagesRequest {
             model: "grok-4.5".into(),
-            system: Some(json!([{ "type": "text", "text": "第一段" }, { "type": "text", "text": "第二段" }])),
+            system: Some(
+                json!([{ "type": "text", "text": "第一段" }, { "type": "text", "text": "第二段" }]),
+            ),
             messages: vec![AnthropicMessage {
                 role: "user".into(),
                 content: json!("hi"),
@@ -449,7 +461,10 @@ mod tests {
         let req = MessagesRequest {
             model: "grok-4.5".into(),
             system: None,
-            messages: vec![AnthropicMessage { role: "user".into(), content: json!("hi") }],
+            messages: vec![AnthropicMessage {
+                role: "user".into(),
+                content: json!("hi"),
+            }],
             max_tokens: Some(0),
             stream: false,
         };

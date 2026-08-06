@@ -141,7 +141,10 @@ impl BuildAdapter {
     }
 
     /// 通用转发（对齐 Go `ForwardResponse` 的请求侧：头部注入 + 可选规整）。
-    pub async fn forward(&self, request: &ForwardRequest) -> Result<ForwardResponse, ProviderError> {
+    pub async fn forward(
+        &self,
+        request: &ForwardRequest,
+    ) -> Result<ForwardResponse, ProviderError> {
         let cfg = self.cfg.read().unwrap().clone();
         let url = format!(
             "{}/{}",

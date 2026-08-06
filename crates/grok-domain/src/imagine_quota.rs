@@ -61,9 +61,7 @@ pub fn imagine_quota_unknown_fresh(window: &QuotaWindow, now: DateTime<Utc>) -> 
 /// 模型状态记录近期（TTL 内）真实 Lite 成功。
 pub fn imagine_recent_lite_success(state: Option<&ModelState>, now: DateTime<Utc>) -> bool {
     match state {
-        Some(s)
-            if s.status == ModelStatus::Available && s.last_success_at.is_some() =>
-        {
+        Some(s) if s.status == ModelStatus::Available && s.last_success_at.is_some() => {
             now.signed_duration_since(s.last_success_at.unwrap()) <= ttl()
         }
         _ => false,
@@ -71,9 +69,7 @@ pub fn imagine_recent_lite_success(state: Option<&ModelState>, now: DateTime<Utc
 }
 
 /// 将 imagine 剩余换算为可读生成次数；未知时 `known=false`。
-pub fn imagine_remaining_generations(
-    window: &QuotaWindow,
-) -> (i64, bool) {
+pub fn imagine_remaining_generations(window: &QuotaWindow) -> (i64, bool) {
     if window.mode != MODE_IMAGINE {
         return (0, false);
     }
@@ -224,7 +220,10 @@ mod tests {
         let unknown = window(0, 0, now - chrono::Duration::minutes(5));
         assert!(imagine_dispatch_quota_admissible(
             Some(&unknown),
-            Some(&state(ModelStatus::Available, Some(now - chrono::Duration::minutes(10)))),
+            Some(&state(
+                ModelStatus::Available,
+                Some(now - chrono::Duration::minutes(10))
+            )),
             now
         ));
         // stale window always rejected.
@@ -245,8 +244,14 @@ mod tests {
         // negative remaining -> unknown.
         assert_eq!(imagine_generations(-1, 100), (0, false));
         // zero/zero unknown gate has no readable generations.
-        assert_eq!(imagine_remaining_generations(&window(0, 0, Utc::now())), (0, false));
+        assert_eq!(
+            imagine_remaining_generations(&window(0, 0, Utc::now())),
+            (0, false)
+        );
         // exhausted (known positive total, zero remaining) known=true, 0 gens.
-        assert_eq!(imagine_remaining_generations(&window(10, 0, Utc::now())), (0, true));
+        assert_eq!(
+            imagine_remaining_generations(&window(10, 0, Utc::now())),
+            (0, true)
+        );
     }
 }

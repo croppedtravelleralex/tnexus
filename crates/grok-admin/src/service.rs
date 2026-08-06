@@ -126,7 +126,8 @@ impl AdminAuthService {
             Err(e) => return Err(e),
         }
         let (access_token, access_expires_at) =
-            self.tokens.create_access_token(session.admin_id, session.id, self.access_ttl)?;
+            self.tokens
+                .create_access_token(session.admin_id, session.id, self.access_ttl)?;
         let refresh_token = new_opaque_token(32)?;
         let refresh_expires_at = Utc::now() + self.refresh_ttl;
         match self

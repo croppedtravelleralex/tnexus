@@ -38,7 +38,9 @@ fn handle_connection(mut stream: TcpStream) {
         .lines()
         .find_map(|line| {
             let lower = line.to_ascii_lowercase();
-            lower.strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap_or(0))
+            lower
+                .strip_prefix("content-length:")
+                .map(|v| v.trim().parse::<usize>().unwrap_or(0))
         })
         .unwrap_or(0);
     // 读请求体（存在时）。
@@ -48,7 +50,11 @@ fn handle_connection(mut stream: TcpStream) {
             Ok(n) => buf.extend_from_slice(&chunk[..n]),
         }
     }
-    let path = first_line.split_whitespace().nth(1).unwrap_or_default().to_string();
+    let path = first_line
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or_default()
+        .to_string();
 
     let (status_line, body): (&str, String) = if path == "/responses" {
         (
@@ -181,12 +187,12 @@ async fn messages_via_real_console_backend() {
 #[tokio::test]
 async fn split_backends_responses_build_only() {
     let (base, mock) = spawn_mock(1); // 仅 /v1/responses 命中上游（messages 后端 None → 500 不请求）
-    // 只注入 responses 后端 → messages 端点 500。
-    let responses = Arc::new(grok_gateway::BuildResponsesBackend::new(Some(base.clone()), String::new()));
-    let app = grok_gateway::build_app(grok_gateway::with_protocol_backends(
-        Some(responses),
-        None,
+                                      // 只注入 responses 后端 → messages 端点 500。
+    let responses = Arc::new(grok_gateway::BuildResponsesBackend::new(
+        Some(base.clone()),
+        String::new(),
     ));
+    let app = grok_gateway::build_app(grok_gateway::with_protocol_backends(Some(responses), None));
     let (status, body) = post(
         &app,
         "/v1/responses",

@@ -1,6 +1,6 @@
 //! 请求构造（G5-A3：model / messages / stream 字段，对齐 Go console 对话请求形态）。
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::error::ProviderError;
 
@@ -9,7 +9,11 @@ use crate::error::ProviderError;
 /// - `model`：上游模型名（必填非空）
 /// - `messages`：OpenAI 消息数组（非数组 → InvalidRequest）
 /// - `stream`：恒按调用方意图写入（适配器流式路径传 true）
-pub fn build_chat_request(model: &str, messages: &Value, stream: bool) -> Result<Value, ProviderError> {
+pub fn build_chat_request(
+    model: &str,
+    messages: &Value,
+    stream: bool,
+) -> Result<Value, ProviderError> {
     let model = model.trim();
     if model.is_empty() {
         return Err(ProviderError::InvalidRequest("model 不能为空".into()));

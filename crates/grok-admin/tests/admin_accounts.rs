@@ -130,11 +130,7 @@ impl AdminSessionRepository for FakeSessionRepo {
         Ok(true)
     }
     async fn revoke(&self, id: i64) -> AdminResult<()> {
-        self.store
-            .sessions
-            .lock()
-            .unwrap()
-            .retain(|s| s.id != id);
+        self.store.sessions.lock().unwrap().retain(|s| s.id != id);
         Ok(())
     }
 }
@@ -200,7 +196,12 @@ impl AdminStore for AccountStore {
             .take(page_size as usize)
             .map(|a| grok_admin::AccountView::from(*a))
             .collect();
-        Ok(grok_admin::AccountPage { items, page, page_size, total })
+        Ok(grok_admin::AccountPage {
+            items,
+            page,
+            page_size,
+            total,
+        })
     }
 
     async fn get_account(&self, id: i64) -> AdminResult<Option<Account>> {
@@ -325,8 +326,7 @@ impl AdminStore for AccountStore {
         let accounts = self.accounts.lock().unwrap();
         let windows = self.windows.lock().unwrap();
         let mut analytics = grok_admin::AccountAnalytics::default();
-        let account_ids: std::collections::HashSet<i64> =
-            accounts.iter().map(|a| a.id).collect();
+        let account_ids: std::collections::HashSet<i64> = accounts.iter().map(|a| a.id).collect();
         let window_accounts: std::collections::HashSet<i64> =
             windows.iter().map(|w| w.account_id).collect();
         for account in accounts.iter() {
@@ -345,15 +345,18 @@ impl AdminStore for AccountStore {
                 *analytics.by_model.entry(model.clone()).or_insert(0) += 1;
             }
         }
-        analytics.billing_count = window_accounts
-            .intersection(&account_ids)
-            .count() as i64;
+        analytics.billing_count = window_accounts.intersection(&account_ids).count() as i64;
         Ok(analytics)
     }
 
     async fn refresh_billing(&self, account_id: i64) -> AdminResult<bool> {
         // 运维动作：推进 synced_at（真实实现接 grok-ops PgBuildProbeOps，TODO）
-        let exists = self.accounts.lock().unwrap().iter().any(|a| a.id == account_id);
+        let exists = self
+            .accounts
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|a| a.id == account_id);
         if !exists {
             return Ok(false);
         }
@@ -361,7 +364,12 @@ impl AdminStore for AccountStore {
     }
 
     async fn refresh_quota(&self, account_id: i64) -> AdminResult<bool> {
-        let exists = self.accounts.lock().unwrap().iter().any(|a| a.id == account_id);
+        let exists = self
+            .accounts
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|a| a.id == account_id);
         Ok(exists)
     }
 
@@ -423,7 +431,10 @@ impl AdminStore for AccountStore {
                 id,
                 identity_key: identity_key.to_string(),
                 provider,
-                name: input.name.clone().unwrap_or_else(|| format!("imported-{id}")),
+                name: input
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| format!("imported-{id}")),
                 priority: input.priority.unwrap_or(1),
                 max_concurrent: input.max_concurrent.unwrap_or(8),
                 enabled: true,
@@ -472,7 +483,9 @@ async fn setup() -> (AdminRouter, Arc<AccountStore>, String) {
         Duration::hours(1),
         Duration::days(7),
     );
-    auth.bootstrap("admin", "password123").await.expect("bootstrap");
+    auth.bootstrap("admin", "password123")
+        .await
+        .expect("bootstrap");
     let (_, tokens) = auth
         .login("admin", "password123", "127.0.0.1")
         .await
@@ -480,10 +493,30 @@ async fn setup() -> (AdminRouter, Arc<AccountStore>, String) {
 
     let account_store = Arc::new(AccountStore::default());
     // 3 build 账号（2 active + 1 disabled）+ 1 web 账号
-    let _b1 = account_store.seed(build_account(1, Provider::GrokBuild, true, AuthStatus::Active));
-    let _b2 = account_store.seed(build_account(2, Provider::GrokBuild, true, AuthStatus::Active));
-    let _b3 = account_store.seed(build_account(3, Provider::GrokBuild, false, AuthStatus::Active));
-    let w1 = account_store.seed(build_account(4, Provider::GrokWeb, true, AuthStatus::ReauthRequired));
+    let _b1 = account_store.seed(build_account(
+        1,
+        Provider::GrokBuild,
+        true,
+        AuthStatus::Active,
+    ));
+    let _b2 = account_store.seed(build_account(
+        2,
+        Provider::GrokBuild,
+        true,
+        AuthStatus::Active,
+    ));
+    let _b3 = account_store.seed(build_account(
+        3,
+        Provider::GrokBuild,
+        false,
+        AuthStatus::Active,
+    ));
+    let w1 = account_store.seed(build_account(
+        4,
+        Provider::GrokWeb,
+        true,
+        AuthStatus::ReauthRequired,
+    ));
     // 给 w1 挂额度窗口 + 模型状态
     account_store.windows.lock().unwrap().push(QuotaWindow {
         account_id: w1,
@@ -507,10 +540,7 @@ async fn setup() -> (AdminRouter, Arc<AccountStore>, String) {
         updated_at: Utc::now(),
     });
 
-    let router = AdminRouter::new(
-        auth,
-        AccountAdminService::new(account_store.clone()),
-    );
+    let router = AdminRouter::new(auth, AccountAdminService::new(account_store.clone()));
     let token = tokens.access_token.clone();
     (router, account_store, token)
 }
@@ -524,9 +554,7 @@ fn bearer(token: &str) -> String {
 #[tokio::test]
 async fn rejects_missing_or_bad_token() {
     let (router, _, _) = setup().await;
-    let no_token = router
-        .handle("GET", "/admin/accounts", None, None)
-        .await;
+    let no_token = router.handle("GET", "/admin/accounts", None, None).await;
     assert_eq!(no_token.status, 401);
     let bad_token = router
         .handle("GET", "/admin/accounts", Some("Bearer garbage.token"), None)
@@ -541,7 +569,9 @@ async fn lists_accounts_with_filter_and_pagination() {
     let (router, _, token) = setup().await;
 
     // 全部（4 个）
-    let resp = router.handle("GET", "/admin/accounts", Some(&bearer(&token)), None).await;
+    let resp = router
+        .handle("GET", "/admin/accounts", Some(&bearer(&token)), None)
+        .await;
     assert_eq!(resp.status, 200);
     assert_eq!(resp.body["total"], 4);
     assert_eq!(resp.body["items"].as_array().unwrap().len(), 4);
@@ -560,7 +590,12 @@ async fn lists_accounts_with_filter_and_pagination() {
 
     // enabled=false → 1 个
     let resp = router
-        .handle("GET", "/admin/accounts?enabled=false", Some(&bearer(&token)), None)
+        .handle(
+            "GET",
+            "/admin/accounts?enabled=false",
+            Some(&bearer(&token)),
+            None,
+        )
         .await;
     assert_eq!(resp.status, 200);
     assert_eq!(resp.body["total"], 1);
@@ -715,7 +750,12 @@ async fn reads_and_writes_quota_windows() {
 
     // 初始：w1(id=4) 有 imagine 5/10
     let resp = router
-        .handle("GET", "/admin/accounts/4/quota", Some(&bearer(&token)), None)
+        .handle(
+            "GET",
+            "/admin/accounts/4/quota",
+            Some(&bearer(&token)),
+            None,
+        )
         .await;
     assert_eq!(resp.status, 200);
     assert_eq!(resp.body["items"].as_array().unwrap().len(), 1);
@@ -747,7 +787,10 @@ async fn reads_and_writes_quota_windows() {
     assert_eq!(resp.body["remaining"], 20);
     let windows = store.list_quota_windows(4).await.unwrap();
     assert_eq!(windows.len(), 2, "upsert 不新增行");
-    assert_eq!(windows.iter().find(|w| w.mode == "fast").unwrap().remaining, 20);
+    assert_eq!(
+        windows.iter().find(|w| w.mode == "fast").unwrap().remaining,
+        20
+    );
 
     // 空 mode → 400
     let resp = router
@@ -789,14 +832,27 @@ async fn reads_and_writes_quota_windows() {
 async fn reads_model_states() {
     let (router, _, token) = setup().await;
     let resp = router
-        .handle("GET", "/admin/accounts/4/model-states", Some(&bearer(&token)), None)
+        .handle(
+            "GET",
+            "/admin/accounts/4/model-states",
+            Some(&bearer(&token)),
+            None,
+        )
         .await;
     assert_eq!(resp.status, 200);
     assert_eq!(resp.body["items"].as_array().unwrap().len(), 1);
-    assert_eq!(resp.body["items"][0]["upstream_model"], "grok-imagine-image");
+    assert_eq!(
+        resp.body["items"][0]["upstream_model"],
+        "grok-imagine-image"
+    );
 
     let resp = router
-        .handle("GET", "/admin/accounts/999/model-states", Some(&bearer(&token)), None)
+        .handle(
+            "GET",
+            "/admin/accounts/999/model-states",
+            Some(&bearer(&token)),
+            None,
+        )
         .await;
     assert_eq!(resp.status, 404);
 }

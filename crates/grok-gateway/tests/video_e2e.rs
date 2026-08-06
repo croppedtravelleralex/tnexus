@@ -16,7 +16,7 @@ use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
-use grok_gateway::video::{VideoJob, VideoRequest, VideoStatus, VideoBackend};
+use grok_gateway::video::{VideoBackend, VideoJob, VideoRequest, VideoStatus};
 use grok_gateway::GatewayError;
 
 /// 记录创建参数，轮询走「processing → completed」或「failed」剧本。
@@ -105,7 +105,12 @@ fn app_empty() -> axum::Router {
     grok_gateway::build_app(grok_gateway::AppState::empty())
 }
 
-async fn send(app: &axum::Router, method: &str, path: &str, body: Option<Value>) -> (StatusCode, Value) {
+async fn send(
+    app: &axum::Router,
+    method: &str,
+    path: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
     let builder = Request::builder().method(method).uri(path);
     let (builder, body) = if let Some(body) = body {
         (
@@ -120,7 +125,10 @@ async fn send(app: &axum::Router, method: &str, path: &str, body: Option<Value>)
     let status = resp.status();
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let raw = String::from_utf8_lossy(&bytes).to_string();
-    (status, serde_json::from_str(&raw).unwrap_or_else(|_| json!({"raw": raw})))
+    (
+        status,
+        serde_json::from_str(&raw).unwrap_or_else(|_| json!({"raw": raw})),
+    )
 }
 
 /// POST /v1/videos：创建成功 → 201 + 任务快照（status=processing，prompt 透传）。
@@ -146,8 +154,15 @@ async fn create_video_returns_job_describing_progress() {
     assert_eq!(body["object"], "video");
     assert_eq!(body["status"], "processing");
     assert_eq!(body["duration"], 8);
-    assert!(body.get("reference_urls").is_none(), "空 reference_urls 不应序列化");
-    assert_eq!(*backend.created_prompt.lock().unwrap(), Some("一只猫在跳".into()), "prompt 原样透传");
+    assert!(
+        body.get("reference_urls").is_none(),
+        "空 reference_urls 不应序列化"
+    );
+    assert_eq!(
+        *backend.created_prompt.lock().unwrap(),
+        Some("一只猫在跳".into()),
+        "prompt 原样透传"
+    );
 }
 
 /// 轮询剧本：首次 GET processing，再次 GET completed（含 url / content_type / progress=100）。
@@ -188,7 +203,10 @@ async fn poll_unknown_video_404() {
     let app = app_with(backend.clone());
     let (status, body) = send(&app, "GET", "/v1/videos/video_missing", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    assert!(body["error"]["message"].as_str().unwrap().contains("not found"));
+    assert!(body["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("not found"));
 }
 
 /// 校验：缺 prompt 且无参考图 → 400；未配置 video_backend → 500。
@@ -204,8 +222,15 @@ async fn video_request_validation_and_unconfigured() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(body["error"]["message"].as_str().unwrap().contains("prompt"));
-    assert_eq!(backend.poll_calls.load(Ordering::Relaxed), 0, "backend 不应在 400 时执行");
+    assert!(body["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("prompt"));
+    assert_eq!(
+        backend.poll_calls.load(Ordering::Relaxed),
+        0,
+        "backend 不应在 400 时执行"
+    );
 
     // duration <= 0 → 400
     let (status, _) = send(
@@ -243,7 +268,10 @@ async fn video_endpoint_without_backend_500() {
     )
     .await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
-    assert!(body["error"]["message"].as_str().unwrap().contains("VideoBackend"));
+    assert!(body["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("VideoBackend"));
 
     let (status, _) = send(&app, "GET", "/v1/videos/video_1", None).await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);

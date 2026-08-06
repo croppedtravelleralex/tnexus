@@ -18,7 +18,7 @@ use serde_json::Value;
 
 use crate::error::{ProviderError, UpstreamError};
 use crate::normalize::build_chat_request;
-use crate::sse::{ChatDelta, SseParser, parse_chat_delta};
+use crate::sse::{parse_chat_delta, ChatDelta, SseParser};
 
 /// 适配器配置（对齐 Go `console.Config`）。
 #[derive(Debug, Clone)]
@@ -58,7 +58,10 @@ impl ConsoleAdapter {
     }
 
     fn build_client(cfg: &Config) -> Client {
-        Client::builder().timeout(cfg.timeout).build().expect("reqwest client")
+        Client::builder()
+            .timeout(cfg.timeout)
+            .build()
+            .expect("reqwest client")
     }
 
     pub fn update_config(&self, cfg: Config) {
@@ -76,10 +79,7 @@ impl ConsoleAdapter {
         access_token: &str,
     ) -> Result<Vec<ChatDelta>, ProviderError> {
         let cfg = self.cfg.read().unwrap().clone();
-        let url = format!(
-            "{}/v1/chat/completions",
-            cfg.base_url.trim_end_matches('/')
-        );
+        let url = format!("{}/v1/chat/completions", cfg.base_url.trim_end_matches('/'));
         let body = build_chat_request(model, messages, true)?;
 
         let response = self
@@ -87,7 +87,10 @@ impl ConsoleAdapter {
             .post(&url)
             .header("Accept", "text/event-stream")
             .header("Authorization", "Bearer anonymous")
-            .header("Cookie", format!("sso={access_token}; sso-rw={access_token}"))
+            .header(
+                "Cookie",
+                format!("sso={access_token}; sso-rw={access_token}"),
+            )
             .header("Origin", "https://console.x.ai")
             .header("Referer", "https://console.x.ai/")
             .header("x-cluster", "https://us-east-1.api.x.ai")

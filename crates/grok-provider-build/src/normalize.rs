@@ -16,7 +16,9 @@ use crate::error::ProviderError;
 /// 返回规整后的 JSON；解析失败返回 [`ProviderError::InvalidRequest`]。
 pub fn normalize_responses_request(body: &Value, model: &str) -> Result<Value, ProviderError> {
     let Some(payload) = body.as_object() else {
-        return Err(ProviderError::InvalidRequest("Responses 请求体必须是 JSON 对象".into()));
+        return Err(ProviderError::InvalidRequest(
+            "Responses 请求体必须是 JSON 对象".into(),
+        ));
     };
     let mut payload = payload.clone();
     payload.insert("model".into(), Value::String(model.to_string()));
@@ -120,8 +122,14 @@ mod tests {
         let input = normalized["input"].as_array().unwrap();
         assert_eq!(input.len(), 2);
         assert_eq!(input[0]["encrypted_content"], "cipher");
-        assert!(normalized["text"]["format"].is_object(), "response_format mapped to text.format");
-        assert!(normalized.get("response_format").is_none(), "response_format removed");
+        assert!(
+            normalized["text"]["format"].is_object(),
+            "response_format mapped to text.format"
+        );
+        assert!(
+            normalized.get("response_format").is_none(),
+            "response_format removed"
+        );
     }
 
     #[test]
@@ -147,7 +155,8 @@ mod tests {
         let injected = ensure_prompt_cache_key(&body, "derived-key").unwrap();
         assert_eq!(injected["prompt_cache_key"], "derived-key");
 
-        let body = json!({"model": "grok-4.5", "input": "hello", "prompt_cache_key": "official-key"});
+        let body =
+            json!({"model": "grok-4.5", "input": "hello", "prompt_cache_key": "official-key"});
         let preserved = ensure_prompt_cache_key(&body, "derived-key").unwrap();
         assert_eq!(preserved["prompt_cache_key"], "official-key");
     }
@@ -164,7 +173,10 @@ mod tests {
         let format = &normalized["text"]["format"];
         assert_eq!(format["type"], "json_schema");
         assert_eq!(format["name"], "answer");
-        assert!(format.get("json_schema").is_none(), "nested json_schema flattened");
+        assert!(
+            format.get("json_schema").is_none(),
+            "nested json_schema flattened"
+        );
         assert_eq!(format["strict"], true);
     }
 }

@@ -122,4 +122,3 @@ impl AccountRepository for PgAccountRepository {
         map_row(&row)
     }
 }
-

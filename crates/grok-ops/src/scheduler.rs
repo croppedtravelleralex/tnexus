@@ -29,8 +29,7 @@ pub const RESTART_BACKOFF_BASE: Duration = Duration::from_secs(1);
 pub const RESTART_BACKOFF_MAX: Duration = Duration::from_secs(30);
 
 /// 一轮后台任务（可 async、可 panic）。
-pub type AsyncRun =
-    dyn Fn() -> Pin<Box<dyn Future<Output = OpsResult<()>> + Send>> + Send + Sync;
+pub type AsyncRun = dyn Fn() -> Pin<Box<dyn Future<Output = OpsResult<()>> + Send>> + Send + Sync;
 
 /// 设置变更轮询源（对齐 Go `ListenSettingsChanges` 的事件流）。
 #[async_trait]
@@ -87,12 +86,7 @@ impl TaskScheduler {
     }
 
     /// 注册周期性任务（每轮成功 → 等 `interval`）。
-    pub fn add_task(
-        &mut self,
-        name: impl Into<String>,
-        interval: Duration,
-        run: Arc<AsyncRun>,
-    ) {
+    pub fn add_task(&mut self, name: impl Into<String>, interval: Duration, run: Arc<AsyncRun>) {
         self.tasks.push(TaskSpec {
             name: name.into(),
             interval,
@@ -155,7 +149,12 @@ impl TaskScheduler {
 
     // ── 循环实现 ────────────────────────────────────────────────
 
-    async fn task_loop(name: String, interval: Duration, run: Arc<AsyncRun>, shared: Arc<Mutex<Shared>>) {
+    async fn task_loop(
+        name: String,
+        interval: Duration,
+        run: Arc<AsyncRun>,
+        shared: Arc<Mutex<Shared>>,
+    ) {
         let mut backoff = RESTART_BACKOFF_BASE;
         loop {
             let started_at = Utc::now();
@@ -280,11 +279,7 @@ fn mark(shared: &Arc<Mutex<Shared>>, name: &str, f: impl FnOnce(&mut TaskStatus)
 }
 
 /// 指数退避续跑（对齐 Go `runSupervisedTask` 的 backoff*2 封顶 30s）。
-async fn sleep_backoff(
-    _shared: &Arc<Mutex<Shared>>,
-    _name: &str,
-    backoff: &mut Duration,
-) {
+async fn sleep_backoff(_shared: &Arc<Mutex<Shared>>, _name: &str, backoff: &mut Duration) {
     let wait = *backoff;
     *backoff = (*backoff * 2).min(RESTART_BACKOFF_MAX);
     tokio::time::sleep(wait).await;

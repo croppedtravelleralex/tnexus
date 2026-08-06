@@ -10,9 +10,8 @@ use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Duration, Utc};
 use grok_domain::{
-    Account, AuthStatus, ModelQuotaBlock, ModelState, Provider,
-    QuotaRecovery, QuotaRecoveryKind, QuotaRecoveryStatus, QuotaSource, QuotaWindow,
-    RoutingCandidate, WebTier,
+    Account, AuthStatus, ModelQuotaBlock, ModelState, Provider, QuotaRecovery, QuotaRecoveryKind,
+    QuotaRecoveryStatus, QuotaSource, QuotaWindow, RoutingCandidate, WebTier,
 };
 use grok_pool::selector::*;
 
@@ -92,11 +91,17 @@ impl FakeLoader {
     }
 
     fn seed_model(&self, model: &str, values: Vec<RoutingCandidate>) {
-        self.by_model.lock().unwrap().insert(model.to_string(), values);
+        self.by_model
+            .lock()
+            .unwrap()
+            .insert(model.to_string(), values);
     }
 
     fn seed_recovery(&self, recovery: QuotaRecovery) {
-        self.recoveries.lock().unwrap().insert(recovery.account_id, recovery);
+        self.recoveries
+            .lock()
+            .unwrap()
+            .insert(recovery.account_id, recovery);
     }
 
     fn list_calls(&self) -> usize {
@@ -167,7 +172,10 @@ impl CandidateLoader for FakeLoader {
         _reason: &str,
         _reset_last_success: bool,
     ) -> SelectorResult<()> {
-        self.health.lock().unwrap().insert(id, (failure_count, cooldown_until));
+        self.health
+            .lock()
+            .unwrap()
+            .insert(id, (failure_count, cooldown_until));
         Ok(())
     }
 
@@ -177,7 +185,10 @@ impl CandidateLoader for FakeLoader {
     }
 
     async fn save_quota_recovery(&self, recovery: QuotaRecovery) -> SelectorResult<()> {
-        self.recoveries.lock().unwrap().insert(recovery.account_id, recovery);
+        self.recoveries
+            .lock()
+            .unwrap()
+            .insert(recovery.account_id, recovery);
         Ok(())
     }
 
@@ -258,7 +269,12 @@ impl ConcurrencyLimiter for InMemoryLimiter {
         let counts = self.counts.lock().unwrap();
         Ok(ids
             .iter()
-            .map(|id| (*id, counts.get(&format!("account:{id}")).copied().unwrap_or(0)))
+            .map(|id| {
+                (
+                    *id,
+                    counts.get(&format!("account:{id}")).copied().unwrap_or(0),
+                )
+            })
             .collect())
     }
 }
@@ -272,7 +288,9 @@ impl ConcurrencyLimiter for FailingLimiter {
         _key: &str,
         _limit: i32,
     ) -> SelectorResult<Option<Box<dyn FnOnce() + Send>>> {
-        Err(SelectorError::Concurrency("runtime store unavailable".into()))
+        Err(SelectorError::Concurrency(
+            "runtime store unavailable".into(),
+        ))
     }
     async fn current(&self, _key: &str) -> SelectorResult<i32> {
         Ok(0)
@@ -298,8 +316,16 @@ impl StickyStore for InMemorySticky {
             .filter(|(_, expiry)| *expiry > now)
             .map(|(id, _)| *id))
     }
-    async fn set(&self, key: &str, account_id: i64, expires_at: DateTime<Utc>) -> SelectorResult<()> {
-        self.entries.lock().unwrap().insert(key.to_string(), (account_id, expires_at));
+    async fn set(
+        &self,
+        key: &str,
+        account_id: i64,
+        expires_at: DateTime<Utc>,
+    ) -> SelectorResult<()> {
+        self.entries
+            .lock()
+            .unwrap()
+            .insert(key.to_string(), (account_id, expires_at));
         Ok(())
     }
     async fn delete_by_account(&self, account_id: i64) -> SelectorResult<()> {
@@ -397,15 +423,24 @@ fn prompt_cache_sticky_key_is_fixed_length_and_stable() {
 
 #[test]
 fn account_concurrency_limit_only_serializes_web_lite_image() {
-    let a = Account { max_concurrent: 4, ..Default::default() };
+    let a = Account {
+        max_concurrent: 4,
+        ..Default::default()
+    };
     assert_eq!(account_concurrency_limit(&a, "grok-imagine-image"), 1);
     assert_eq!(account_concurrency_limit(&a, "grok-chat-fast"), 4);
-    assert_eq!(account_concurrency_limit(&Account::default(), "grok-chat-fast"), 8);
+    assert_eq!(
+        account_concurrency_limit(&Account::default(), "grok-chat-fast"),
+        8
+    );
 }
 
 #[test]
 fn exploration_shuffle_behavior() {
-    let mut values = vec![candidate(build_account(1, 10, 1)), candidate(build_account(2, 1, 1))];
+    let mut values = vec![
+        candidate(build_account(1, 10, 1)),
+        candidate(build_account(2, 1, 1)),
+    ];
     maybe_explore_shuffle(&mut values, 0.0, || 0.0);
     assert_eq!(values[0].account.id, 1, "epsilon=0 should preserve order");
 
@@ -435,7 +470,10 @@ async fn prioritizes_due_quota_probe_once() {
     let loader = Arc::new(FakeLoader::default());
     let probe = build_account(1, 10, 1);
     let active = build_account(2, 200, 1);
-    loader.seed(Provider::GrokBuild, vec![candidate(probe.clone()), candidate(active.clone())]);
+    loader.seed(
+        Provider::GrokBuild,
+        vec![candidate(probe.clone()), candidate(active.clone())],
+    );
     let t = now();
     loader.seed_recovery(QuotaRecovery {
         account_id: 1,
@@ -448,10 +486,21 @@ async fn prioritizes_due_quota_probe_once() {
         last_confirmed_at: Some(t),
         updated_at: t,
     });
-    let selector = new_selector(loader.clone(), Arc::new(InMemoryLimiter::default()), Duration::zero());
+    let selector = new_selector(
+        loader.clone(),
+        Arc::new(InMemoryLimiter::default()),
+        Duration::zero(),
+    );
 
     let lease = selector
-        .acquire(Provider::GrokBuild, "grok-test", "", "", &HashSet::new(), true)
+        .acquire(
+            Provider::GrokBuild,
+            "grok-test",
+            "",
+            "",
+            &HashSet::new(),
+            true,
+        )
         .await
         .expect("due probe leased");
     assert_eq!(lease.account.id, 1);
@@ -470,13 +519,19 @@ async fn prioritizes_due_quota_probe_once() {
 
     // MarkSuccess 清 recovery（Go：QuotaRecovery → ErrNotFound）
     selector.mark_success(&probe, true).await;
-    assert!(!loader.recoveries.lock().unwrap().contains_key(&1), "recovery cleared");
+    assert!(
+        !loader.recoveries.lock().unwrap().contains_key(&1),
+        "recovery cleared"
+    );
 }
 
 #[tokio::test]
 async fn skips_quota_probe_before_due() {
     let loader = Arc::new(FakeLoader::default());
-    loader.seed(Provider::GrokBuild, vec![candidate(build_account(1, 100, 1))]);
+    loader.seed(
+        Provider::GrokBuild,
+        vec![candidate(build_account(1, 100, 1))],
+    );
     let t = now();
     loader.seed_recovery(QuotaRecovery {
         account_id: 1,
@@ -486,9 +541,20 @@ async fn skips_quota_probe_before_due() {
         updated_at: t,
         ..Default::default()
     });
-    let selector = new_selector(loader, Arc::new(InMemoryLimiter::default()), Duration::zero());
+    let selector = new_selector(
+        loader,
+        Arc::new(InMemoryLimiter::default()),
+        Duration::zero(),
+    );
     let err = selector
-        .acquire(Provider::GrokBuild, "grok-test", "", "", &HashSet::new(), true)
+        .acquire(
+            Provider::GrokBuild,
+            "grok-test",
+            "",
+            "",
+            &HashSet::new(),
+            true,
+        )
         .await
         .expect_err("no account before next probe");
     assert!(matches!(
@@ -505,7 +571,10 @@ async fn skips_quota_probe_before_due() {
 #[tokio::test]
 async fn claims_paid_billing_probe_after_period_end() {
     let loader = Arc::new(FakeLoader::default());
-    loader.seed(Provider::GrokBuild, vec![candidate(build_account(1, 100, 1))]);
+    loader.seed(
+        Provider::GrokBuild,
+        vec![candidate(build_account(1, 100, 1))],
+    );
     let t = now();
     loader.seed_recovery(QuotaRecovery {
         account_id: 1,
@@ -515,7 +584,11 @@ async fn claims_paid_billing_probe_after_period_end() {
         updated_at: t,
         ..Default::default()
     });
-    let selector = new_selector(loader, Arc::new(InMemoryLimiter::default()), Duration::zero());
+    let selector = new_selector(
+        loader,
+        Arc::new(InMemoryLimiter::default()),
+        Duration::zero(),
+    );
     let lease = selector
         .acquire(Provider::GrokBuild, "", "", "", &HashSet::new(), true)
         .await
@@ -530,27 +603,41 @@ async fn uses_paid_weekly_pool_as_web_quota_gate() {
     let mut a = web_account(1, WebTier::Super);
     a.max_concurrent = 1;
     loader.seed(Provider::GrokWeb, vec![candidate(a)]);
-    let selector = new_selector(loader.clone(), Arc::new(InMemoryLimiter::default()), Duration::zero());
+    let selector = new_selector(
+        loader.clone(),
+        Arc::new(InMemoryLimiter::default()),
+        Duration::zero(),
+    );
 
     // weekly 耗尽 → fast 请求被 weekly 闸门拦截（候选窗口即 weekly 门）
     let t = now();
     let reset = t + Duration::days(7);
-    loader.seed_model("grok-chat", vec![RoutingCandidate {
-        account: web_account(1, WebTier::Super),
-        quota: Some(QuotaWindow {
-            account_id: 0,
-            mode: "weekly".into(),
-            remaining: 0,
-            total: 10000,
-            reset_at: Some(reset),
-            synced_at: Some(now()),
-            source: QuotaSource::Upstream,
-            updated_at: now(),
-        }),
-        ..Default::default()
-    }]);
+    loader.seed_model(
+        "grok-chat",
+        vec![RoutingCandidate {
+            account: web_account(1, WebTier::Super),
+            quota: Some(QuotaWindow {
+                account_id: 0,
+                mode: "weekly".into(),
+                remaining: 0,
+                total: 10000,
+                reset_at: Some(reset),
+                synced_at: Some(now()),
+                source: QuotaSource::Upstream,
+                updated_at: now(),
+            }),
+            ..Default::default()
+        }],
+    );
     let err = selector
-        .acquire(Provider::GrokWeb, "grok-chat", "fast", "", &HashSet::new(), false)
+        .acquire(
+            Provider::GrokWeb,
+            "grok-chat",
+            "fast",
+            "",
+            &HashSet::new(),
+            false,
+        )
         .await
         .expect_err("exhausted weekly blocks stale fast");
     assert!(matches!(
@@ -559,20 +646,23 @@ async fn uses_paid_weekly_pool_as_web_quota_gate() {
     ));
 
     // weekly 恢复 → fast 0 也走 weekly 模式
-    loader.seed_model("grok-chat", vec![RoutingCandidate {
-        account: web_account(1, WebTier::Super),
-        quota: Some(QuotaWindow {
-            account_id: 0,
-            mode: "weekly".into(),
-            remaining: 8900,
-            total: 10000,
-            reset_at: Some(now() + Duration::days(7)),
-            synced_at: Some(now()),
-            source: QuotaSource::Upstream,
-            updated_at: now(),
-        }),
-        ..Default::default()
-    }]);
+    loader.seed_model(
+        "grok-chat",
+        vec![RoutingCandidate {
+            account: web_account(1, WebTier::Super),
+            quota: Some(QuotaWindow {
+                account_id: 0,
+                mode: "weekly".into(),
+                remaining: 8900,
+                total: 10000,
+                reset_at: Some(now() + Duration::days(7)),
+                synced_at: Some(now()),
+                source: QuotaSource::Upstream,
+                updated_at: now(),
+            }),
+            ..Default::default()
+        }],
+    );
     selector.invalidate_candidates(Provider::GrokWeb);
     let lease = acquire_ok(&selector, Provider::GrokWeb, "grok-chat", "fast").await;
     assert_eq!(lease.quota_mode.as_deref(), Some("weekly"));
@@ -587,14 +677,28 @@ async fn keeps_web_quota_modes_isolated() {
     fast.reset_at = Some(now() + Duration::hours(1));
     let mut auto = fresh_window("auto", 5, 10);
     auto.reset_at = Some(now() + Duration::hours(1));
-    loader.seed(Provider::GrokWeb, vec![RoutingCandidate {
-        account: a,
-        quota: Some(fast),
-        ..Default::default()
-    }]);
-    let selector = new_selector(loader.clone(), Arc::new(InMemoryLimiter::default()), Duration::zero());
+    loader.seed(
+        Provider::GrokWeb,
+        vec![RoutingCandidate {
+            account: a,
+            quota: Some(fast),
+            ..Default::default()
+        }],
+    );
+    let selector = new_selector(
+        loader.clone(),
+        Arc::new(InMemoryLimiter::default()),
+        Duration::zero(),
+    );
     let err = selector
-        .acquire(Provider::GrokWeb, "grok-chat", "fast", "", &HashSet::new(), false)
+        .acquire(
+            Provider::GrokWeb,
+            "grok-chat",
+            "fast",
+            "",
+            &HashSet::new(),
+            false,
+        )
         .await
         .expect_err("exhausted fast blocked");
     assert!(matches!(
@@ -602,11 +706,14 @@ async fn keeps_web_quota_modes_isolated() {
         SelectorError::Unavailable(e) if e.reason == SelectionUnavailableReason::QuotaExhausted
     ));
     // auto 模式单独有额度 → 放行
-    loader.seed(Provider::GrokWeb, vec![RoutingCandidate {
-        account: web_account(1, WebTier::Super),
-        quota: Some(auto),
-        ..Default::default()
-    }]);
+    loader.seed(
+        Provider::GrokWeb,
+        vec![RoutingCandidate {
+            account: web_account(1, WebTier::Super),
+            quota: Some(auto),
+            ..Default::default()
+        }],
+    );
     selector.invalidate_candidates(Provider::GrokWeb);
     let lease = acquire_ok(&selector, Provider::GrokWeb, "grok-chat-auto", "auto").await;
     assert_eq!(lease.account.id, 1);
@@ -617,20 +724,36 @@ async fn keeps_web_quota_modes_isolated() {
 async fn honors_web_tier_pool_order_before_account_priority() {
     let loader = Arc::new(FakeLoader::default());
     let mut accounts = Vec::new();
-    for (idx, tier) in [WebTier::Basic, WebTier::Super, WebTier::Heavy].iter().enumerate() {
+    for (idx, tier) in [WebTier::Basic, WebTier::Super, WebTier::Heavy]
+        .iter()
+        .enumerate()
+    {
         let mut a = web_account(idx as i64 + 1, *tier);
         a.priority = 300 - idx as i32 * 100;
         a.max_concurrent = 1;
         accounts.push(candidate(a));
     }
     loader.seed(Provider::GrokWeb, accounts);
-    let mut selector = new_selector(loader, Arc::new(InMemoryLimiter::default()), Duration::zero());
+    let mut selector = new_selector(
+        loader,
+        Arc::new(InMemoryLimiter::default()),
+        Duration::zero(),
+    );
     selector.set_tier_orders(Arc::new(StaticTierOrder(vec![
-        WebTier::Heavy, WebTier::Super, WebTier::Basic,
+        WebTier::Heavy,
+        WebTier::Super,
+        WebTier::Basic,
     ])));
     // 需要给 Selector 注入 tierOrders —— 上面用 new_selector(None)；改用 builder
     let lease = selector
-        .acquire(Provider::GrokWeb, "fast-prefer-best", "fast", "", &HashSet::new(), false)
+        .acquire(
+            Provider::GrokWeb,
+            "fast-prefer-best",
+            "fast",
+            "",
+            &HashSet::new(),
+            false,
+        )
         .await
         .expect("tier-ordered lease");
     assert_eq!(lease.account.web_tier, WebTier::Heavy);
@@ -641,10 +764,17 @@ async fn build_acquire_avoids_full_table_list() {
     let loader = Arc::new(FakeLoader::default());
     loader.seed(
         Provider::GrokBuild,
-        vec![candidate(build_account(1, 100, 1)), candidate(build_account(2, 1, 1))],
+        vec![
+            candidate(build_account(1, 100, 1)),
+            candidate(build_account(2, 1, 1)),
+        ],
     );
     let dispatch = Arc::new(StubBuildDispatch::new(vec![1]));
-    let mut selector = new_selector(loader.clone(), Arc::new(InMemoryLimiter::default()), Duration::zero());
+    let mut selector = new_selector(
+        loader.clone(),
+        Arc::new(InMemoryLimiter::default()),
+        Duration::zero(),
+    );
     selector.set_build_dispatch_source(dispatch);
 
     let lease = acquire_ok(&selector, Provider::GrokBuild, "grok-test", "").await;
@@ -656,7 +786,10 @@ async fn build_acquire_avoids_full_table_list() {
 #[tokio::test]
 async fn build_acquire_merges_due_normal_probe_ids() {
     let loader = Arc::new(FakeLoader::default());
-    loader.seed(Provider::GrokBuild, vec![candidate(build_account(1, 10, 1))]);
+    loader.seed(
+        Provider::GrokBuild,
+        vec![candidate(build_account(1, 10, 1))],
+    );
     let t = now();
     loader.seed_recovery(QuotaRecovery {
         account_id: 1,
@@ -671,11 +804,22 @@ async fn build_acquire_merges_due_normal_probe_ids() {
         normal_probe_ids: vec![1],
         warm_calls: Mutex::new(0),
     });
-    let mut selector = new_selector(loader.clone(), Arc::new(InMemoryLimiter::default()), Duration::zero());
+    let mut selector = new_selector(
+        loader.clone(),
+        Arc::new(InMemoryLimiter::default()),
+        Duration::zero(),
+    );
     selector.set_build_dispatch_source(dispatch);
 
     let lease = selector
-        .acquire(Provider::GrokBuild, "grok-test", "", "", &HashSet::new(), true)
+        .acquire(
+            Provider::GrokBuild,
+            "grok-test",
+            "",
+            "",
+            &HashSet::new(),
+            true,
+        )
         .await
         .expect("due normal probe leased");
     assert_eq!(lease.account.id, 1);
@@ -702,17 +846,35 @@ async fn applies_persisted_cooldown_only_to_matching_model() {
             ..Default::default()
         }],
     );
-    loader.seed(Provider::GrokBuild, vec![candidate(build_account(1, 100, 1))]);
-    let selector = new_selector(loader, Arc::new(InMemoryLimiter::default()), Duration::zero());
+    loader.seed(
+        Provider::GrokBuild,
+        vec![candidate(build_account(1, 100, 1))],
+    );
+    let selector = new_selector(
+        loader,
+        Arc::new(InMemoryLimiter::default()),
+        Duration::zero(),
+    );
 
     let err = selector
-        .acquire(Provider::GrokBuild, "limited-model", "", "", &HashSet::new(), false)
+        .acquire(
+            Provider::GrokBuild,
+            "limited-model",
+            "",
+            "",
+            &HashSet::new(),
+            false,
+        )
         .await
         .expect_err("matching model cooldown ignored");
     match err {
         SelectorError::Unavailable(e) => {
             assert_eq!(e.reason, SelectionUnavailableReason::ModelCooling);
-            assert!(e.retry_after >= Duration::minutes(30), "retry_after = {}", e.retry_after);
+            assert!(
+                e.retry_after >= Duration::minutes(30),
+                "retry_after = {}",
+                e.retry_after
+            );
         }
         other => panic!("unexpected error: {other}"),
     }
@@ -733,11 +895,22 @@ async fn treats_zero_total_model_quota_as_unknown() {
             ..Default::default()
         }],
     );
-    let selector = new_selector(loader.clone(), Arc::new(InMemoryLimiter::default()), Duration::zero());
+    let selector = new_selector(
+        loader.clone(),
+        Arc::new(InMemoryLimiter::default()),
+        Duration::zero(),
+    );
 
     // 0/0：闸门不可靠，无正向证据 → blocked
     let err = selector
-        .acquire(Provider::GrokWeb, "grok-imagine-image", "imagine", "", &HashSet::new(), false)
+        .acquire(
+            Provider::GrokWeb,
+            "grok-imagine-image",
+            "imagine",
+            "",
+            &HashSet::new(),
+            false,
+        )
         .await
         .expect_err("0/0 imagine blocked");
     assert!(matches!(
@@ -756,7 +929,14 @@ async fn treats_zero_total_model_quota_as_unknown() {
     );
     selector.invalidate_candidates(Provider::GrokWeb);
     let err = selector
-        .acquire(Provider::GrokWeb, "grok-imagine-image", "imagine", "", &HashSet::new(), false)
+        .acquire(
+            Provider::GrokWeb,
+            "grok-imagine-image",
+            "imagine",
+            "",
+            &HashSet::new(),
+            false,
+        )
         .await
         .expect_err("0/10 imagine blocked");
     assert!(matches!(
@@ -781,7 +961,13 @@ async fn treats_zero_total_model_quota_as_unknown() {
         }],
     );
     selector.invalidate_candidates(Provider::GrokWeb);
-    let lease = acquire_ok(&selector, Provider::GrokWeb, "grok-imagine-image", "imagine").await;
+    let lease = acquire_ok(
+        &selector,
+        Provider::GrokWeb,
+        "grok-imagine-image",
+        "imagine",
+    )
+    .await;
     assert_eq!(lease.account.id, 1);
 }
 
@@ -805,16 +991,35 @@ async fn serializes_web_lite_image_per_account() {
             },
         ],
     );
-    let selector = new_selector(loader, Arc::new(InMemoryLimiter::default()), Duration::zero());
+    let selector = new_selector(
+        loader,
+        Arc::new(InMemoryLimiter::default()),
+        Duration::zero(),
+    );
     selector
         .mark_model_success(1, "grok-imagine-image")
         .await
         .expect("mark success");
 
-    let first = acquire_ok(&selector, Provider::GrokWeb, "grok-imagine-image", "imagine").await;
+    let first = acquire_ok(
+        &selector,
+        Provider::GrokWeb,
+        "grok-imagine-image",
+        "imagine",
+    )
+    .await;
     assert_eq!(first.account.id, 1, "recent success preferred");
-    let second = acquire_ok(&selector, Provider::GrokWeb, "grok-imagine-image", "imagine").await;
-    assert_eq!(second.account.id, 2, "alternate on second (limit 1 per account)");
+    let second = acquire_ok(
+        &selector,
+        Provider::GrokWeb,
+        "grok-imagine-image",
+        "imagine",
+    )
+    .await;
+    assert_eq!(
+        second.account.id, 2,
+        "alternate on second (limit 1 per account)"
+    );
     first.release();
     second.release();
 }
@@ -822,7 +1027,10 @@ async fn serializes_web_lite_image_per_account() {
 #[tokio::test]
 async fn waits_briefly_for_account_capacity() {
     let loader = Arc::new(FakeLoader::default());
-    loader.seed(Provider::GrokBuild, vec![candidate(build_account(1, 100, 1))]);
+    loader.seed(
+        Provider::GrokBuild,
+        vec![candidate(build_account(1, 100, 1))],
+    );
     let selector = Arc::new(new_selector(
         loader,
         Arc::new(InMemoryLimiter::default()),
@@ -840,22 +1048,29 @@ async fn waits_briefly_for_account_capacity() {
             .await
     });
     tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-    assert!(!handle.is_finished(), "second acquire must wait for capacity");
+    assert!(
+        !handle.is_finished(),
+        "second acquire must wait for capacity"
+    );
     first.release();
     // timeout(Elapsed) → JoinHandle(JoinError) → acquire(SelectorError) 三层
-    let second: SelectionLease = match tokio::time::timeout(std::time::Duration::from_secs(2), handle).await {
-        Ok(Ok(Ok(lease))) => lease,
-        Ok(Ok(Err(e))) => panic!("second acquire failed: {e}"),
-        Ok(Err(e)) => panic!("join failed: {e}"),
-        Err(_) => panic!("second acquire timed out"),
-    };
+    let second: SelectionLease =
+        match tokio::time::timeout(std::time::Duration::from_secs(2), handle).await {
+            Ok(Ok(Ok(lease))) => lease,
+            Ok(Ok(Err(e))) => panic!("second acquire failed: {e}"),
+            Ok(Err(e)) => panic!("join failed: {e}"),
+            Err(_) => panic!("second acquire timed out"),
+        };
     second.release();
 }
 
 #[tokio::test]
 async fn propagates_concurrency_store_failure() {
     let loader = Arc::new(FakeLoader::default());
-    loader.seed(Provider::GrokBuild, vec![candidate(build_account(1, 100, 1))]);
+    loader.seed(
+        Provider::GrokBuild,
+        vec![candidate(build_account(1, 100, 1))],
+    );
     let selector = new_selector(loader, Arc::new(FailingLimiter), Duration::zero());
     let err = selector
         .acquire(Provider::GrokBuild, "", "", "", &HashSet::new(), true)
@@ -869,7 +1084,11 @@ async fn propagates_concurrency_store_failure() {
 #[tokio::test]
 async fn ranks_recent_model_success_before_unknown_and_soft_stop() {
     let loader = Arc::new(FakeLoader::default());
-    let selector = new_selector(loader, Arc::new(InMemoryLimiter::default()), Duration::zero());
+    let selector = new_selector(
+        loader,
+        Arc::new(InMemoryLimiter::default()),
+        Duration::zero(),
+    );
     selector
         .mark_model_soft_stop(1, "grok-imagine-image")
         .await
@@ -895,12 +1114,19 @@ async fn ranks_recent_model_success_before_unknown_and_soft_stop() {
 #[tokio::test]
 async fn model_outcome_does_not_affect_other_models() {
     let loader = Arc::new(FakeLoader::default());
-    let selector = new_selector(loader, Arc::new(InMemoryLimiter::default()), Duration::zero());
+    let selector = new_selector(
+        loader,
+        Arc::new(InMemoryLimiter::default()),
+        Duration::zero(),
+    );
     selector
         .mark_model_soft_stop(1, "grok-imagine-image")
         .await
         .expect("soft stop");
-    let mut values = vec![candidate(build_account(1, 1, 1)), candidate(build_account(2, 1, 1))];
+    let mut values = vec![
+        candidate(build_account(1, 1, 1)),
+        candidate(build_account(2, 1, 1)),
+    ];
     selector
         .sort_candidates(&mut values, now(), &[], "grok-fast")
         .await
@@ -918,7 +1144,10 @@ async fn uses_batch_concurrency_snapshot() {
         counts.insert("account:2".into(), 1);
     }
     let selector = new_selector(loader, Arc::new(limiter), Duration::zero());
-    let mut values = vec![candidate(build_account(1, 1, 1)), candidate(build_account(2, 1, 1))];
+    let mut values = vec![
+        candidate(build_account(1, 1, 1)),
+        candidate(build_account(2, 1, 1)),
+    ];
     selector
         .sort_candidates(&mut values, now(), &[], "model")
         .await
@@ -945,7 +1174,11 @@ async fn consumes_only_matching_quota_snapshot() {
             ..Default::default()
         }],
     );
-    let selector = new_selector(loader, Arc::new(InMemoryLimiter::default()), Duration::zero());
+    let selector = new_selector(
+        loader,
+        Arc::new(InMemoryLimiter::default()),
+        Duration::zero(),
+    );
     let first = acquire_ok(&selector, Provider::GrokWeb, "grok-chat", "fast").await;
     assert_eq!(first.account.id, 7);
     first.release();
@@ -953,7 +1186,14 @@ async fn consumes_only_matching_quota_snapshot() {
     // 本地扣减应用到候选快照：3-3=0 → 下次 acquire 命中耗尽闸门
     selector.consume_quota(Provider::GrokWeb, 7, "fast", 3);
     let err = selector
-        .acquire(Provider::GrokWeb, "grok-chat", "fast", "", &HashSet::new(), false)
+        .acquire(
+            Provider::GrokWeb,
+            "grok-chat",
+            "fast",
+            "",
+            &HashSet::new(),
+            false,
+        )
         .await
         .expect_err("consumed quota blocks next acquire");
     assert!(matches!(

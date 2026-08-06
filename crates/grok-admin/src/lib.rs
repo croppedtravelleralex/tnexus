@@ -30,7 +30,9 @@ pub use accounts::{
 };
 pub use admin_router::{AdminDomains, AdminHttpResponse, AdminRouter};
 pub use audits::{AuditAdminService, AuditEntryView, AuditStore, AuditSummaryView};
-pub use chrome_tickets::{ChromeTicketService, ChromeTicketStats, ChromeTicketStore, ChromeTicketView};
+pub use chrome_tickets::{
+    ChromeTicketService, ChromeTicketStats, ChromeTicketStore, ChromeTicketView,
+};
 pub use client_keys::{ClientKeyAdminService, ClientKeyInput, ClientKeyStore, ClientKeyView};
 pub use dashboard::{DashboardService, DashboardStore, DashboardView};
 pub use domain::{Admin, Session};

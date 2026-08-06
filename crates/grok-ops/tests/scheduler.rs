@@ -115,8 +115,16 @@ async fn failing_task_records_error_and_restarts() {
 async fn status_snapshot_lists_all_tasks_sorted() {
     let count = Arc::new(AtomicU64::new(0));
     let mut scheduler = TaskScheduler::new();
-    scheduler.add_task("beta", Duration::from_millis(5), counter_task(Arc::clone(&count), 0, 0));
-    scheduler.add_task("alpha", Duration::from_millis(5), counter_task(Arc::clone(&count), 0, 0));
+    scheduler.add_task(
+        "beta",
+        Duration::from_millis(5),
+        counter_task(Arc::clone(&count), 0, 0),
+    );
+    scheduler.add_task(
+        "alpha",
+        Duration::from_millis(5),
+        counter_task(Arc::clone(&count), 0, 0),
+    );
     let handles = scheduler.spawn_all();
 
     tokio::time::sleep(Duration::from_millis(60)).await;
@@ -158,12 +166,7 @@ impl FakeWatcher {
 impl SettingsWatcher for FakeWatcher {
     async fn poll_change(&self) -> Result<bool, grok_ops::error::OpsError> {
         self.poll_calls.fetch_add(1, Ordering::SeqCst);
-        Ok(self
-            .pending
-            .lock()
-            .unwrap()
-            .pop_front()
-            .unwrap_or(false))
+        Ok(self.pending.lock().unwrap().pop_front().unwrap_or(false))
     }
 }
 
@@ -203,8 +206,15 @@ async fn settings_watcher_triggers_change_callback() {
     }
 
     let status = scheduler.task_status("settings-listener").unwrap();
-    assert!(status.attempts >= 5, "watcher polled at least 5 times: {status:?}");
-    assert_eq!(changes.load(Ordering::SeqCst), 3, "three true polls triggered callback");
+    assert!(
+        status.attempts >= 5,
+        "watcher polled at least 5 times: {status:?}"
+    );
+    assert_eq!(
+        changes.load(Ordering::SeqCst),
+        3,
+        "three true polls triggered callback"
+    );
 
     for h in handles {
         h.abort();

@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use grok_conversation::NormalizedChatInput;
 use grok_provider_build::{BuildAdapter, Config as BuildConfig};
@@ -161,7 +161,10 @@ mod tests {
         assert_eq!(input[0]["content"][0]["type"], "input_text");
         assert_eq!(input[0]["content"][0]["text"], "[user]\nhello");
         assert_eq!(input[0]["content"][1]["type"], "input_image");
-        assert_eq!(input[0]["content"][1]["image_url"], "data:image/png;base64,AAAA");
+        assert_eq!(
+            input[0]["content"][1]["image_url"],
+            "data:image/png;base64,AAAA"
+        );
     }
 
     #[test]
@@ -180,9 +183,24 @@ mod tests {
     #[test]
     fn joins_delta_contents() {
         let deltas = vec![
-            ChatDelta { index: 0, role: Some("assistant".into()), content: Some("hel".into()), finish_reason: None },
-            ChatDelta { index: 0, role: None, content: Some("lo".into()), finish_reason: None },
-            ChatDelta { index: 0, role: None, content: None, finish_reason: Some("stop".into()) },
+            ChatDelta {
+                index: 0,
+                role: Some("assistant".into()),
+                content: Some("hel".into()),
+                finish_reason: None,
+            },
+            ChatDelta {
+                index: 0,
+                role: None,
+                content: Some("lo".into()),
+                finish_reason: None,
+            },
+            ChatDelta {
+                index: 0,
+                role: None,
+                content: None,
+                finish_reason: Some("stop".into()),
+            },
         ];
         assert_eq!(join_deltas(&deltas), "hello");
     }

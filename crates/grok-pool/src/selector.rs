@@ -12,8 +12,8 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use grok_domain::{
-    Account, AuthStatus, Billing, ModelQuotaBlock, ModelState, ModelStatus, Provider, QuotaRecovery,
-    QuotaRecoveryKind, QuotaRecoveryStatus, RoutingCandidate, WebLane, WebTier,
+    Account, AuthStatus, Billing, ModelQuotaBlock, ModelState, ModelStatus, Provider,
+    QuotaRecovery, QuotaRecoveryKind, QuotaRecoveryStatus, RoutingCandidate, WebLane, WebTier,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -214,7 +214,12 @@ pub trait ConcurrencyLimiter: Send + Sync {
 #[async_trait]
 pub trait StickyStore: Send + Sync {
     async fn get(&self, key: &str, now: DateTime<Utc>) -> SelectorResult<Option<i64>>;
-    async fn set(&self, key: &str, account_id: i64, expires_at: DateTime<Utc>) -> SelectorResult<()>;
+    async fn set(
+        &self,
+        key: &str,
+        account_id: i64,
+        expires_at: DateTime<Utc>,
+    ) -> SelectorResult<()>;
     async fn delete_by_account(&self, account_id: i64) -> SelectorResult<()>;
 }
 
@@ -284,7 +289,10 @@ fn merge_ids(first: &[i64], second: &[i64]) -> Vec<i64> {
 
 /// 账号单模型并发上限（Go `accountConcurrencyLimit`）：lite image 恒 1。
 pub fn account_concurrency_limit(account: &Account, upstream_model: &str) -> i32 {
-    if upstream_model.trim().eq_ignore_ascii_case(WEB_LITE_IMAGE_UPSTREAM_MODEL) {
+    if upstream_model
+        .trim()
+        .eq_ignore_ascii_case(WEB_LITE_IMAGE_UPSTREAM_MODEL)
+    {
         return 1;
     }
     if account.max_concurrent > 0 {
@@ -321,17 +329,24 @@ pub fn effective_quota_mode(candidate: &RoutingCandidate, fallback: &str) -> Opt
 
 /// 是否需要 imagine 额度准入（Go `requiresImagineQuotaAdmission`）。
 pub fn requires_imagine_quota_admission(upstream_model: &str, quota_mode: &str) -> bool {
-    upstream_model.trim().eq_ignore_ascii_case(WEB_LITE_IMAGE_UPSTREAM_MODEL)
+    upstream_model
+        .trim()
+        .eq_ignore_ascii_case(WEB_LITE_IMAGE_UPSTREAM_MODEL)
         || quota_mode.trim() == "imagine"
 }
 
 /// 是否需要 Chrome 票准入（Go `requiresChromeTicketAdmission`）。
 pub fn requires_chrome_ticket_admission(upstream_model: &str) -> bool {
-    upstream_model.trim().eq_ignore_ascii_case(WEB_LITE_IMAGE_UPSTREAM_MODEL)
+    upstream_model
+        .trim()
+        .eq_ignore_ascii_case(WEB_LITE_IMAGE_UPSTREAM_MODEL)
 }
 
 /// imagine 额度是否可准入（Go `candidateImagineQuotaAdmissible`）。
-pub fn candidate_imagine_quota_admissible(candidate: &RoutingCandidate, now: DateTime<Utc>) -> bool {
+pub fn candidate_imagine_quota_admissible(
+    candidate: &RoutingCandidate,
+    now: DateTime<Utc>,
+) -> bool {
     grok_domain::imagine_quota::imagine_dispatch_quota_admissible(
         candidate.quota.as_ref(),
         candidate.model_state.as_ref(),
@@ -432,7 +447,10 @@ pub fn compare_candidates(
         return left.supports_model.cmp(&right.supports_model).reverse();
     }
     if left.model_capability_known != right.model_capability_known {
-        return left.model_capability_known.cmp(&right.model_capability_known).reverse();
+        return left
+            .model_capability_known
+            .cmp(&right.model_capability_known)
+            .reverse();
     }
     if l.provider == Provider::GrokBuild && r.provider == Provider::GrokBuild {
         let lv = !l.observed_model.as_deref().unwrap_or("").trim().is_empty();
@@ -451,9 +469,20 @@ pub fn compare_candidates(
     if lr != rr {
         return lr.cmp(&rr);
     }
-    if upstream_model.trim().eq_ignore_ascii_case(WEB_LITE_IMAGE_UPSTREAM_MODEL) {
-        let (lk, lc) = ctx.ticket_counts.get(&l.id).map(|c| (true, *c)).unwrap_or((false, 0));
-        let (rk, rc) = ctx.ticket_counts.get(&r.id).map(|c| (true, *c)).unwrap_or((false, 0));
+    if upstream_model
+        .trim()
+        .eq_ignore_ascii_case(WEB_LITE_IMAGE_UPSTREAM_MODEL)
+    {
+        let (lk, lc) = ctx
+            .ticket_counts
+            .get(&l.id)
+            .map(|c| (true, *c))
+            .unwrap_or((false, 0));
+        let (rk, rc) = ctx
+            .ticket_counts
+            .get(&r.id)
+            .map(|c| (true, *c))
+            .unwrap_or((false, 0));
         if lk != rk {
             return lk.cmp(&rk).reverse();
         }
@@ -465,8 +494,16 @@ pub fn compare_candidates(
         if lf != rf {
             return lf.cmp(&rf).reverse();
         }
-        let (lok, lq) = ctx.imagine_remaining.get(&l.id).map(|q| (true, *q)).unwrap_or((false, 0));
-        let (rok, rq) = ctx.imagine_remaining.get(&r.id).map(|q| (true, *q)).unwrap_or((false, 0));
+        let (lok, lq) = ctx
+            .imagine_remaining
+            .get(&l.id)
+            .map(|q| (true, *q))
+            .unwrap_or((false, 0));
+        let (rok, rq) = ctx
+            .imagine_remaining
+            .get(&r.id)
+            .map(|q| (true, *q))
+            .unwrap_or((false, 0));
         if lok != rok {
             return lok.cmp(&rok).reverse();
         }
@@ -626,7 +663,14 @@ impl Selector {
                 continue;
             }
             // Build：未通过能力探测的号不进真实流量（验证池）。
-            if provider == Provider::GrokBuild && value.observed_model.as_deref().unwrap_or("").trim().is_empty() {
+            if provider == Provider::GrokBuild
+                && value
+                    .observed_model
+                    .as_deref()
+                    .unwrap_or("")
+                    .trim()
+                    .is_empty()
+            {
                 continue;
             }
             considered += 1;
@@ -641,9 +685,7 @@ impl Selector {
                 }
                 continue;
             }
-            if !self.disable_cooldown
-                && value.cooldown_until.is_some_and(|until| now < until)
-            {
+            if !self.disable_cooldown && value.cooldown_until.is_some_and(|until| now < until) {
                 cooling += 1;
                 if let Some(until) = value.cooldown_until {
                     earliest_retry = earlier_future(earliest_retry, until, now);
@@ -652,9 +694,7 @@ impl Selector {
             }
             if let Some(recovery) = &candidate.recovery {
                 if recovery.status != QuotaRecoveryStatus::Active {
-                    if allow_quota_probe
-                        && recovery.next_probe_at.is_some_and(|at| !(now < at))
-                    {
+                    if allow_quota_probe && recovery.next_probe_at.is_some_and(|at| !(now < at)) {
                         probe_candidates.push(candidate);
                     } else {
                         quota += 1;
@@ -665,7 +705,11 @@ impl Selector {
                     continue;
                 }
             }
-            if candidate.billing.as_ref().is_some_and(|b| b.is_exhausted(value.minimum_remaining as f64)) {
+            if candidate
+                .billing
+                .as_ref()
+                .is_some_and(|b| b.is_exhausted(value.minimum_remaining as f64))
+            {
                 quota += 1;
                 continue;
             }
@@ -686,7 +730,8 @@ impl Selector {
                 quota += 1;
                 if let Some(w) = &candidate.quota {
                     if let Some(synced) = w.synced_at {
-                        earliest_retry = earlier_future(earliest_retry, synced + IMAGINE_QUOTA_FRESH_TTL, now);
+                        earliest_retry =
+                            earlier_future(earliest_retry, synced + IMAGINE_QUOTA_FRESH_TTL, now);
                     }
                 }
                 continue;
@@ -721,10 +766,14 @@ impl Selector {
         if !probe_candidates.is_empty() {
             let mut sorted = probe_candidates;
             let tier_order = self.resolve_tier_order(provider, upstream_model);
-            self.sort_candidates(&mut sorted, now, &tier_order, upstream_model).await?;
+            self.sort_candidates(&mut sorted, now, &tier_order, upstream_model)
+                .await?;
             maybe_explore_shuffle(&mut sorted, self.exploration_epsilon, || self.random_unit());
             for candidate in sorted {
-                let Some(mut lease) = self.claim_account_slot(&candidate.account, upstream_model).await? else {
+                let Some(mut lease) = self
+                    .claim_account_slot(&candidate.account, upstream_model)
+                    .await?
+                else {
                     continue;
                 };
                 let claimed = self
@@ -768,22 +817,38 @@ impl Selector {
         loop {
             if provider == Provider::GrokBuild {
                 self.order_build_dispatch_candidates(&mut normal_candidates);
-                maybe_explore_shuffle(&mut normal_candidates, self.exploration_epsilon, || self.random_unit());
+                maybe_explore_shuffle(&mut normal_candidates, self.exploration_epsilon, || {
+                    self.random_unit()
+                });
             } else {
                 let current_time = Utc::now();
                 let tier_order = self.resolve_tier_order(provider, upstream_model);
-                self.sort_candidates(&mut normal_candidates, current_time, &tier_order, upstream_model)
-                    .await?;
-                maybe_explore_shuffle(&mut normal_candidates, self.exploration_epsilon, || self.random_unit());
+                self.sort_candidates(
+                    &mut normal_candidates,
+                    current_time,
+                    &tier_order,
+                    upstream_model,
+                )
+                .await?;
+                maybe_explore_shuffle(&mut normal_candidates, self.exploration_epsilon, || {
+                    self.random_unit()
+                });
             }
             for candidate in &normal_candidates {
-                let Some(mut lease) = self.claim_account_slot(&candidate.account, upstream_model).await? else {
+                let Some(mut lease) = self
+                    .claim_account_slot(&candidate.account, upstream_model)
+                    .await?
+                else {
                     continue;
                 };
                 if !sticky_key.is_empty() {
                     if let Some(sticky) = &self.sticky {
                         if let Err(e) = sticky
-                            .set(&sticky_key, candidate.account.id, Utc::now() + self.sticky_ttl)
+                            .set(
+                                &sticky_key,
+                                candidate.account.id,
+                                Utc::now() + self.sticky_ttl,
+                            )
                             .await
                         {
                             lease.take_release();
@@ -872,20 +937,34 @@ impl Selector {
         match provider {
             Provider::GrokBuild => {
                 if let Some(source) = &self.build_dispatch {
-                    return self.load_build_candidates_by_index(source.as_ref(), upstream_model, quota_mode, now).await;
+                    return self
+                        .load_build_candidates_by_index(
+                            source.as_ref(),
+                            upstream_model,
+                            quota_mode,
+                            now,
+                        )
+                        .await;
                 }
             }
             Provider::GrokWeb => {
                 if let Some(source) = &self.web_dispatch {
                     let lane = WebLane::Image; // G3-P4 固定 Image 轨；Chat 轨后续接入
                     return self
-                        .load_web_candidates_by_index(source.as_ref(), lane, upstream_model, quota_mode, now)
+                        .load_web_candidates_by_index(
+                            source.as_ref(),
+                            lane,
+                            upstream_model,
+                            quota_mode,
+                            now,
+                        )
                         .await;
                 }
             }
             Provider::GrokConsole => {}
         }
-        self.load_candidates(provider, upstream_model, quota_mode, now).await
+        self.load_candidates(provider, upstream_model, quota_mode, now)
+            .await
     }
 
     /// Build 索引水合（Go `loadBuildCandidatesByIndex`）。
@@ -920,7 +999,12 @@ impl Selector {
             }
             let values = self
                 .loader
-                .list_routing_candidates_by_ids(Provider::GrokBuild, upstream_model, quota_mode, &ids)
+                .list_routing_candidates_by_ids(
+                    Provider::GrokBuild,
+                    upstream_model,
+                    quota_mode,
+                    &ids,
+                )
                 .await?;
             if !values.is_empty() {
                 return Ok(values);
@@ -946,7 +1030,10 @@ impl Selector {
         let mut batch = BUILD_DISPATCH_HYDRATE_INITIAL;
         loop {
             let mut dispatch_ids = source.ordered_web_dispatch_ids(lane, batch);
-            if upstream_model.trim().eq_ignore_ascii_case(WEB_LITE_IMAGE_UPSTREAM_MODEL) {
+            if upstream_model
+                .trim()
+                .eq_ignore_ascii_case(WEB_LITE_IMAGE_UPSTREAM_MODEL)
+            {
                 dispatch_ids = merge_dispatch_ids(&self.ticket_holder_ids(), &dispatch_ids);
             }
             if dispatch_ids.is_empty() {
@@ -962,7 +1049,12 @@ impl Selector {
             }
             let values = self
                 .loader
-                .list_routing_candidates_by_ids(Provider::GrokWeb, upstream_model, quota_mode, &dispatch_ids)
+                .list_routing_candidates_by_ids(
+                    Provider::GrokWeb,
+                    upstream_model,
+                    quota_mode,
+                    &dispatch_ids,
+                )
                 .await?;
             if !values.is_empty() {
                 return Ok(values);
@@ -1006,7 +1098,8 @@ impl Selector {
             .list_routing_candidates(provider, upstream_model, quota_mode)
             .await?;
         let mut st = self.state();
-        st.candidates.insert(key, (values.clone(), now + CANDIDATE_CACHE_TTL));
+        st.candidates
+            .insert(key, (values.clone(), now + CANDIDATE_CACHE_TTL));
         Ok(values)
     }
 
@@ -1048,12 +1141,7 @@ impl Selector {
     }
 
     /// 失败记账（Go `MarkFailure`）：指数退避冷却 + 缓存失效；401/402/403/429 清粘滞。
-    pub async fn mark_failure(
-        &self,
-        account: &Account,
-        status: i32,
-        retry_after: Duration,
-    ) {
+    pub async fn mark_failure(&self, account: &Account, status: i32, retry_after: Duration) {
         if self.disable_cooldown {
             return;
         }
@@ -1090,7 +1178,11 @@ impl Selector {
     }
 
     /// 模型 soft-stop 退避（Go `MarkModelSoftStop`）。
-    pub async fn mark_model_soft_stop(&self, account_id: i64, upstream_model: &str) -> SelectorResult<()> {
+    pub async fn mark_model_soft_stop(
+        &self,
+        account_id: i64,
+        upstream_model: &str,
+    ) -> SelectorResult<()> {
         if self.disable_cooldown {
             return Ok(());
         }
@@ -1141,16 +1233,23 @@ impl Selector {
     }
 
     /// 模型成功记账（Go `MarkModelSuccess`）。
-    pub async fn mark_model_success(&self, account_id: i64, upstream_model: &str) -> SelectorResult<()> {
+    pub async fn mark_model_success(
+        &self,
+        account_id: i64,
+        upstream_model: &str,
+    ) -> SelectorResult<()> {
         let upstream_model = upstream_model.trim().to_string();
         if account_id == 0 || upstream_model.is_empty() {
             return Ok(());
         }
         let now = Utc::now();
-        self.state().model_outcomes.insert((account_id, upstream_model.clone()), ModelOutcome {
-            last_success_at: now,
-            ..Default::default()
-        });
+        self.state().model_outcomes.insert(
+            (account_id, upstream_model.clone()),
+            ModelOutcome {
+                last_success_at: now,
+                ..Default::default()
+            },
+        );
         self.loader
             .save_model_state(ModelState {
                 account_id,
@@ -1207,7 +1306,10 @@ impl Selector {
     }
 
     /// 持票候选优先，票池为空或无一持票时回退原集（Go `filterChromeTicketCandidates`）。
-    fn filter_chrome_ticket_candidates(&self, candidates: Vec<RoutingCandidate>) -> Vec<RoutingCandidate> {
+    fn filter_chrome_ticket_candidates(
+        &self,
+        candidates: Vec<RoutingCandidate>,
+    ) -> Vec<RoutingCandidate> {
         let Some(source) = &self.chrome_tickets else {
             return candidates;
         };
@@ -1327,7 +1429,9 @@ impl Selector {
             {
                 ctx.model_ranks.insert(state.account_id, 2);
             } else if state.status == ModelStatus::Available
-                && state.last_success_at.is_some_and(|at| now - at <= MODEL_OUTCOME_SUCCESS_TTL)
+                && state
+                    .last_success_at
+                    .is_some_and(|at| now - at <= MODEL_OUTCOME_SUCCESS_TTL)
             {
                 ctx.model_ranks.insert(state.account_id, 0);
             }
@@ -1353,7 +1457,8 @@ impl Selector {
             if let Some(w) = &candidate.quota {
                 if w.mode == "imagine" {
                     ctx.imagine_remaining.insert(id, w.remaining);
-                    ctx.imagine_fresh.insert(id, candidate_imagine_quota_admissible(candidate, now));
+                    ctx.imagine_fresh
+                        .insert(id, candidate_imagine_quota_admissible(candidate, now));
                 }
             }
         }

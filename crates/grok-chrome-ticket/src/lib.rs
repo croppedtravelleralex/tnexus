@@ -11,6 +11,6 @@ pub mod pool;
 
 pub use domain::{AccountCount, PushInput, Stats, Ticket, TicketSummary};
 pub use pool::{
-    normalize_push_input, normalize_push_input_from_fields, ChromeTicketRepository, Pool,
-    TicketError, MemoryChromeTicketRepository,
+    normalize_push_input, normalize_push_input_from_fields, ChromeTicketRepository,
+    MemoryChromeTicketRepository, Pool, TicketError,
 };

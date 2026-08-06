@@ -34,13 +34,13 @@ pub(crate) fn quota_recovery_kind_from_str(s: &str) -> Result<QuotaRecoveryKind,
     match s {
         "free" => Ok(QuotaRecoveryKind::Free),
         "paid" => Ok(QuotaRecoveryKind::Paid),
-        other => Err(StorageError::Decode(format!("unknown quota recovery kind: {other}"))),
+        other => Err(StorageError::Decode(format!(
+            "unknown quota recovery kind: {other}"
+        ))),
     }
 }
 
-pub(crate) fn quota_recovery_status_from_str(
-    s: &str,
-) -> Result<QuotaRecoveryStatus, StorageError> {
+pub(crate) fn quota_recovery_status_from_str(s: &str) -> Result<QuotaRecoveryStatus, StorageError> {
     match s {
         "active" => Ok(QuotaRecoveryStatus::Active),
         "exhausted" => Ok(QuotaRecoveryStatus::Exhausted),
@@ -60,7 +60,9 @@ pub(crate) fn model_status_from_str(s: &str) -> Result<ModelStatus, StorageError
         "quota_exhausted" => Ok(ModelStatus::QuotaExhausted),
         "auth_failed" => Ok(ModelStatus::AuthFailed),
         "signature_failed" => Ok(ModelStatus::SignatureFailed),
-        other => Err(StorageError::Decode(format!("unknown model status: {other}"))),
+        other => Err(StorageError::Decode(format!(
+            "unknown model status: {other}"
+        ))),
     }
 }
 
@@ -259,7 +261,11 @@ pub(crate) async fn fetch_quota_windows_first(
          FROM grok_quota_windows WHERE account_id = ANY($1::bigint[]) AND mode = ANY($2::text[]) \
          ORDER BY {order}"
     );
-    let rows = sqlx::query(&sql).bind(ids).bind(&modes).fetch_all(pool).await?;
+    let rows = sqlx::query(&sql)
+        .bind(ids)
+        .bind(&modes)
+        .fetch_all(pool)
+        .await?;
     for row in rows {
         let account_id: i64 = row.try_get("account_id")?;
         if out.contains_key(&account_id) {

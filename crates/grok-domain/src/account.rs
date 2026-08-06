@@ -592,7 +592,10 @@ mod tests {
         let back: Account = serde_json::from_str(&json).unwrap();
         assert_eq!(back.max_concurrent, 64);
         assert_eq!(back.minimum_remaining, 2);
-        assert_eq!(back.model_state.as_ref().unwrap().status, ModelStatus::Available);
+        assert_eq!(
+            back.model_state.as_ref().unwrap().status,
+            ModelStatus::Available
+        );
         assert_eq!(back.lane, Some(WebLane::Image));
     }
 

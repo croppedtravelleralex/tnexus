@@ -130,10 +130,22 @@ async fn streams_and_normalizes_sse_deltas() {
         .expect("stream ok");
 
     let expect: Vec<ChatDelta> = vec![
-        ChatDelta { role: Some("assistant".into()), ..Default::default() },
-        ChatDelta { content: Some("Hel".into()), ..Default::default() },
-        ChatDelta { content: Some("lo".into()), ..Default::default() },
-        ChatDelta { finish_reason: Some("stop".into()), ..Default::default() },
+        ChatDelta {
+            role: Some("assistant".into()),
+            ..Default::default()
+        },
+        ChatDelta {
+            content: Some("Hel".into()),
+            ..Default::default()
+        },
+        ChatDelta {
+            content: Some("lo".into()),
+            ..Default::default()
+        },
+        ChatDelta {
+            finish_reason: Some("stop".into()),
+            ..Default::default()
+        },
     ];
     assert_eq!(deltas, expect, "[DONE] 不产出分片");
 
@@ -143,14 +155,26 @@ async fn streams_and_normalizes_sse_deltas() {
     let req = &reqs[0];
     assert_eq!(req.method, "POST");
     assert_eq!(req.path, "/v1/chat/completions");
-    assert_eq!(req.header("Authorization").as_deref(), Some("Bearer anonymous"));
+    assert_eq!(
+        req.header("Authorization").as_deref(),
+        Some("Bearer anonymous")
+    );
     assert_eq!(req.header("Accept").as_deref(), Some("text/event-stream"));
-    assert_eq!(req.header("Content-Type").as_deref(), Some("application/json"));
+    assert_eq!(
+        req.header("Content-Type").as_deref(),
+        Some("application/json")
+    );
     let cookie = req.header("Cookie").unwrap_or_default();
     assert!(cookie.contains("sso=test-sso"), "cookie = {cookie}");
     assert!(cookie.contains("sso-rw=test-sso"), "cookie = {cookie}");
-    assert_eq!(req.header("x-cluster").as_deref(), Some("https://us-east-1.api.x.ai"));
-    assert_eq!(req.header("Origin").as_deref(), Some("https://console.x.ai"));
+    assert_eq!(
+        req.header("x-cluster").as_deref(),
+        Some("https://us-east-1.api.x.ai")
+    );
+    assert_eq!(
+        req.header("Origin").as_deref(),
+        Some("https://console.x.ai")
+    );
     let body: Value = serde_json::from_str(&req.body).unwrap();
     assert_eq!(body["model"], "grok-4.3");
     assert_eq!(body["stream"], true);

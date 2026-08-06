@@ -36,8 +36,12 @@ pub enum Output {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Content {
-    OutputText { text: String },
-    InputText { text: String },
+    OutputText {
+        text: String,
+    },
+    InputText {
+        text: String,
+    },
     #[serde(other)]
     Other,
 }

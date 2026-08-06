@@ -7,7 +7,10 @@
 ///
 /// 默认与整个 dispatch 对齐（票只影响选号排序，不缩小可选集合，避免 503）。
 /// 配置了 imagine slot account ids 时，pin 与 SlotRegistry 对齐。
-pub fn image_dispatch_pin_target_ids(configured_slot_ids: &[i64], dispatch_ids: &[i64]) -> Vec<i64> {
+pub fn image_dispatch_pin_target_ids(
+    configured_slot_ids: &[i64],
+    dispatch_ids: &[i64],
+) -> Vec<i64> {
     if configured_slot_ids.is_empty() {
         return dispatch_ids.to_vec();
     }

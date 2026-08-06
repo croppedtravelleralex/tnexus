@@ -17,7 +17,7 @@ pub mod mirror;
 pub mod timing_wheel;
 pub mod web_drr;
 
-pub use dispatch::{dispatch_quota, DispatchIndex, DispatchEntry, DispatchMirror};
+pub use dispatch::{dispatch_quota, DispatchEntry, DispatchIndex, DispatchMirror};
 pub use drr::{DRRScheduler, Lane};
 pub use heap::{DueHeap, DueItem};
 pub use mirror::{dispatch_score, RedisDispatchMirror};

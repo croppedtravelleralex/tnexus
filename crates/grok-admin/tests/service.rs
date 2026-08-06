@@ -16,11 +16,7 @@ fn secret() -> String {
     "12345678901234567890123456789012".to_string()
 }
 
-fn new_service(
-    store: Arc<Store>,
-    access_ttl: Duration,
-    refresh_ttl: Duration,
-) -> AdminAuthService {
+fn new_service(store: Arc<Store>, access_ttl: Duration, refresh_ttl: Duration) -> AdminAuthService {
     AdminAuthService::new(
         Arc::new(FakeAdminRepo::new(store.clone())),
         Arc::new(FakeSessionRepo::new(store)),
@@ -205,10 +201,14 @@ impl AdminRepository for FailingAdminRepo {
         Err(AdminError::RuntimeUnavailable("noop".into()))
     }
     async fn get_by_username(&self, _username: &str) -> AdminResult<Option<Admin>> {
-        Err(AdminError::RuntimeUnavailable("database unavailable".into()))
+        Err(AdminError::RuntimeUnavailable(
+            "database unavailable".into(),
+        ))
     }
     async fn get_by_id(&self, _id: i64) -> AdminResult<Option<Admin>> {
-        Err(AdminError::RuntimeUnavailable("database unavailable".into()))
+        Err(AdminError::RuntimeUnavailable(
+            "database unavailable".into(),
+        ))
     }
     async fn update_password_and_revoke_sessions(
         &self,
@@ -232,13 +232,7 @@ impl AdminSessionRepository for NoopSessions {
     async fn create(&self, _s: Session) -> AdminResult<Session> {
         Err(AdminError::RuntimeUnavailable("noop".into()))
     }
-    async fn rotate(
-        &self,
-        _id: i64,
-        _o: &str,
-        _n: &str,
-        _e: DateTime<Utc>,
-    ) -> AdminResult<bool> {
+    async fn rotate(&self, _id: i64, _o: &str, _n: &str, _e: DateTime<Utc>) -> AdminResult<bool> {
         Ok(true)
     }
     async fn revoke(&self, _id: i64) -> AdminResult<()> {
@@ -250,17 +244,30 @@ impl AdminSessionRepository for NoopSessions {
 
 #[tokio::test]
 async fn refresh_token_rotation_and_logout() {
-    let service = new_service(Arc::new(Store::default()), Duration::minutes(1), Duration::hours(1));
+    let service = new_service(
+        Arc::new(Store::default()),
+        Duration::minutes(1),
+        Duration::hours(1),
+    );
     let (_admin, tokens) = bootstrap_login(&service).await;
 
-    let rotated = service.refresh(&tokens.refresh_token).await.expect("refresh");
+    let rotated = service
+        .refresh(&tokens.refresh_token)
+        .await
+        .expect("refresh");
 
     // 旧 refresh token 已轮换 → 失效
-    let err = service.refresh(&tokens.refresh_token).await.expect_err("old refresh usable");
+    let err = service
+        .refresh(&tokens.refresh_token)
+        .await
+        .expect_err("old refresh usable");
     assert_eq!(err, AdminError::InvalidSession);
 
     // 注销后 access / refresh 均失效
-    service.logout(&rotated.refresh_token).await.expect("logout");
+    service
+        .logout(&rotated.refresh_token)
+        .await
+        .expect("logout");
     let err = service
         .authenticate_access(&rotated.access_token)
         .await
@@ -308,7 +315,11 @@ async fn change_password_revokes_all_sessions() {
 
 #[tokio::test]
 async fn login_rate_limiter_failure_is_enforced() {
-    let mut service = new_service(Arc::new(Store::default()), Duration::minutes(1), Duration::hours(1));
+    let mut service = new_service(
+        Arc::new(Store::default()),
+        Duration::minutes(1),
+        Duration::hours(1),
+    );
     service.set_login_rate_limiter(Arc::new(RejectingLimiter));
     let err = service
         .login("admin", "password123", "127.0.0.1")
@@ -367,7 +378,10 @@ async fn concurrent_refresh_allows_exactly_one_rotation() {
         (_, Ok(t)) => t,
         _ => unreachable!(),
     };
-    service.refresh(&winner.refresh_token).await.expect("winner refresh usable");
+    service
+        .refresh(&winner.refresh_token)
+        .await
+        .expect("winner refresh usable");
 }
 
 #[tokio::test]
@@ -383,7 +397,10 @@ async fn access_token_round_trip_and_tamper_rejection() {
 
     // 篡改签名 → 拒绝
     let tampered = format!("{}x", &token[..token.len() - 1]);
-    assert_eq!(tokens.parse_access_token(&tampered), Err(AdminError::InvalidSession));
+    assert_eq!(
+        tokens.parse_access_token(&tampered),
+        Err(AdminError::InvalidSession)
+    );
 
     // 篡改 payload → 签名校验失败
     let parts: Vec<&str> = token.split('.').collect();
@@ -401,7 +418,10 @@ async fn expired_access_token_rejected() {
     let (token, _) = tokens
         .create_access_token(7, 42, Duration::seconds(-1))
         .expect("create");
-    assert_eq!(tokens.parse_access_token(&token), Err(AdminError::InvalidSession));
+    assert_eq!(
+        tokens.parse_access_token(&token),
+        Err(AdminError::InvalidSession)
+    );
 }
 
 #[tokio::test]
@@ -447,7 +467,10 @@ async fn bootstrap_requires_username_and_8_char_password() {
     assert_eq!(err, AdminError::BootstrapRequired);
     service.bootstrap("admin", "password123").await.expect("ok");
     // 已有管理员 → 幂等返回 Ok
-    service.bootstrap("other", "password123").await.expect("idempotent");
+    service
+        .bootstrap("other", "password123")
+        .await
+        .expect("idempotent");
 }
 
 #[tokio::test]
@@ -471,7 +494,10 @@ async fn change_password_validation_and_wrong_current() {
 async fn login_wrong_password_is_invalid_credentials() {
     let store = Arc::new(Store::default());
     let service = new_service(store.clone(), Duration::minutes(1), Duration::hours(1));
-    service.bootstrap("admin", "password123").await.expect("bootstrap");
+    service
+        .bootstrap("admin", "password123")
+        .await
+        .expect("bootstrap");
     let err = service
         .login("admin", "wrong-password", "127.0.0.1")
         .await
@@ -501,7 +527,9 @@ async fn auth_guard_parses_bearer_and_rejects_missing() {
     assert_eq!(ctx.admin.username, "admin");
     assert!(ctx.session_id > 0);
 
-    let err = authenticate_bearer(&service, "Basic abc").await.expect_err("no bearer");
+    let err = authenticate_bearer(&service, "Basic abc")
+        .await
+        .expect_err("no bearer");
     assert_eq!(err, AdminError::InvalidSession);
     let err = authenticate_bearer(&service, "Bearer invalid.token.value")
         .await

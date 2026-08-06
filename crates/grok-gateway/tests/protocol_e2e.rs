@@ -57,7 +57,6 @@ impl ProtocolBackend for FakeProtocolBackend {
     }
 }
 
-
 fn app_with(backend: Arc<dyn ProtocolBackend>) -> axum::Router {
     grok_gateway::build_app(grok_gateway::with_protocol_backend(backend))
 }
@@ -68,7 +67,10 @@ fn app_empty() -> axum::Router {
 
 async fn post(app: &axum::Router, path: &str, body: Value) -> (StatusCode, Value) {
     let (status, raw) = post_raw(app, path, body).await;
-    (status, serde_json::from_str(&raw).unwrap_or_else(|_| json!({"raw": raw})))
+    (
+        status,
+        serde_json::from_str(&raw).unwrap_or_else(|_| json!({"raw": raw})),
+    )
 }
 
 async fn post_raw(app: &axum::Router, path: &str, body: Value) -> (StatusCode, String) {
@@ -136,8 +138,12 @@ async fn responses_string_with_instructions() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_backend_seen(&backend, "[system]\nbe concise\n\n[user]\ndraw a cat", "grok-4.5")
-        .await;
+    assert_backend_seen(
+        &backend,
+        "[system]\nbe concise\n\n[user]\ndraw a cat",
+        "grok-4.5",
+    )
+    .await;
 }
 
 /// /v1/responses：stream=true → SSE 含 response.created / output_text.delta / completed。
@@ -152,7 +158,10 @@ async fn responses_stream_sse() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body.contains(r#""type":"response.created""#), "body = {body}");
+    assert!(
+        body.contains(r#""type":"response.created""#),
+        "body = {body}"
+    );
     assert!(body.contains(r#""type":"response.output_text.delta""#));
     assert!(body.contains(r#""delta":"fake-completion""#));
     assert!(body.contains(r#""type":"response.completed""#));
@@ -177,8 +186,15 @@ async fn responses_input_file_rejected_400() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(body["error"]["message"].as_str().unwrap().contains("input_file"));
-    assert_eq!(backend.calls.load(Ordering::Relaxed), 0, "backend must not run on 400");
+    assert!(body["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("input_file"));
+    assert_eq!(
+        backend.calls.load(Ordering::Relaxed),
+        0,
+        "backend must not run on 400"
+    );
 }
 
 /// /v1/messages：system + user → 归一化 → 200 Anthropic content block。
@@ -202,7 +218,12 @@ async fn messages_system_and_text_roundtrip() {
     assert_eq!(body["content"][0]["type"], "text");
     assert_eq!(body["content"][0]["text"], "fake-completion");
     assert_eq!(body["stop_reason"], "end_turn");
-    assert_backend_seen(&backend, "[system]\n你是一名助手\n\n[user]\n你好", "grok-4.5").await;
+    assert_backend_seen(
+        &backend,
+        "[system]\n你是一名助手\n\n[user]\n你好",
+        "grok-4.5",
+    )
+    .await;
 }
 
 /// /v1/messages：image 块 → data URI → 归一化。
@@ -279,7 +300,10 @@ async fn protocol_endpoint_without_backend_500() {
     )
     .await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
-    assert!(body["error"]["message"].as_str().unwrap().contains("ProtocolBackend"));
+    assert!(body["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("ProtocolBackend"));
 
     let (status, _) = post(
         &app,

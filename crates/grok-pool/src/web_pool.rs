@@ -82,7 +82,10 @@ pub fn find_quota_window<'a>(windows: &'a [QuotaWindow], mode: &str) -> Option<&
 }
 
 /// 取指定 upstream model 的模型状态引用。
-pub fn find_model_state<'a>(states: &'a [ModelState], upstream_model: &str) -> Option<&'a ModelState> {
+pub fn find_model_state<'a>(
+    states: &'a [ModelState],
+    upstream_model: &str,
+) -> Option<&'a ModelState> {
     states.iter().find(|s| s.upstream_model == upstream_model)
 }
 
@@ -133,7 +136,12 @@ pub fn image_pool_eligible(candidate: &WebPoolCandidate, now: DateTime<Utc>) -> 
         if imagine_quota_exhausted(w.total, w.remaining) {
             return false;
         }
-        if positive && candidate.model_state.as_ref().is_some_and(|s| s.status == ModelStatus::QuotaExhausted) {
+        if positive
+            && candidate
+                .model_state
+                .as_ref()
+                .is_some_and(|s| s.status == ModelStatus::QuotaExhausted)
+        {
             return imagine_known_quota_fresh(w, now);
         }
     }
@@ -155,9 +163,7 @@ pub fn image_pool_eligible(candidate: &WebPoolCandidate, now: DateTime<Utc>) -> 
                 Some(w) if imagine_known_quota_fresh(w, now) => true,
                 _ => fresh_unknown,
             },
-            ModelStatus::QuotaAvailable | ModelStatus::Unknown => {
-                fresh_known || fresh_unknown
-            }
+            ModelStatus::QuotaAvailable | ModelStatus::Unknown => fresh_known || fresh_unknown,
         },
     }
 }
@@ -165,8 +171,18 @@ pub fn image_pool_eligible(candidate: &WebPoolCandidate, now: DateTime<Utc>) -> 
 /// 图池排序秩（对齐 Go `imagePoolRank`）。
 fn image_pool_rank(candidate: &WebPoolCandidate, now: DateTime<Utc>) -> i32 {
     let fresh = |w: &QuotaWindow| imagine_known_quota_fresh(w, now);
-    let available = || candidate.model_state.as_ref().is_some_and(|s| s.status == ModelStatus::Available);
-    let quota_available = || candidate.model_state.as_ref().is_some_and(|s| s.status == ModelStatus::QuotaAvailable);
+    let available = || {
+        candidate
+            .model_state
+            .as_ref()
+            .is_some_and(|s| s.status == ModelStatus::Available)
+    };
+    let quota_available = || {
+        candidate
+            .model_state
+            .as_ref()
+            .is_some_and(|s| s.status == ModelStatus::QuotaAvailable)
+    };
     if candidate.imagine_window.as_ref().is_some_and(fresh) {
         return if available() { 3 } else { 2 };
     }
@@ -186,8 +202,16 @@ fn image_pool_rank(candidate: &WebPoolCandidate, now: DateTime<Utc>) -> i32 {
 
 /// 图池优先序比较（对齐 Go `imagePoolLess`）。
 pub fn image_pool_less(a: &WebPoolCandidate, b: &WebPoolCandidate, now: DateTime<Utc>) -> bool {
-    let fresh_a = a.imagine_window.as_ref().map(|w| imagine_window_upstream_fresh(w, now)).unwrap_or(false);
-    let fresh_b = b.imagine_window.as_ref().map(|w| imagine_window_upstream_fresh(w, now)).unwrap_or(false);
+    let fresh_a = a
+        .imagine_window
+        .as_ref()
+        .map(|w| imagine_window_upstream_fresh(w, now))
+        .unwrap_or(false);
+    let fresh_b = b
+        .imagine_window
+        .as_ref()
+        .map(|w| imagine_window_upstream_fresh(w, now))
+        .unwrap_or(false);
     if fresh_a != fresh_b {
         return fresh_a;
     }
@@ -210,7 +234,12 @@ pub fn image_pool_less(a: &WebPoolCandidate, b: &WebPoolCandidate, now: DateTime
 /// 过滤 + 稳定排序 + cap 截断，返回选中的 id 列表（对齐 Go `selectWebPoolIDs`）。
 ///
 /// `less(a, b)` 返回 true 表示 a 排在 b 前（升序语义下的"更优先"）。
-pub fn select_web_pool_ids<F, G>(candidates: &[WebPoolCandidate], cap: usize, eligible: F, less: G) -> Vec<i64>
+pub fn select_web_pool_ids<F, G>(
+    candidates: &[WebPoolCandidate],
+    cap: usize,
+    eligible: F,
+    less: G,
+) -> Vec<i64>
 where
     F: Fn(&WebPoolCandidate) -> bool,
     G: Fn(&WebPoolCandidate, &WebPoolCandidate) -> bool,

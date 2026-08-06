@@ -25,7 +25,10 @@ use grok_provider_web::{
 };
 
 use crate::error::GatewayError;
-use crate::protocol::{messages_json, messages_stream_events, normalize_messages_input, normalize_responses_input, responses_json, responses_stream_events, MessagesRequest, ResponsesRequest};
+use crate::protocol::{
+    messages_json, messages_stream_events, normalize_messages_input, normalize_responses_input,
+    responses_json, responses_stream_events, MessagesRequest, ResponsesRequest,
+};
 use crate::router::AppState;
 
 /// `POST /v1/chat/completions` 请求（G1 子集：model / messages / stream）。
@@ -118,17 +121,12 @@ pub async fn image_generations(
 /// `GET /v1/media/images/{id}`（G2-A4）。Grok 生图返回的是上游 URL，
 /// 这里通过 id 查媒体字节并回传（Content-Type 嗅探）。未配置 `media_fetcher`
 /// 或 id 未命中 → 404。
-pub async fn media_images(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-) -> Response {
+pub async fn media_images(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     match state.media_fetcher.as_ref() {
         Some(fetcher) => match fetcher.fetch_bytes(&id).await {
-            Ok((bytes, content_type)) => (
-                [(header::CONTENT_TYPE, content_type)],
-                bytes,
-            )
-                .into_response(),
+            Ok((bytes, content_type)) => {
+                ([(header::CONTENT_TYPE, content_type)], bytes).into_response()
+            }
             Err(_) => (
                 StatusCode::NOT_FOUND,
                 Json(json!({"error": {"message": "media not found"}})),
@@ -175,10 +173,9 @@ pub async fn responses_completions(
     Json(req): Json<ResponsesRequest>,
 ) -> Result<Response, GatewayError> {
     let normalized = normalize_responses_input(&req)?;
-    let backend = state
-        .responses_backend
-        .as_ref()
-        .ok_or_else(|| GatewayError::Internal("ResponsesBackend/ProtocolBackend not configured".into()))?;
+    let backend = state.responses_backend.as_ref().ok_or_else(|| {
+        GatewayError::Internal("ResponsesBackend/ProtocolBackend not configured".into())
+    })?;
     let text = backend.complete(&req.model, &normalized).await?;
     let request_id = new_request_id();
     if req.stream {
@@ -198,10 +195,9 @@ pub async fn messages_completions(
     Json(req): Json<MessagesRequest>,
 ) -> Result<Response, GatewayError> {
     let normalized = normalize_messages_input(&req)?;
-    let backend = state
-        .messages_backend
-        .as_ref()
-        .ok_or_else(|| GatewayError::Internal("MessagesBackend/ProtocolBackend not configured".into()))?;
+    let backend = state.messages_backend.as_ref().ok_or_else(|| {
+        GatewayError::Internal("MessagesBackend/ProtocolBackend not configured".into())
+    })?;
     let text = backend.complete(&req.model, &normalized).await?;
     let request_id = new_request_id();
     if req.stream {
@@ -213,7 +209,9 @@ pub async fn messages_completions(
 }
 
 /// 协议 SSE：事件数组 → 逐帧 `data: {...}`（无 `[DONE]`，协议各自终止事件收尾）。
-fn protocol_sse(events: Vec<serde_json::Value>) -> Sse<impl futures::Stream<Item = Result<Event, std::convert::Infallible>>> {
+fn protocol_sse(
+    events: Vec<serde_json::Value>,
+) -> Sse<impl futures::Stream<Item = Result<Event, std::convert::Infallible>>> {
     let s = stream::iter(
         events
             .into_iter()

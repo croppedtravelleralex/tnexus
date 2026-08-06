@@ -42,10 +42,16 @@ pub struct AdminHttpResponse {
 
 impl AdminHttpResponse {
     pub fn ok(value: serde_json::Value) -> Self {
-        Self { status: 200, body: value }
+        Self {
+            status: 200,
+            body: value,
+        }
     }
     pub fn created(value: serde_json::Value) -> Self {
-        Self { status: 201, body: value }
+        Self {
+            status: 201,
+            body: value,
+        }
     }
     pub fn unauthorized() -> Self {
         Self {
@@ -95,7 +101,11 @@ pub struct AdminDomains {
 
 impl AdminRouter {
     pub fn new(auth: AdminAuthService, accounts: AccountAdminService) -> Self {
-        Self { auth, accounts, domains: AdminDomains::default() }
+        Self {
+            auth,
+            accounts,
+            domains: AdminDomains::default(),
+        }
     }
 
     /// 挂载全部非账号域（G4-A1 补齐后的构造入口）。
@@ -121,10 +131,7 @@ impl AdminRouter {
 
     async fn route(&self, method: &str, path: &str, body: Option<&str>) -> AdminHttpResponse {
         let (path_only, query) = split_query(path);
-        let segments: Vec<&str> = path_only
-            .split('/')
-            .filter(|s| !s.is_empty())
-            .collect();
+        let segments: Vec<&str> = path_only.split('/').filter(|s| !s.is_empty()).collect();
         match segments.as_slice() {
             // ── 账号域（新增：summary/analytics/import 必须在 {id} 通配之前）──
             ["admin", "accounts", "summary"] if method.eq_ignore_ascii_case("GET") => {
@@ -136,9 +143,7 @@ impl AdminRouter {
             ["admin", "accounts", "import"] if method.eq_ignore_ascii_case("POST") => {
                 self.accounts_import(body).await
             }
-            ["admin", "accounts"] if method.eq_ignore_ascii_case("GET") => {
-                self.list(query).await
-            }
+            ["admin", "accounts"] if method.eq_ignore_ascii_case("GET") => self.list(query).await,
             ["admin", "accounts", id] => match method.to_ascii_uppercase().as_str() {
                 "GET" => self.get(id).await,
                 "PATCH" => self.patch(id, body).await,
@@ -154,19 +159,13 @@ impl AdminRouter {
             ["admin", "accounts", id, "model-states"] if method.eq_ignore_ascii_case("GET") => {
                 self.model_states(id).await
             }
-            ["admin", "accounts", id, "refresh-billing"]
-                if method.eq_ignore_ascii_case("POST") =>
-            {
+            ["admin", "accounts", id, "refresh-billing"] if method.eq_ignore_ascii_case("POST") => {
                 self.accounts_refresh(id, "billing").await
             }
-            ["admin", "accounts", id, "refresh-quota"]
-                if method.eq_ignore_ascii_case("POST") =>
-            {
+            ["admin", "accounts", id, "refresh-quota"] if method.eq_ignore_ascii_case("POST") => {
                 self.accounts_refresh(id, "quota").await
             }
-            ["admin", "accounts", id, "refresh-token"]
-                if method.eq_ignore_ascii_case("POST") =>
-            {
+            ["admin", "accounts", id, "refresh-token"] if method.eq_ignore_ascii_case("POST") => {
                 self.accounts_refresh(id, "token").await
             }
             ["admin", "accounts", id, "reauth"] if method.eq_ignore_ascii_case("POST") => {
@@ -208,9 +207,7 @@ impl AdminRouter {
             },
 
             // ── 审计域 ──
-            ["admin", "request-audits", "summary"]
-                if method.eq_ignore_ascii_case("GET") =>
-            {
+            ["admin", "request-audits", "summary"] if method.eq_ignore_ascii_case("GET") => {
                 self.audits_summary().await
             }
             ["admin", "request-audits"] if method.eq_ignore_ascii_case("GET") => {
@@ -218,9 +215,7 @@ impl AdminRouter {
             }
 
             // ── 仪表盘 / 设置 / 系统 ──
-            ["admin", "dashboard"] if method.eq_ignore_ascii_case("GET") => {
-                self.dashboard().await
-            }
+            ["admin", "dashboard"] if method.eq_ignore_ascii_case("GET") => self.dashboard().await,
             ["admin", "settings"] => match method.to_ascii_uppercase().as_str() {
                 "GET" => self.settings_get().await,
                 "PUT" => self.settings_put(body).await,
@@ -257,7 +252,10 @@ impl AdminRouter {
 
     async fn list(&self, query: &str) -> AdminHttpResponse {
         let params = parse_query(query);
-        let page = params.get("page").and_then(|v| v.parse::<i64>().ok()).unwrap_or(1);
+        let page = params
+            .get("page")
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(1);
         let page_size = params
             .get("pageSize")
             .and_then(|v| v.parse::<i64>().ok())
@@ -295,7 +293,11 @@ impl AdminRouter {
         let result = self
             .accounts
             .list(
-                AccountListFilter { provider, enabled, auth_status },
+                AccountListFilter {
+                    provider,
+                    enabled,
+                    auth_status,
+                },
                 page,
                 page_size,
             )
@@ -328,9 +330,7 @@ impl AdminRouter {
         let input: UpdateAccountInput = match body {
             Some(raw) => match serde_json::from_str(raw) {
                 Ok(input) => input,
-                Err(_) => {
-                    return AdminHttpResponse::bad_request("invalidRequest", "请求参数无效")
-                }
+                Err(_) => return AdminHttpResponse::bad_request("invalidRequest", "请求参数无效"),
             },
             None => return AdminHttpResponse::bad_request("invalidRequest", "请求体不能为空"),
         };
@@ -367,9 +367,7 @@ impl AdminRouter {
         let input: QuotaWindowInput = match body {
             Some(raw) => match serde_json::from_str(raw) {
                 Ok(input) => input,
-                Err(_) => {
-                    return AdminHttpResponse::bad_request("invalidRequest", "请求参数无效")
-                }
+                Err(_) => return AdminHttpResponse::bad_request("invalidRequest", "请求参数无效"),
             },
             None => return AdminHttpResponse::bad_request("invalidRequest", "请求体不能为空"),
         };
@@ -419,7 +417,10 @@ impl AdminRouter {
 
     /// GET /admin/analytics/timeseries?days=7：按天聚合（可视化面板数据源）。
     async fn analytics_timeseries(&self, query: &str) -> AdminHttpResponse {
-        let days: i64 = query_params(query).get("days").and_then(|d| d.parse().ok()).unwrap_or(7);
+        let days: i64 = query_params(query)
+            .get("days")
+            .and_then(|d| d.parse().ok())
+            .unwrap_or(7);
         match self.accounts.timeseries(days).await {
             Ok(points) => AdminHttpResponse::ok(json!(points)),
             Err(e) => map_error(e),
@@ -428,7 +429,10 @@ impl AdminRouter {
 
     /// GET /admin/analytics/top-accounts?limit=10：按请求量/失败率排。
     async fn analytics_top_accounts(&self, query: &str) -> AdminHttpResponse {
-        let limit: i64 = query_params(query).get("limit").and_then(|d| d.parse().ok()).unwrap_or(10);
+        let limit: i64 = query_params(query)
+            .get("limit")
+            .and_then(|d| d.parse().ok())
+            .unwrap_or(10);
         match self.accounts.top_accounts(limit).await {
             Ok(items) => AdminHttpResponse::ok(json!(items)),
             Err(e) => map_error(e),
@@ -458,7 +462,9 @@ impl AdminRouter {
             return domain_not_wired("models");
         };
         match service.list(page, page_size).await {
-            Ok(items) => AdminHttpResponse::ok(json!({ "items": items, "page": page, "pageSize": page_size, "total": items.len() as i64 })),
+            Ok(items) => AdminHttpResponse::ok(
+                json!({ "items": items, "page": page, "pageSize": page_size, "total": items.len() as i64 }),
+            ),
             Err(e) => map_error(e),
         }
     }
@@ -523,7 +529,9 @@ impl AdminRouter {
             return domain_not_wired("client-keys");
         };
         match service.list(page, page_size).await {
-            Ok(items) => AdminHttpResponse::ok(json!({ "items": items, "page": page, "pageSize": page_size, "total": items.len() as i64 })),
+            Ok(items) => AdminHttpResponse::ok(
+                json!({ "items": items, "page": page, "pageSize": page_size, "total": items.len() as i64 }),
+            ),
             Err(e) => map_error(e),
         }
     }
@@ -537,7 +545,9 @@ impl AdminRouter {
             None => return AdminHttpResponse::bad_request("invalidRequest", "请求参数无效"),
         };
         match service.create(&input).await {
-            Ok((view, secret)) => AdminHttpResponse::created(json!({ "key": view, "secret": secret })),
+            Ok((view, secret)) => {
+                AdminHttpResponse::created(json!({ "key": view, "secret": secret }))
+            }
             Err(e) => map_error(e),
         }
     }
@@ -578,7 +588,9 @@ impl AdminRouter {
             return domain_not_wired("request-audits");
         };
         match service.list(page, page_size).await {
-            Ok(items) => AdminHttpResponse::ok(json!({ "items": items, "page": page, "pageSize": page_size, "total": items.len() as i64 })),
+            Ok(items) => AdminHttpResponse::ok(
+                json!({ "items": items, "page": page, "pageSize": page_size, "total": items.len() as i64 }),
+            ),
             Err(e) => map_error(e),
         }
     }
@@ -663,7 +675,9 @@ impl AdminRouter {
             return domain_not_wired("media");
         };
         match service.list_images(page, page_size).await {
-            Ok(items) => AdminHttpResponse::ok(json!({ "items": items, "page": page, "pageSize": page_size, "total": items.len() as i64 })),
+            Ok(items) => AdminHttpResponse::ok(
+                json!({ "items": items, "page": page, "pageSize": page_size, "total": items.len() as i64 }),
+            ),
             Err(e) => map_error(e),
         }
     }
@@ -722,7 +736,8 @@ fn parse_query(query: &str) -> HashMap<String, String> {
             Some((k, v)) => (k, v),
             None => (pair, ""),
         };
-        out.entry(key.to_string()).or_insert_with(|| value.to_string());
+        out.entry(key.to_string())
+            .or_insert_with(|| value.to_string());
     }
     out
 }
@@ -738,7 +753,10 @@ fn parse_id(raw: &str) -> Option<i64> {
 /// 分页参数（对齐 list 的默认 page=1 / pageSize=20）。
 fn page_params(query: &str) -> (i64, i64) {
     let params = parse_query(query);
-    let page = params.get("page").and_then(|v| v.parse::<i64>().ok()).unwrap_or(1);
+    let page = params
+        .get("page")
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(1);
     let page_size = params
         .get("pageSize")
         .and_then(|v| v.parse::<i64>().ok())

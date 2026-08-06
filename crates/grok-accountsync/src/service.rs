@@ -149,7 +149,10 @@ impl AccountSyncService {
                         failed.fetch_add(1, Ordering::Relaxed);
                     }
                     completed.fetch_add(1, Ordering::Relaxed);
-                    let (c, t) = (completed.load(Ordering::Relaxed), total.load(Ordering::Relaxed));
+                    let (c, t) = (
+                        completed.load(Ordering::Relaxed),
+                        total.load(Ordering::Relaxed),
+                    );
                     observer.lock().unwrap()(c, t);
                 }
             }));
@@ -195,23 +198,25 @@ async fn sync_account(backend: &dyn SyncBackend, account_id: i64) -> Result<(), 
         QuotaKind::RemoteWindow | QuotaKind::LocalWindow => {
             match backend.has_quota(account_id).await {
                 Ok(true) => {}
-                Ok(false) => match timeout(OPERATION_TIMEOUT, backend.refresh_quota(account_id)).await
-                {
-                    Ok(Ok(())) => {}
-                    Ok(Err(e)) => messages.push(format!("同步 Provider 额度: {e}")),
-                    Err(_) => messages.push("同步 Provider 额度: 超时".into()),
-                },
+                Ok(false) => {
+                    match timeout(OPERATION_TIMEOUT, backend.refresh_quota(account_id)).await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => messages.push(format!("同步 Provider 额度: {e}")),
+                        Err(_) => messages.push("同步 Provider 额度: 超时".into()),
+                    }
+                }
                 Err(e) => messages.push(format!("检查 Provider 额度快照: {e}")),
             }
         }
         QuotaKind::Billing => match backend.has_billing(account_id).await {
             Ok(true) => {}
-            Ok(false) => match timeout(OPERATION_TIMEOUT, backend.refresh_billing(account_id)).await
-            {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => messages.push(format!("同步额度: {e}")),
-                Err(_) => messages.push("同步额度: 超时".into()),
-            },
+            Ok(false) => {
+                match timeout(OPERATION_TIMEOUT, backend.refresh_billing(account_id)).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => messages.push(format!("同步额度: {e}")),
+                    Err(_) => messages.push("同步额度: 超时".into()),
+                }
+            }
             Err(e) => messages.push(format!("检查额度快照: {e}")),
         },
     }

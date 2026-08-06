@@ -8,13 +8,12 @@ use std::sync::{Arc, Mutex};
 use chrono::{DateTime, Duration, Utc};
 use grok_admin::repos::{AdminRepository, AdminSessionRepository};
 use grok_admin::{
-    Admin, AdminAuthService, AdminDomains, AdminResult, AdminRouter,
-    AuditAdminService, AuditEntryView, AuditStore, AuditSummaryView, ChromeTicketService,
-    ChromeTicketStats, ChromeTicketStore, ChromeTicketView, ClientKeyAdminService, ClientKeyInput,
-    ClientKeyStore, ClientKeyView, DashboardService, DashboardStore, DashboardView,
-    MediaImageView, MediaService, MediaStatsView, MediaStore, ModelAdminService, ModelBindingView,
-    ModelRoute, ModelRouteInput, ModelStore, SettingsService, SettingsStore,
-    SettingsView, Session, SystemService, TokenService,
+    Admin, AdminAuthService, AdminDomains, AdminResult, AdminRouter, AuditAdminService,
+    AuditEntryView, AuditStore, AuditSummaryView, ChromeTicketService, ChromeTicketStats,
+    ChromeTicketStore, ChromeTicketView, ClientKeyAdminService, ClientKeyInput, ClientKeyStore,
+    ClientKeyView, DashboardService, DashboardStore, DashboardView, MediaImageView, MediaService,
+    MediaStatsView, MediaStore, ModelAdminService, ModelBindingView, ModelRoute, ModelRouteInput,
+    ModelStore, Session, SettingsService, SettingsStore, SettingsView, SystemService, TokenService,
 };
 use grok_domain::{ModelState, Provider, QuotaWindow};
 
@@ -79,7 +78,11 @@ impl AdminRepository for FakeAdminRepo {
         {
             a.password_hash = password_hash.to_string();
         }
-        self.0.sessions.lock().unwrap().retain(|s| s.admin_id != admin_id);
+        self.0
+            .sessions
+            .lock()
+            .unwrap()
+            .retain(|s| s.admin_id != admin_id);
         Ok(())
     }
 }
@@ -104,13 +107,7 @@ impl AdminSessionRepository for FakeSessionRepo {
         self.0.sessions.lock().unwrap().push(session.clone());
         Ok(session)
     }
-    async fn rotate(
-        &self,
-        _id: i64,
-        _o: &str,
-        _n: &str,
-        _e: DateTime<Utc>,
-    ) -> AdminResult<bool> {
+    async fn rotate(&self, _id: i64, _o: &str, _n: &str, _e: DateTime<Utc>) -> AdminResult<bool> {
         Ok(true)
     }
     async fn revoke(&self, id: i64) -> AdminResult<()> {
@@ -147,7 +144,13 @@ impl ModelStore for ModelStoreFake {
         Ok(self.routes.lock().unwrap().clone())
     }
     async fn get(&self, id: i64) -> AdminResult<Option<ModelRoute>> {
-        Ok(self.routes.lock().unwrap().iter().find(|r| r.id == id).cloned())
+        Ok(self
+            .routes
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|r| r.id == id)
+            .cloned())
     }
     async fn create(&self, input: &ModelRouteInput) -> AdminResult<ModelRoute> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst) + 1;
@@ -212,7 +215,13 @@ struct KeyStoreFake {
 #[async_trait::async_trait]
 impl ClientKeyStore for KeyStoreFake {
     async fn list(&self, _p: i64, _n: i64) -> AdminResult<Vec<ClientKeyView>> {
-        Ok(self.keys.lock().unwrap().iter().map(|(v, _)| v.clone()).collect())
+        Ok(self
+            .keys
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(v, _)| v.clone())
+            .collect())
     }
     async fn create(&self, input: &ClientKeyInput) -> AdminResult<(ClientKeyView, String)> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst) + 1;
@@ -225,7 +234,10 @@ impl ClientKeyStore for KeyStoreFake {
             created_at: Utc::now(),
             last_used_at: None,
         };
-        self.keys.lock().unwrap().push((view.clone(), secret.clone()));
+        self.keys
+            .lock()
+            .unwrap()
+            .push((view.clone(), secret.clone()));
         Ok((view, secret))
     }
     async fn update(&self, id: i64, input: &ClientKeyInput) -> AdminResult<Option<ClientKeyView>> {
@@ -329,7 +341,10 @@ impl SettingsStore for SettingsFake {
             values: self.values.lock().unwrap().clone(),
         })
     }
-    async fn put(&self, values: std::collections::BTreeMap<String, String>) -> AdminResult<SettingsView> {
+    async fn put(
+        &self,
+        values: std::collections::BTreeMap<String, String>,
+    ) -> AdminResult<SettingsView> {
         *self.version.lock().unwrap() += 1;
         *self.values.lock().unwrap() = values;
         self.get().await
@@ -352,7 +367,12 @@ impl ChromeTicketStore for TicketFake {
         }])
     }
     async fn stats(&self) -> AdminResult<ChromeTicketStats> {
-        Ok(ChromeTicketStats { total: 1, available: 1, borrowed: 0, expired: 0 })
+        Ok(ChromeTicketStats {
+            total: 1,
+            available: 1,
+            borrowed: 0,
+            expired: 0,
+        })
     }
     async fn sweep(&self) -> AdminResult<i64> {
         let mut swept = self.swept.lock().unwrap();
@@ -408,7 +428,12 @@ impl MediaStore for MediaFake {
 
 // ── 账号 store（summary/analytics 需要；复用 admin_accounts 语义简版）──
 
-fn build_account(id: i64, provider: Provider, enabled: bool, status: grok_domain::AuthStatus) -> grok_domain::Account {
+fn build_account(
+    id: i64,
+    provider: Provider,
+    enabled: bool,
+    status: grok_domain::AuthStatus,
+) -> grok_domain::Account {
     grok_domain::Account {
         id,
         identity_key: format!("key-{id}"),
@@ -434,14 +459,34 @@ async fn setup() -> (AdminRouter, String) {
         Duration::hours(1),
         Duration::days(7),
     );
-    auth.bootstrap("admin", "password123").await.expect("bootstrap");
-    let (_, tokens) = auth.login("admin", "password123", "127.0.0.1").await.expect("login");
+    auth.bootstrap("admin", "password123")
+        .await
+        .expect("bootstrap");
+    let (_, tokens) = auth
+        .login("admin", "password123", "127.0.0.1")
+        .await
+        .expect("login");
 
     // 账号 store（用 admin_accounts 简版：只有 summary/analytics 需要）
     let account_store = AccountStore::default();
-    account_store.seed(build_account(1, Provider::GrokBuild, true, grok_domain::AuthStatus::Active));
-    account_store.seed(build_account(2, Provider::GrokBuild, true, grok_domain::AuthStatus::Active));
-    account_store.seed(build_account(3, Provider::GrokWeb, false, grok_domain::AuthStatus::ReauthRequired));
+    account_store.seed(build_account(
+        1,
+        Provider::GrokBuild,
+        true,
+        grok_domain::AuthStatus::Active,
+    ));
+    account_store.seed(build_account(
+        2,
+        Provider::GrokBuild,
+        true,
+        grok_domain::AuthStatus::Active,
+    ));
+    account_store.seed(build_account(
+        3,
+        Provider::GrokWeb,
+        false,
+        grok_domain::AuthStatus::ReauthRequired,
+    ));
 
     let models = Arc::new(ModelStoreFake::default());
     models.seed("grok_web", "grok-3");
@@ -508,10 +553,21 @@ impl grok_admin::AdminStore for AccountStore {
             .take(page_size as usize)
             .map(grok_admin::AccountView::from)
             .collect();
-        Ok(grok_admin::AccountPage { items, page, page_size, total })
+        Ok(grok_admin::AccountPage {
+            items,
+            page,
+            page_size,
+            total,
+        })
     }
     async fn get_account(&self, id: i64) -> AdminResult<Option<grok_domain::Account>> {
-        Ok(self.accounts.lock().unwrap().iter().find(|a| a.id == id).cloned())
+        Ok(self
+            .accounts
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|a| a.id == id)
+            .cloned())
     }
     async fn update_account(
         &self,
@@ -632,7 +688,10 @@ impl grok_admin::AdminStore for AccountStore {
                 id,
                 identity_key: identity_key.to_string(),
                 provider,
-                name: input.name.clone().unwrap_or_else(|| format!("imported-{id}")),
+                name: input
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| format!("imported-{id}")),
                 priority: input.priority.unwrap_or(1),
                 max_concurrent: input.max_concurrent.unwrap_or(8),
                 enabled: true,
@@ -693,7 +752,9 @@ async fn guard_returns_401_without_bearer() {
 #[tokio::test]
 async fn dashboard_endpoint() {
     let (router, token) = setup().await;
-    let resp = router.handle("GET", "/admin/dashboard", Some(&bearer(&token)), None).await;
+    let resp = router
+        .handle("GET", "/admin/dashboard", Some(&bearer(&token)), None)
+        .await;
     assert_eq!(resp.status, 200, "dashboard: {}", resp.body);
     assert_eq!(resp.body["total_accounts"], 3);
     assert_eq!(resp.body["available_accounts"], 2);
@@ -704,28 +765,50 @@ async fn dashboard_endpoint() {
 async fn models_crud_and_bindings() {
     let (router, token) = setup().await;
     // 列表
-    let resp = router.handle("GET", "/admin/models", Some(&bearer(&token)), None).await;
+    let resp = router
+        .handle("GET", "/admin/models", Some(&bearer(&token)), None)
+        .await;
     assert_eq!(resp.status, 200);
     assert_eq!(resp.body["total"], 1);
     // 创建
     let create = r#"{"provider":"grok_build","upstream_model":"grok-4","aliases":["grok-4b"]}"#;
-    let resp = router.handle("POST", "/admin/models", Some(&bearer(&token)), Some(create)).await;
+    let resp = router
+        .handle("POST", "/admin/models", Some(&bearer(&token)), Some(create))
+        .await;
     assert_eq!(resp.status, 201, "create: {}", resp.body);
     let new_id = resp.body["id"].as_i64().unwrap();
     // 更新
     let update = r#"{"enabled":false}"#;
-    let resp = router.handle("PATCH", &format!("/admin/models/{new_id}"), Some(&bearer(&token)), Some(update)).await;
+    let resp = router
+        .handle(
+            "PATCH",
+            &format!("/admin/models/{new_id}"),
+            Some(&bearer(&token)),
+            Some(update),
+        )
+        .await;
     assert_eq!(resp.status, 200);
     assert_eq!(resp.body["enabled"], false);
     // 删除
-    let resp = router.handle("DELETE", &format!("/admin/models/{new_id}"), Some(&bearer(&token)), None).await;
+    let resp = router
+        .handle(
+            "DELETE",
+            &format!("/admin/models/{new_id}"),
+            Some(&bearer(&token)),
+            None,
+        )
+        .await;
     assert_eq!(resp.status, 200);
     assert_eq!(resp.body["deleted"], true);
     // 删除不存在 → 404
-    let resp = router.handle("DELETE", "/admin/models/999", Some(&bearer(&token)), None).await;
+    let resp = router
+        .handle("DELETE", "/admin/models/999", Some(&bearer(&token)), None)
+        .await;
     assert_eq!(resp.status, 404);
     // 绑定
-    let resp = router.handle("GET", "/admin/models/accounts", Some(&bearer(&token)), None).await;
+    let resp = router
+        .handle("GET", "/admin/models/accounts", Some(&bearer(&token)), None)
+        .await;
     assert_eq!(resp.status, 200);
     assert_eq!(resp.body["items"][0]["upstream_model"], "grok-3");
 }
@@ -733,33 +816,72 @@ async fn models_crud_and_bindings() {
 #[tokio::test]
 async fn client_keys_crud() {
     let (router, token) = setup().await;
-    let resp = router.handle("GET", "/admin/client-keys", Some(&bearer(&token)), None).await;
+    let resp = router
+        .handle("GET", "/admin/client-keys", Some(&bearer(&token)), None)
+        .await;
     assert_eq!(resp.status, 200);
     assert_eq!(resp.body["total"], 0);
     let create = r#"{"name":"web-gateway"}"#;
-    let resp = router.handle("POST", "/admin/client-keys", Some(&bearer(&token)), Some(create)).await;
+    let resp = router
+        .handle(
+            "POST",
+            "/admin/client-keys",
+            Some(&bearer(&token)),
+            Some(create),
+        )
+        .await;
     assert_eq!(resp.status, 201, "create key: {}", resp.body);
     assert!(resp.body["secret"].as_str().unwrap().starts_with("sk-"));
     let key_id = resp.body["key"]["id"].as_i64().unwrap();
     // 更新
-    let resp = router.handle("PATCH", &format!("/admin/client-keys/{key_id}"), Some(&bearer(&token)), Some(r#"{"enabled":false}"#)).await;
+    let resp = router
+        .handle(
+            "PATCH",
+            &format!("/admin/client-keys/{key_id}"),
+            Some(&bearer(&token)),
+            Some(r#"{"enabled":false}"#),
+        )
+        .await;
     assert_eq!(resp.status, 200);
     assert_eq!(resp.body["enabled"], false);
     // 删除
-    let resp = router.handle("DELETE", &format!("/admin/client-keys/{key_id}"), Some(&bearer(&token)), None).await;
+    let resp = router
+        .handle(
+            "DELETE",
+            &format!("/admin/client-keys/{key_id}"),
+            Some(&bearer(&token)),
+            None,
+        )
+        .await;
     assert_eq!(resp.status, 200);
     // 删除不存在 → 404
-    let resp = router.handle("DELETE", "/admin/client-keys/999", Some(&bearer(&token)), None).await;
+    let resp = router
+        .handle(
+            "DELETE",
+            "/admin/client-keys/999",
+            Some(&bearer(&token)),
+            None,
+        )
+        .await;
     assert_eq!(resp.status, 404);
 }
 
 #[tokio::test]
 async fn audits_list_and_summary() {
     let (router, token) = setup().await;
-    let resp = router.handle("GET", "/admin/request-audits", Some(&bearer(&token)), None).await;
+    let resp = router
+        .handle("GET", "/admin/request-audits", Some(&bearer(&token)), None)
+        .await;
     assert_eq!(resp.status, 200);
     assert_eq!(resp.body["total"], 2);
-    let resp = router.handle("GET", "/admin/request-audits/summary", Some(&bearer(&token)), None).await;
+    let resp = router
+        .handle(
+            "GET",
+            "/admin/request-audits/summary",
+            Some(&bearer(&token)),
+            None,
+        )
+        .await;
     assert_eq!(resp.status, 200);
     assert_eq!(resp.body["requests_24h"], 2);
     assert_eq!(resp.body["succeeded_24h"], 1);
@@ -769,11 +891,15 @@ async fn audits_list_and_summary() {
 #[tokio::test]
 async fn settings_get_and_put_versioned() {
     let (router, token) = setup().await;
-    let resp = router.handle("GET", "/admin/settings", Some(&bearer(&token)), None).await;
+    let resp = router
+        .handle("GET", "/admin/settings", Some(&bearer(&token)), None)
+        .await;
     assert_eq!(resp.status, 200);
     assert_eq!(resp.body["version"], 0);
     let put = r#"{"values":{"maxConcurrentPerAccount":"8"}}"#;
-    let resp = router.handle("PUT", "/admin/settings", Some(&bearer(&token)), Some(put)).await;
+    let resp = router
+        .handle("PUT", "/admin/settings", Some(&bearer(&token)), Some(put))
+        .await;
     assert_eq!(resp.status, 200, "settings put: {}", resp.body);
     assert_eq!(resp.body["version"], 1);
     assert_eq!(resp.body["values"]["maxConcurrentPerAccount"], "8");
@@ -782,13 +908,29 @@ async fn settings_get_and_put_versioned() {
 #[tokio::test]
 async fn chrome_tickets_list_stats_sweep() {
     let (router, token) = setup().await;
-    let resp = router.handle("GET", "/admin/chrome-tickets", Some(&bearer(&token)), None).await;
+    let resp = router
+        .handle("GET", "/admin/chrome-tickets", Some(&bearer(&token)), None)
+        .await;
     assert_eq!(resp.status, 200);
     assert_eq!(resp.body["items"][0]["name"], "web-4");
-    let resp = router.handle("GET", "/admin/chrome-tickets/stats", Some(&bearer(&token)), None).await;
+    let resp = router
+        .handle(
+            "GET",
+            "/admin/chrome-tickets/stats",
+            Some(&bearer(&token)),
+            None,
+        )
+        .await;
     assert_eq!(resp.status, 200);
     assert_eq!(resp.body["available"], 1);
-    let resp = router.handle("POST", "/admin/chrome-tickets/sweep", Some(&bearer(&token)), None).await;
+    let resp = router
+        .handle(
+            "POST",
+            "/admin/chrome-tickets/sweep",
+            Some(&bearer(&token)),
+            None,
+        )
+        .await;
     assert_eq!(resp.status, 200);
     assert_eq!(resp.body["swept"], 1);
 }
@@ -796,16 +938,34 @@ async fn chrome_tickets_list_stats_sweep() {
 #[tokio::test]
 async fn media_and_timeline_and_system() {
     let (router, token) = setup().await;
-    let resp = router.handle("GET", "/admin/media/images", Some(&bearer(&token)), None).await;
+    let resp = router
+        .handle("GET", "/admin/media/images", Some(&bearer(&token)), None)
+        .await;
     assert_eq!(resp.status, 200);
     assert_eq!(resp.body["total"], 1);
-    let resp = router.handle("GET", "/admin/media/images/stats", Some(&bearer(&token)), None).await;
+    let resp = router
+        .handle(
+            "GET",
+            "/admin/media/images/stats",
+            Some(&bearer(&token)),
+            None,
+        )
+        .await;
     assert_eq!(resp.status, 200);
     assert_eq!(resp.body["total_images"], 1);
-    let resp = router.handle("GET", "/admin/image-timeline?limit=10", Some(&bearer(&token)), None).await;
+    let resp = router
+        .handle(
+            "GET",
+            "/admin/image-timeline?limit=10",
+            Some(&bearer(&token)),
+            None,
+        )
+        .await;
     assert_eq!(resp.status, 200);
     assert_eq!(resp.body["items"][0]["status"], "completed");
-    let resp = router.handle("GET", "/admin/system", Some(&bearer(&token)), None).await;
+    let resp = router
+        .handle("GET", "/admin/system", Some(&bearer(&token)), None)
+        .await;
     assert_eq!(resp.status, 200);
     assert_eq!(resp.body["version"], "test");
     assert_eq!(resp.body["ready"], true);
@@ -815,25 +975,65 @@ async fn media_and_timeline_and_system() {
 async fn accounts_summary_analytics_refresh() {
     let (router, token) = setup().await;
     // summary
-    let resp = router.handle("GET", "/admin/accounts/summary", Some(&bearer(&token)), None).await;
+    let resp = router
+        .handle(
+            "GET",
+            "/admin/accounts/summary",
+            Some(&bearer(&token)),
+            None,
+        )
+        .await;
     assert_eq!(resp.status, 200, "summary: {}", resp.body);
     assert_eq!(resp.body["total"], 3);
     assert_eq!(resp.body["available"], 2);
     assert_eq!(resp.body["reauth_required"], 1);
     // analytics
-    let resp = router.handle("GET", "/admin/accounts/analytics", Some(&bearer(&token)), None).await;
+    let resp = router
+        .handle(
+            "GET",
+            "/admin/accounts/analytics",
+            Some(&bearer(&token)),
+            None,
+        )
+        .await;
     assert_eq!(resp.status, 200, "analytics: {}", resp.body);
     // refresh-* 账号不存在 → 404
-    for kind in ["refresh-billing", "refresh-quota", "refresh-token", "reauth"] {
-        let resp = router.handle("POST", &format!("/admin/accounts/999/{kind}"), Some(&bearer(&token)), None).await;
+    for kind in [
+        "refresh-billing",
+        "refresh-quota",
+        "refresh-token",
+        "reauth",
+    ] {
+        let resp = router
+            .handle(
+                "POST",
+                &format!("/admin/accounts/999/{kind}"),
+                Some(&bearer(&token)),
+                None,
+            )
+            .await;
         assert_eq!(resp.status, 404, "{kind} on missing account");
     }
     // refresh-token 正常
-    let resp = router.handle("POST", "/admin/accounts/1/refresh-token", Some(&bearer(&token)), None).await;
+    let resp = router
+        .handle(
+            "POST",
+            "/admin/accounts/1/refresh-token",
+            Some(&bearer(&token)),
+            None,
+        )
+        .await;
     assert_eq!(resp.status, 200, "refresh-token: {}", resp.body);
     assert_eq!(resp.body["refreshed"], "token");
     // reauth 正常
-    let resp = router.handle("POST", "/admin/accounts/1/reauth", Some(&bearer(&token)), None).await;
+    let resp = router
+        .handle(
+            "POST",
+            "/admin/accounts/1/reauth",
+            Some(&bearer(&token)),
+            None,
+        )
+        .await;
     assert_eq!(resp.status, 200);
     assert_eq!(resp.body["refreshed"], "reauth");
 }
@@ -842,7 +1042,14 @@ async fn import_accounts_batch() {
     let (router, token) = setup().await;
     // 全部合法
     let body = r#"[{"identity_key":"k-import-1","provider":"grok_build"},{"identity_key":"k-import-2","provider":"grok_web","name":"w2","priority":5,"max_concurrent":2}]"#;
-    let resp = router.handle("POST", "/admin/accounts/import", Some(&bearer(&token)), Some(body)).await;
+    let resp = router
+        .handle(
+            "POST",
+            "/admin/accounts/import",
+            Some(&bearer(&token)),
+            Some(body),
+        )
+        .await;
     assert_eq!(resp.status, 201, "import: {}", resp.body);
     assert_eq!(resp.body["imported"], 2);
     assert_eq!(resp.body["failed"], 0);
@@ -854,7 +1061,14 @@ async fn import_accounts_batch() {
         {"identity_key":"k-new","provider":"bad_provider"},
         {"identity_key":"","provider":"grok_build"}
     ]"#;
-    let resp = router.handle("POST", "/admin/accounts/import", Some(&bearer(&token)), Some(body)).await;
+    let resp = router
+        .handle(
+            "POST",
+            "/admin/accounts/import",
+            Some(&bearer(&token)),
+            Some(body),
+        )
+        .await;
     assert_eq!(resp.status, 201, "partial import: {}", resp.body);
     assert_eq!(resp.body["imported"], 1);
     assert_eq!(resp.body["failed"], 3);
@@ -863,7 +1077,9 @@ async fn import_accounts_batch() {
     // 校验错误在对应 index（index 1 = k-fresh 成功，不在 errors 中）
     assert!(errors.iter().any(|e| e["index"] == 0));
     assert!(!errors.iter().any(|e| e["index"] == 1));
-    assert!(errors.iter().any(|e| e["index"] == 2 && e["reason"].as_str().unwrap().contains("provider")));
+    assert!(errors
+        .iter()
+        .any(|e| e["index"] == 2 && e["reason"].as_str().unwrap().contains("provider")));
     assert!(errors.iter().any(|e| e["index"] == 3));
 }
 
@@ -871,13 +1087,29 @@ async fn import_accounts_batch() {
 async fn import_requires_bearer_and_valid_json() {
     let (router, token) = setup().await;
     // 无 token → 401
-    let resp = router.handle("POST", "/admin/accounts/import", None, Some("[]")).await;
+    let resp = router
+        .handle("POST", "/admin/accounts/import", None, Some("[]"))
+        .await;
     assert_eq!(resp.status, 401);
     // 坏 JSON → 400
-    let resp = router.handle("POST", "/admin/accounts/import", Some(&bearer(&token)), Some("not-json")).await;
+    let resp = router
+        .handle(
+            "POST",
+            "/admin/accounts/import",
+            Some(&bearer(&token)),
+            Some("not-json"),
+        )
+        .await;
     assert_eq!(resp.status, 400);
     // 空数组 → 201 空结果
-    let resp = router.handle("POST", "/admin/accounts/import", Some(&bearer(&token)), Some("[]")).await;
+    let resp = router
+        .handle(
+            "POST",
+            "/admin/accounts/import",
+            Some(&bearer(&token)),
+            Some("[]"),
+        )
+        .await;
     assert_eq!(resp.status, 201);
     assert_eq!(resp.body["imported"], 0);
 }
@@ -886,22 +1118,54 @@ async fn import_requires_bearer_and_valid_json() {
 async fn analytics_timeseries_and_top_accounts() {
     let (router, token) = setup().await;
     // timeseries：fake 无审计数据 → 空数组（200）
-    let resp = router.handle("GET", "/admin/analytics/timeseries?days=7", Some(&bearer(&token)), None).await;
+    let resp = router
+        .handle(
+            "GET",
+            "/admin/analytics/timeseries?days=7",
+            Some(&bearer(&token)),
+            None,
+        )
+        .await;
     assert_eq!(resp.status, 200, "timeseries: {}", resp.body);
     assert_eq!(resp.body.as_array().unwrap().len(), 0);
     // 默认 days=7；非法 days 也回退默认
-    let resp = router.handle("GET", "/admin/analytics/timeseries", Some(&bearer(&token)), None).await;
+    let resp = router
+        .handle(
+            "GET",
+            "/admin/analytics/timeseries",
+            Some(&bearer(&token)),
+            None,
+        )
+        .await;
     assert_eq!(resp.status, 200);
-    let resp = router.handle("GET", "/admin/analytics/timeseries?days=abc", Some(&bearer(&token)), None).await;
+    let resp = router
+        .handle(
+            "GET",
+            "/admin/analytics/timeseries?days=abc",
+            Some(&bearer(&token)),
+            None,
+        )
+        .await;
     assert_eq!(resp.status, 200);
     // top-accounts：3 个 seed 账号，请求量为 0 → 按 id 升序（limit 截断）
-    let resp = router.handle("GET", "/admin/analytics/top-accounts?limit=2", Some(&bearer(&token)), None).await;
+    let resp = router
+        .handle(
+            "GET",
+            "/admin/analytics/top-accounts?limit=2",
+            Some(&bearer(&token)),
+            None,
+        )
+        .await;
     assert_eq!(resp.status, 200, "top-accounts: {}", resp.body);
     let items = resp.body.as_array().unwrap();
     assert_eq!(items.len(), 2);
     // 401 覆盖
-    let resp = router.handle("GET", "/admin/analytics/timeseries", None, None).await;
+    let resp = router
+        .handle("GET", "/admin/analytics/timeseries", None, None)
+        .await;
     assert_eq!(resp.status, 401);
-    let resp = router.handle("GET", "/admin/analytics/top-accounts", None, None).await;
+    let resp = router
+        .handle("GET", "/admin/analytics/top-accounts", None, None)
+        .await;
     assert_eq!(resp.status, 401);
 }

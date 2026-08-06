@@ -11,7 +11,7 @@ use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
-use grok_domain::{Account, AuthStatus, Provider, egress::Scope};
+use grok_domain::{egress::Scope, Account, AuthStatus, Provider};
 use grok_egress::InMemoryLeaseManager;
 use grok_image_pipeline::{ImagePipeline, InMemoryTraceRepository, SlotManager};
 use grok_pool::SimplifiedPool;
@@ -28,7 +28,10 @@ struct FakeMedia {
 
 #[async_trait::async_trait]
 impl MediaFetcher for FakeMedia {
-    async fn fetch_bytes(&self, _id: &str) -> Result<(Vec<u8>, String), grok_gateway::GatewayError> {
+    async fn fetch_bytes(
+        &self,
+        _id: &str,
+    ) -> Result<(Vec<u8>, String), grok_gateway::GatewayError> {
         Ok((self.bytes.clone(), "image/png".to_string()))
     }
 }
@@ -68,14 +71,17 @@ async fn app_with_media(mock: MockBridgeClient) -> axum::Router {
         bytes: vec![0x89, 0x50, 0x4E, 0x47], // PNG magic
     });
 
-    build_app(with_engines_and_media(build_chat_engine_for_test(), image, media))
+    build_app(with_engines_and_media(
+        build_chat_engine_for_test(),
+        image,
+        media,
+    ))
 }
 
 fn build_chat_engine_for_test() -> grok_provider_web::ChatEngine {
     use grok_egress::LeaseManager;
     let pool: SharedPool = Arc::new(SimplifiedPool::new());
-    let lease: Arc<dyn LeaseManager> =
-        Arc::new(InMemoryLeaseManager::new(&[(Scope::GrokWeb, 4)]));
+    let lease: Arc<dyn LeaseManager> = Arc::new(InMemoryLeaseManager::new(&[(Scope::GrokWeb, 4)]));
     let bridge: Arc<dyn grok_provider_web::BridgeClient> = Arc::new(MockBridgeClient::new());
     grok_provider_web::ChatEngine::new(pool, lease, bridge, None)
 }
