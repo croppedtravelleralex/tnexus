@@ -69,7 +69,10 @@ jobs:
           # 与仓库根 rust-toolchain.toml（channel 1.97）对齐：本地 rustc 1.97.1。
           # 镜像构建（Dockerfile*）仍用 rust:1.94-bookworm，不受本 pin 影响。
           toolchain: 1.97.1
-          components: rustfmt
+      # 仓库根 rust-toolchain.toml 会覆盖 action 的 toolchain 参数（装 1.97 但无 rustfmt），
+      # 显式补装组件供 g0 fmt check 使用。
+      - name: Install rustfmt for repo toolchain
+        run: rustup component add rustfmt
       - name: Cargo test grok crates (when present)
         run: |
           set -euo pipefail
