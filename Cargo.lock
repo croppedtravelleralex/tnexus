@@ -1938,6 +1938,8 @@ dependencies = [
  "grok-domain",
  "grok-egress",
  "grok-gateway",
+ "grok-image-pipeline",
+ "grok-ops",
  "grok-pool",
  "grok-provider-web",
  "grok-storage",

@@ -37,6 +37,24 @@ pub struct ModelRouteInput {
     pub enabled: Option<bool>,
 }
 
+/// 模型别名视图（对齐 Go `/models/aliases`）。
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelAliasView {
+    pub upstream_model: String,
+    pub aliases: Vec<String>,
+    pub enabled: bool,
+}
+
+/// 模型同步状态视图（对齐 Go `/models/sync-state`）。
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelSyncStateView {
+    pub upstream_model: String,
+    /// 绑定了该模型的账号数。
+    pub account_count: i64,
+    /// 最近同步状态（unknown / synced / failed）。
+    pub sync_state: String,
+}
+
 /// 模型↔账号绑定视图（对齐 Go `/models/accounts`）。
 #[derive(Debug, Clone, Serialize)]
 pub struct ModelBindingView {
@@ -55,6 +73,10 @@ pub trait ModelStore: Send + Sync {
     async fn delete(&self, id: i64) -> AdminResult<bool>;
     /// 模型↔账号绑定（对齐 Go `GetModelRouteAccounts`）。
     async fn bindings(&self) -> AdminResult<Vec<ModelBindingView>>;
+    /// 全部模型别名（前端模型下拉）。
+    async fn aliases(&self) -> AdminResult<Vec<ModelAliasView>>;
+    /// 模型同步状态（accountsync 结果摘要）。
+    async fn sync_states(&self) -> AdminResult<Vec<ModelSyncStateView>>;
 }
 
 /// 模型域服务。
@@ -94,6 +116,16 @@ impl ModelAdminService {
 
     pub async fn bindings(&self) -> AdminResult<Vec<ModelBindingView>> {
         self.store.bindings().await
+    }
+
+    /// 全部模型别名。
+    pub async fn aliases(&self) -> AdminResult<Vec<ModelAliasView>> {
+        self.store.aliases().await
+    }
+
+    /// 模型同步状态。
+    pub async fn sync_states(&self) -> AdminResult<Vec<ModelSyncStateView>> {
+        self.store.sync_states().await
     }
 }
 

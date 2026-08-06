@@ -28,7 +28,9 @@ grok-storage = { path = "../grok-storage" }
 grok-gateway = { path = "../grok-gateway" }
 grok-egress = { path = "../grok-egress" }
 grok-pool = { path = "../grok-pool" }
+grok-ops = { path = "../grok-ops" }
 grok-provider-web = { path = "../grok-provider-web" }
+grok-image-pipeline = { path = "../grok-image-pipeline" }
 grok-admin = { path = "../grok-admin" }
 
 [dev-dependencies]

@@ -22,7 +22,9 @@ use grok_admin::{
     ImportAccountInput, ImportError, ImportResult, Session, TimeseriesPoint, TopAccountView,
     UpdateAccountInput,
 };
-use grok_domain::{Account, AuthStatus, ModelState, ModelStatus, Provider, QuotaSource, QuotaWindow};
+use grok_domain::{
+    Account, AuthStatus, ModelState, ModelStatus, Provider, QuotaSource, QuotaWindow,
+};
 use sqlx::postgres::PgPool;
 use sqlx::Row;
 
@@ -641,14 +643,12 @@ impl AdminRepository for PgAdminRepo {
         admin_id: i64,
         password_hash: &str,
     ) -> AdminResult<()> {
-        sqlx::query(
-            "UPDATE grok_admins SET password_hash = $2, updated_at = now() WHERE id = $1",
-        )
-        .bind(admin_id)
-        .bind(password_hash)
-        .execute(&self.pool)
-        .await
-        .map_err(admin_err)?;
+        sqlx::query("UPDATE grok_admins SET password_hash = $2, updated_at = now() WHERE id = $1")
+            .bind(admin_id)
+            .bind(password_hash)
+            .execute(&self.pool)
+            .await
+            .map_err(admin_err)?;
         sqlx::query("DELETE FROM grok_admin_sessions WHERE admin_id = $1")
             .bind(admin_id)
             .execute(&self.pool)
@@ -786,9 +786,7 @@ mod tests {
     async fn pg_bundle_constructs_without_db_connection() {
         let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(1)
-            .connect_lazy(
-                "postgres://nobody:secret@127.0.0.1:1/grok?connect_timeout=1",
-            )
+            .connect_lazy("postgres://nobody:secret@127.0.0.1:1/grok?connect_timeout=1")
             .expect("lazy pool never connects");
         // password=None → 跳过 bootstrap（不做 DB 查询），仅验证 PG store/repo 组装。
         let bundle = build_admin_bundle_pg(pool, "admin", None, "test-secret").await;

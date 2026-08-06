@@ -25,6 +25,7 @@ mod admin;
 mod config;
 mod http;
 mod pg_admin;
+mod tasks;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -121,6 +122,24 @@ async fn main() -> anyhow::Result<()> {
         .await
     };
 
+    // 后台任务（G6 切流前置）：GROK_TASKS_ENABLED=1 且 DB 就绪时启动 Build 四池探针
+    // （TaskScheduler 包装，panic 续跑）。无 DB → 不启动并日志提示。
+    let task_cfg = tasks::TaskConfig::from_env();
+    let _background = if task_cfg.enabled {
+        let bt = tasks::spawn_background_tasks(&task_cfg, repo);
+        tracing::info!(
+            "后台任务已注册: {:?}",
+            bt.status_snapshot()
+                .iter()
+                .map(|s| s.name.clone())
+                .collect::<Vec<_>>()
+        );
+        bt
+    } else {
+        tracing::info!("GROK_TASKS_ENABLED 未设置：后台任务未启动");
+        tasks::BackgroundTasks::empty()
+    };
+
     let state = Arc::new(http::AppState { pool: pool.clone() });
     let health_app = build_router(state);
 
@@ -131,9 +150,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("grok2api-rs /v1+healthz listening on {v1_addr}");
     tracing::info!("grok2api-rs /admin listening on {admin_addr}（仅内网）");
 
-    let v1_server = async {
-        axum::serve(v1_listener, health_app.merge(v1_app)).await
-    };
+    let v1_server = async { axum::serve(v1_listener, health_app.merge(v1_app)).await };
     let admin_server = async { axum::serve(admin_listener, admin::admin_app(admin_bundle)).await };
     tokio::select! {
         r = v1_server => r?,
@@ -180,14 +197,33 @@ fn gateway_state(
     // /v1/responses + /v1/messages：真实 Build/Console 后端（token 未配置时为 None → 503）。
     let (responses, messages) =
         default_protocol_backends(cfg.build_base_url.clone(), cfg.console_base_url.clone());
-    let engine = ChatEngine::new(pool, lease, bridge, None);
-    AppState {
+    let engine = ChatEngine::new(pool.clone(), lease.clone(), bridge.clone(), None);
+    let mut state = AppState {
         engine: Some(Arc::new(engine)),
         responses_backend: responses,
         messages_backend: messages,
-        // 生图/媒体/视频后端未接线 → 路由可达但 503/501/500（G2/G5 收尾 TODO）。
         ..AppState::empty()
+    };
+    // 生图：GROK_IMAGE_ENABLED=1 时接真实 ImageEngine（pool/lease/bridge 已就绪，
+    // 与 chat 同链路）；未开启 → 路由可达但 500（明确错误，不外呼）。
+    if cfg.image_enabled {
+        let image_engine = grok_provider_web::ImageEngine::new(
+            pool,
+            lease,
+            bridge,
+            None,
+            grok_image_pipeline::ImagePipeline::new(
+                grok_image_pipeline::SlotManager::new(&[("ps", 2), ("ss", 1)]),
+                Arc::new(grok_image_pipeline::InMemoryTraceRepository::new()),
+            ),
+        );
+        state.image_engine = Some(Arc::new(image_engine));
+        tracing::info!("GROK_IMAGE_ENABLED=1：/v1/images/generations 已接线真实引擎");
+    } else {
+        tracing::warn!("GROK_IMAGE_ENABLED 未设置：生图路由 500（需 bridge + 票池侧车）");
     }
+    // 媒体/视频后端未接线 → 501/500（G2/G5 收尾 TODO：media fetcher 需存储 + 视频需上游轮询）。
+    state
 }
 
 /// 生产默认：PG 加载号池（调用方已 load）+ 内存/Redis lease + HTTP bridge 侧车。
@@ -235,6 +271,7 @@ mod tests {
             admin_secret: "12345678901234567890123456789012".to_string(),
             admin_username: "admin".to_string(),
             admin_password: Some("admin123456".to_string()),
+            image_enabled: false,
         }
     }
 
@@ -265,9 +302,12 @@ mod tests {
             Arc::new(InMemoryLeaseManager::new(&[(Scope::GrokWeb, 4)]));
         let cfg = test_cfg();
         let state = Arc::new(http::AppState { pool: lazy_pool() });
-        let bundle =
-            build_admin_bundle(&cfg.admin_username, cfg.admin_password.as_deref(), &cfg.admin_secret)
-                .await;
+        let bundle = build_admin_bundle(
+            &cfg.admin_username,
+            cfg.admin_password.as_deref(),
+            &cfg.admin_secret,
+        )
+        .await;
         build_router(state)
             .merge(gateway_app(&cfg, pool, lease, Arc::new(mock)))
             .merge(admin::admin_app(bundle))
@@ -310,7 +350,12 @@ mod tests {
         // 懒连接池连不上：readyz 应 503 且 body 不含 DSN/detail。
         let app = app_with_mock_bridge("你好").await;
         let resp = app
-            .oneshot(Request::builder().uri("/readyz").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/readyz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
@@ -318,7 +363,10 @@ mod tests {
         let text = String::from_utf8_lossy(&bytes);
         let body: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(body["db"], "error");
-        assert!(body.get("detail").is_none(), "readyz 不得回传内部错误 detail");
+        assert!(
+            body.get("detail").is_none(),
+            "readyz 不得回传内部错误 detail"
+        );
         assert!(
             !text.contains("postgres://"),
             "readyz 不得泄露 DB DSN: {text}"
@@ -408,26 +456,24 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "无凭据 POST 应 401");
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "无凭据 POST 应 401"
+        );
         // 错误响应是结构化 JSON（非纯文本/空）。
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["error"], "unauthorized");
         // GET /v1/models 不要求鉴权。
-        assert_eq!(
-            get_status(app.clone(), "/v1/models").await,
-            StatusCode::OK
-        );
+        assert_eq!(get_status(app.clone(), "/v1/models").await, StatusCode::OK);
     }
 
     #[tokio::test]
     async fn v1_auth_accepts_bearer_and_api_key() {
         let app = app_with_mock_bridge_and_key("你好", "sekret").await;
         let body = r#"{"model":"grok-chat","messages":[{"role":"user","content":"hi"}]}"#;
-        for header in [
-            ("authorization", "Bearer sekret"),
-            ("x-api-key", "sekret"),
-        ] {
+        for header in [("authorization", "Bearer sekret"), ("x-api-key", "sekret")] {
             let resp = app
                 .clone()
                 .oneshot(
@@ -587,6 +633,30 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "未 bootstrap 应 401");
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "未 bootstrap 应 401"
+        );
+    }
+    #[test]
+    fn gateway_state_image_engine_switch() {
+        let mut cfg = test_cfg();
+        let mock = Arc::new(grok_provider_web::MockBridgeClient::new());
+        let pool: SharedPool = Arc::new(SimplifiedPool::new());
+        let lease = Arc::new(grok_egress::InMemoryLeaseManager::new(&[(
+            grok_domain::Scope::GrokWeb,
+            4,
+        )]));
+        // 默认关闭 → None
+        let state = gateway_state(&cfg, mock.clone(), pool.clone(), lease.clone());
+        assert!(state.image_engine.is_none(), "默认应无生图引擎");
+        // 开启 → Some（真实 ImageEngine 组装成功）
+        cfg.image_enabled = true;
+        let state2 = gateway_state(&cfg, mock, pool, lease);
+        assert!(
+            state2.image_engine.is_some(),
+            "GROK_IMAGE_ENABLED=1 应组装真实 ImageEngine"
+        );
     }
 }

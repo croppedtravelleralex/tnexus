@@ -93,6 +93,111 @@ export type GrokAuditSummary = {
   success_rate_24h: number;
 };
 
+/** 模型路由（对齐 grok-admin `ModelRoute`，snake_case） */
+export type GrokModelRoute = {
+  id: number;
+  provider: string;
+  upstream_model: string;
+  /** 公开别名（可多个） */
+  aliases: string[];
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+/** 模型创建/更新输入（对齐 `ModelRouteInput`） */
+export type GrokModelRouteInput = {
+  provider: string;
+  upstream_model: string;
+  aliases?: string[];
+  enabled?: boolean;
+};
+
+/** 模型分页（对齐 `/admin/models` 响应） */
+export type GrokModelPage = {
+  items: GrokModelRoute[];
+  page: number;
+  pageSize: number;
+  total: number;
+};
+
+/** 模型↔账号绑定（对齐 `ModelBindingView`） */
+export type GrokModelBinding = {
+  model_route_id: number;
+  upstream_model: string;
+  account_ids: number[];
+};
+
+/** 客户端密钥（对齐 `ClientKeyView`） */
+export type GrokClientKey = {
+  id: number;
+  name: string;
+  /** 密钥前 8 位（识别用；不含完整 secret） */
+  prefix: string;
+  enabled: boolean;
+  created_at: string;
+  last_used_at: string | null;
+};
+
+/** 密钥创建结果（secret 仅创建时返回一次） */
+export type GrokKeyCreateResult = {
+  key: GrokClientKey;
+  secret: string;
+};
+
+/** 密钥分页（对齐 `/admin/client-keys` 响应） */
+export type GrokKeyPage = {
+  items: GrokClientKey[];
+  page: number;
+  pageSize: number;
+  total: number;
+};
+
+/** 仪表盘聚合（对齐 `DashboardView`） */
+export type GrokDashboardView = {
+  total_accounts: number;
+  available_accounts: number;
+  cooldown_accounts: number;
+  reauth_accounts: number;
+  quota_exhausted_accounts: number;
+  requests_24h: number;
+  success_rate_24h: number;
+  model_routes: number;
+  active_client_keys: number;
+  last_request_at: string | null;
+};
+
+/** 每日聚合点（对齐 `TimeseriesPoint`） */
+export type GrokTimeseriesPoint = {
+  date: string;
+  requests: number;
+  succeeded: number;
+  failed: number;
+  latency_p50_ms: number;
+};
+
+/** Top 账号（对齐 `TopAccountView`） */
+export type GrokTopAccount = {
+  account_id: number;
+  name: string;
+  requests: number;
+  failed: number;
+  /** 失败率 0.0–1.0 */
+  failure_rate: number;
+};
+
+/** 设置视图（对齐 `SettingsView`） */
+export type GrokSettingsView = {
+  version: number;
+  updated_at: string;
+  values: Record<string, string>;
+};
+
+/** 设置写入输入（对齐 `SettingsInput`） */
+export type GrokSettingsInput = {
+  values: Record<string, string>;
+};
+
 /** 账号详情（账号 + 额度窗口 + 模型状态，对齐 `AccountDetail`） */
 export type GrokAccountDetail = GrokAccountView & {
   quota_windows: GrokQuotaWindow[];
@@ -245,6 +350,120 @@ export const grokAdminApi = {
   /** 审计汇总（近 24h 成功率等） */
   getAuditSummary: async (token: string): Promise<GrokAuditSummary> => {
     return grokAdminGet<GrokAuditSummary>(token, "/admin/request-audits/summary");
+  },
+
+  // ── 模型路由（/admin/models）──
+  listModels: async (
+    token: string,
+    params?: { page?: number; pageSize?: number },
+  ): Promise<GrokModelPage> => {
+    const q = new URLSearchParams();
+    if (params?.page != null) q.set("page", String(params.page));
+    if (params?.pageSize != null) q.set("pageSize", String(params.pageSize));
+    const query = q.toString();
+    return grokAdminGet<GrokModelPage>(
+      token,
+      `/admin/models${query ? `?${query}` : ""}`,
+    );
+  },
+
+  createModel: async (token: string, input: GrokModelRouteInput): Promise<GrokModelRoute> => {
+    const res = await grokAdminFetch(token, "/admin/models", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    return res.json() as Promise<GrokModelRoute>;
+  },
+
+  updateModel: async (token: string, id: number, input: Partial<GrokModelRouteInput>): Promise<GrokModelRoute> => {
+    const res = await grokAdminFetch(token, `/admin/models/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    return res.json() as Promise<GrokModelRoute>;
+  },
+
+  deleteModel: async (token: string, id: number) => {
+    const res = await grokAdminFetch(token, `/admin/models/${id}`, { method: "DELETE" });
+    return res.json();
+  },
+
+  listModelBindings: async (token: string): Promise<GrokModelBinding[]> => {
+    const res = await grokAdminGet<{ items: GrokModelBinding[] }>(token, "/admin/models/accounts");
+    return res.items ?? [];
+  },
+
+  // ── 客户端密钥（/admin/client-keys）──
+  listKeys: async (
+    token: string,
+    params?: { page?: number; pageSize?: number },
+  ): Promise<GrokKeyPage> => {
+    const q = new URLSearchParams();
+    if (params?.page != null) q.set("page", String(params.page));
+    if (params?.pageSize != null) q.set("pageSize", String(params.pageSize));
+    const query = q.toString();
+    return grokAdminGet<GrokKeyPage>(
+      token,
+      `/admin/client-keys${query ? `?${query}` : ""}`,
+    );
+  },
+
+  createKey: async (token: string, input: { name: string }): Promise<GrokKeyCreateResult> => {
+    const res = await grokAdminFetch(token, "/admin/client-keys", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    return res.json() as Promise<GrokKeyCreateResult>;
+  },
+
+  updateKey: async (token: string, id: number, input: { enabled: boolean }): Promise<GrokClientKey> => {
+    const res = await grokAdminFetch(token, `/admin/client-keys/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    return res.json() as Promise<GrokClientKey>;
+  },
+
+  deleteKey: async (token: string, id: number) => {
+    const res = await grokAdminFetch(token, `/admin/client-keys/${id}`, { method: "DELETE" });
+    return res.json();
+  },
+
+  // ── 仪表盘 / 分析（/admin/dashboard + /admin/analytics/*）──
+  getDashboard: async (token: string): Promise<GrokDashboardView> => {
+    return grokAdminGet<GrokDashboardView>(token, "/admin/dashboard");
+  },
+
+  getTimeseries: async (token: string, days = 7): Promise<GrokTimeseriesPoint[]> => {
+    return grokAdminGet<GrokTimeseriesPoint[]>(
+      token,
+      `/admin/analytics/timeseries?days=${days}`,
+    );
+  },
+
+  getTopAccounts: async (token: string, limit = 10): Promise<GrokTopAccount[]> => {
+    return grokAdminGet<GrokTopAccount[]>(
+      token,
+      `/admin/analytics/top-accounts?limit=${limit}`,
+    );
+  },
+
+  // ── 设置（/admin/settings）──
+  getSettings: async (token: string): Promise<GrokSettingsView> => {
+    return grokAdminGet<GrokSettingsView>(token, "/admin/settings");
+  },
+
+  putSettings: async (token: string, input: GrokSettingsInput): Promise<GrokSettingsView> => {
+    const res = await grokAdminFetch(token, "/admin/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    return res.json() as Promise<GrokSettingsView>;
   },
 };
 

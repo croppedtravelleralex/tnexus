@@ -38,10 +38,16 @@ pub use dashboard::{DashboardService, DashboardStore, DashboardView};
 pub use domain::{Admin, Session};
 pub use error::{AdminError, AdminResult};
 pub use guard::{authenticate_bearer, bearer_token, AuthContext};
-pub use media::{ImageTimelineEntry, MediaImageView, MediaService, MediaStatsView, MediaStore};
-pub use models::{ModelAdminService, ModelBindingView, ModelRoute, ModelRouteInput, ModelStore};
+pub use media::{
+    ImageTimelineEntry, MediaImageView, MediaService, MediaSizeSummaryView, MediaStatsView,
+    MediaStore, SizeBucket,
+};
+pub use models::{
+    ModelAdminService, ModelAliasView, ModelBindingView, ModelRoute, ModelRouteInput, ModelStore,
+    ModelSyncStateView,
+};
 pub use repos::{AdminRepository, AdminSessionRepository, RateLimiter};
 pub use security::{hash_password, hash_token, new_opaque_token, verify_password, TokenService};
 pub use service::{AdminAuthService, Tokens};
 pub use settings::{SettingsInput, SettingsService, SettingsStore, SettingsView};
-pub use system::{SystemService, SystemView};
+pub use system::{ConfigView, LogEntry, SystemService, SystemView};

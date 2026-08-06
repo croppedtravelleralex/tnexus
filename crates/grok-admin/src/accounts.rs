@@ -530,4 +530,3 @@ pub(crate) fn validate_import_input(input: &ImportAccountInput) -> Option<String
     }
     None
 }
-

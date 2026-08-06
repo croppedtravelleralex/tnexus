@@ -183,6 +183,12 @@ impl AdminRouter {
             ["admin", "models", "accounts"] if method.eq_ignore_ascii_case("GET") => {
                 self.models_bindings().await
             }
+            ["admin", "models", "aliases"] if method.eq_ignore_ascii_case("GET") => {
+                self.models_aliases().await
+            }
+            ["admin", "models", "sync-state"] if method.eq_ignore_ascii_case("GET") => {
+                self.models_sync_states().await
+            }
             ["admin", "models"] => match method.to_ascii_uppercase().as_str() {
                 "GET" => self.models_list(query).await,
                 "POST" => self.models_create(body).await,
@@ -238,11 +244,24 @@ impl AdminRouter {
             ["admin", "media", "images", "stats"] if method.eq_ignore_ascii_case("GET") => {
                 self.media_stats().await
             }
+            ["admin", "media", "size-summary"] if method.eq_ignore_ascii_case("GET") => {
+                self.media_size_summary().await
+            }
+            ["admin", "media", "images", id] if method.eq_ignore_ascii_case("GET") => {
+                self.media_get(id).await
+            }
             ["admin", "media", "images"] if method.eq_ignore_ascii_case("GET") => {
                 self.media_list(query).await
             }
             ["admin", "image-timeline"] if method.eq_ignore_ascii_case("GET") => {
                 self.image_timeline(query).await
+            }
+            // ── 模型扩展 / 系统扩展 ──
+            ["admin", "system", "config"] if method.eq_ignore_ascii_case("GET") => {
+                self.system_config().await
+            }
+            ["admin", "system", "logs"] if method.eq_ignore_ascii_case("GET") => {
+                self.system_logs(query).await
             }
             _ => AdminHttpResponse::bad_request("routeNotFound", "未知路由"),
         }
@@ -523,6 +542,28 @@ impl AdminRouter {
         }
     }
 
+    /// GET /admin/models/aliases：全部模型别名（前端模型下拉）。
+    async fn models_aliases(&self) -> AdminHttpResponse {
+        let Some(service) = &self.domains.models else {
+            return domain_not_wired("models");
+        };
+        match service.aliases().await {
+            Ok(items) => AdminHttpResponse::ok(json!({ "items": items })),
+            Err(e) => map_error(e),
+        }
+    }
+
+    /// GET /admin/models/sync-state：模型同步状态。
+    async fn models_sync_states(&self) -> AdminHttpResponse {
+        let Some(service) = &self.domains.models else {
+            return domain_not_wired("models");
+        };
+        match service.sync_states().await {
+            Ok(items) => AdminHttpResponse::ok(json!({ "items": items })),
+            Err(e) => map_error(e),
+        }
+    }
+
     async fn keys_list(&self, query: &str) -> AdminHttpResponse {
         let (page, page_size) = page_params(query);
         let Some(service) = &self.domains.client_keys else {
@@ -692,6 +733,28 @@ impl AdminRouter {
         }
     }
 
+    /// GET /admin/media/images/{asset_id}：单张详情（无 → 404）。
+    async fn media_get(&self, asset_id: &str) -> AdminHttpResponse {
+        let Some(service) = &self.domains.media else {
+            return domain_not_wired("media");
+        };
+        match service.get_image(asset_id).await {
+            Ok(image) => AdminHttpResponse::ok(json!(image)),
+            Err(e) => map_error(e),
+        }
+    }
+
+    /// GET /admin/media/size-summary：大小分布。
+    async fn media_size_summary(&self) -> AdminHttpResponse {
+        let Some(service) = &self.domains.media else {
+            return domain_not_wired("media");
+        };
+        match service.size_summary().await {
+            Ok(summary) => AdminHttpResponse::ok(json!(summary)),
+            Err(e) => map_error(e),
+        }
+    }
+
     async fn image_timeline(&self, query: &str) -> AdminHttpResponse {
         let limit = query
             .split('&')
@@ -709,10 +772,38 @@ impl AdminRouter {
 
     async fn system(&self) -> AdminHttpResponse {
         let view = match &self.domains.system {
-            Some(service) => service.view(),
+            Some(service) => {
+                service.log("info", "system.view");
+                service.view()
+            }
             None => crate::system::SystemService::new().view(),
         };
         AdminHttpResponse::ok(json!(view))
+    }
+
+    /// GET /admin/system/config：关键 env 配置状态（布尔，不泄露值）。
+    async fn system_config(&self) -> AdminHttpResponse {
+        let view = match &self.domains.system {
+            Some(service) => service.config_view(),
+            None => crate::system::SystemService::new().config_view(),
+        };
+        AdminHttpResponse::ok(json!(view))
+    }
+
+    /// GET /admin/system/logs?limit=N：最近运行日志（内存环形缓冲）。
+    async fn system_logs(&self, query: &str) -> AdminHttpResponse {
+        let limit: usize = query_params(query)
+            .get("limit")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(50);
+        let items = match &self.domains.system {
+            Some(service) => {
+                service.log("info", "system.logs.view");
+                service.recent_logs(limit)
+            }
+            None => Vec::new(),
+        };
+        AdminHttpResponse::ok(json!({ "items": items }))
     }
 }
 

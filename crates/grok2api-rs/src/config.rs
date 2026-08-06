@@ -39,6 +39,9 @@ pub struct Config {
     pub admin_username: String,
     /// 首启 bootstrap 的管理员密码；缺省不设置 → admin 不可用并告警。
     pub admin_password: Option<String>,
+    /// 生图引擎开关（`GROK_IMAGE_ENABLED=1`）。生图走真实 bridge（默认不外呼，
+    /// 与 provider「未配置不外呼」红线一致）；未开启时 `/v1/images/generations` 500。
+    pub image_enabled: bool,
 }
 
 impl Config {
@@ -68,14 +71,17 @@ impl Config {
             .or_else(|_| env::var("GATEWAY_AUTH_KEY"))
             .ok()
             .filter(|s| !s.trim().is_empty());
-        let admin_listen =
-            env::var("GROK_ADMIN_LISTEN").unwrap_or_else(|_| "0.0.0.0:8091".into());
+        let admin_listen = env::var("GROK_ADMIN_LISTEN").unwrap_or_else(|_| "0.0.0.0:8091".into());
 
         let admin_secret = env::var("GROK_ADMIN_SECRET").unwrap_or_default();
         let admin_username = env::var("GROK_ADMIN_USERNAME").unwrap_or_else(|_| "admin".into());
         let admin_password = env::var("GROK_ADMIN_PASSWORD")
             .ok()
             .filter(|s| !s.trim().is_empty());
+
+        let image_enabled = env::var("GROK_IMAGE_ENABLED")
+            .map(|v| v.trim() == "1")
+            .unwrap_or(false);
 
         let config = Self {
             server_addr,
@@ -89,6 +95,7 @@ impl Config {
             admin_secret,
             admin_username,
             admin_password,
+            image_enabled,
         };
         config.validate()?;
         Ok(config)
@@ -142,6 +149,7 @@ mod tests {
             admin_secret: "12345678901234567890123456789012".to_string(),
             admin_username: "admin".to_string(),
             admin_password: Some("admin123456".to_string()),
+            image_enabled: false,
         }
     }
 

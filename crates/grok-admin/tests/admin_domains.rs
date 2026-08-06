@@ -192,6 +192,30 @@ impl ModelStore for ModelStoreFake {
         routes.retain(|r| r.id != id);
         Ok(routes.len() != before)
     }
+    async fn aliases(&self) -> AdminResult<Vec<grok_admin::ModelAliasView>> {
+        Ok(self
+            .routes
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|r| grok_admin::ModelAliasView {
+                upstream_model: r.upstream_model.clone(),
+                aliases: r.aliases.clone(),
+                enabled: r.enabled,
+            })
+            .collect())
+    }
+    async fn sync_states(&self) -> AdminResult<Vec<grok_admin::ModelSyncStateView>> {
+        let routes = self.routes.lock().unwrap();
+        Ok(routes
+            .iter()
+            .map(|r| grok_admin::ModelSyncStateView {
+                upstream_model: r.upstream_model.clone(),
+                account_count: 1,
+                sync_state: if r.enabled { "synced" } else { "unknown" }.into(),
+            })
+            .collect())
+    }
     async fn bindings(&self) -> AdminResult<Vec<ModelBindingView>> {
         Ok(self
             .routes
@@ -409,6 +433,23 @@ impl MediaStore for MediaFake {
             total_images: images.len() as i64,
             total_bytes: images.iter().map(|i| i.size_bytes.unwrap_or(0)).sum(),
             recent_24h: images.len() as i64,
+        })
+    }
+    async fn get_image(&self, asset_id: &str) -> AdminResult<Option<MediaImageView>> {
+        Ok(self
+            .images
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|i| i.asset_id == asset_id)
+            .cloned())
+    }
+    async fn size_summary(&self) -> AdminResult<grok_admin::MediaSizeSummaryView> {
+        let images = self.images.lock().unwrap();
+        Ok(grok_admin::MediaSizeSummaryView {
+            total_images: images.len() as i64,
+            total_bytes: images.iter().map(|i| i.size_bytes.unwrap_or(0)).sum(),
+            buckets: vec![],
         })
     }
     async fn timeline(&self, limit: usize) -> AdminResult<Vec<grok_admin::ImageTimelineEntry>> {
@@ -1186,15 +1227,96 @@ async fn import_field_level_validation_records_errors() {
         ]"#
     );
     let resp = router
-        .handle("POST", "/admin/accounts/import", Some(&bearer(&token)), Some(&body))
+        .handle(
+            "POST",
+            "/admin/accounts/import",
+            Some(&bearer(&token)),
+            Some(&body),
+        )
         .await;
     assert_eq!(resp.status, 201, "import: {}", resp.body);
     assert_eq!(resp.body["imported"], 1, "only ok-4 imported");
     assert_eq!(resp.body["failed"], 4);
     let errors = resp.body["errors"].as_array().unwrap();
     assert_eq!(errors.len(), 4);
-    assert!(errors.iter().any(|e| e["index"] == 0 && e["reason"].as_str().unwrap().contains("超长")));
-    assert!(errors.iter().any(|e| e["index"] == 1 && e["reason"].as_str().unwrap().contains("超长")));
-    assert!(errors.iter().any(|e| e["index"] == 2 && e["reason"].as_str().unwrap().contains("priority")));
-    assert!(errors.iter().any(|e| e["index"] == 3 && e["reason"].as_str().unwrap().contains("max_concurrent")));
+    assert!(errors
+        .iter()
+        .any(|e| e["index"] == 0 && e["reason"].as_str().unwrap().contains("超长")));
+    assert!(errors
+        .iter()
+        .any(|e| e["index"] == 1 && e["reason"].as_str().unwrap().contains("超长")));
+    assert!(errors
+        .iter()
+        .any(|e| e["index"] == 2 && e["reason"].as_str().unwrap().contains("priority")));
+    assert!(errors
+        .iter()
+        .any(|e| e["index"] == 3 && e["reason"].as_str().unwrap().contains("max_concurrent")));
+}
+
+#[tokio::test]
+async fn media_get_and_size_summary() {
+    let (router, token) = setup().await;
+    let bearer = bearer(&token);
+    // 存在 → 200 详情
+    let resp = router
+        .handle("GET", "/admin/media/images/img_1", Some(&bearer), None)
+        .await;
+    assert_eq!(resp.status, 200, "media get: {}", resp.body);
+    assert_eq!(resp.body["asset_id"], "img_1");
+    // 不存在 → 404
+    let resp = router
+        .handle("GET", "/admin/media/images/nope", Some(&bearer), None)
+        .await;
+    assert_eq!(resp.status, 404, "media get missing: {}", resp.body);
+    // size-summary → 200 汇总
+    let resp = router
+        .handle("GET", "/admin/media/size-summary", Some(&bearer), None)
+        .await;
+    assert_eq!(resp.status, 200, "size summary: {}", resp.body);
+    assert_eq!(resp.body["total_images"], 1);
+    // 401 覆盖
+    let resp = router
+        .handle("GET", "/admin/media/images/img_1", None, None)
+        .await;
+    assert_eq!(resp.status, 401);
+}
+
+#[tokio::test]
+async fn system_config_and_logs_and_models_ext() {
+    let (router, token) = setup().await;
+    let bearer = bearer(&token);
+    // system/config → 200 布尔视图
+    let resp = router
+        .handle("GET", "/admin/system/config", Some(&bearer), None)
+        .await;
+    assert_eq!(resp.status, 200, "system config: {}", resp.body);
+    assert!(resp.body.get("admin_password_set").is_some());
+    // system/logs → 200（含访问日志）
+    let resp = router
+        .handle("GET", "/admin/system/logs?limit=5", Some(&bearer), None)
+        .await;
+    assert_eq!(resp.status, 200, "system logs: {}", resp.body);
+    eprintln!("LOGS_BODY={}", resp.body);
+    let items = resp.body["items"].as_array().unwrap();
+    assert!(!items.is_empty(), "logs should record access entries");
+    // models/aliases → 200
+    let resp = router
+        .handle("GET", "/admin/models/aliases", Some(&bearer), None)
+        .await;
+    assert_eq!(resp.status, 200, "aliases: {}", resp.body);
+    assert!(!resp.body["items"].as_array().unwrap().is_empty());
+    // models/sync-state → 200
+    let resp = router
+        .handle("GET", "/admin/models/sync-state", Some(&bearer), None)
+        .await;
+    assert_eq!(resp.status, 200, "sync-state: {}", resp.body);
+    assert_eq!(
+        resp.body["items"].as_array().unwrap()[0]["account_count"],
+        1
+    );
+    // 401 覆盖
+    let resp = router
+        .handle("GET", "/admin/system/config", None, None)
+        .await;
+    assert_eq!(resp.status, 401);
 }

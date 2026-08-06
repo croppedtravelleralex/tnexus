@@ -20,13 +20,13 @@ use axum::extract::{Path, State};
 use axum::http::{Method, StatusCode};
 use axum::response::IntoResponse;
 use axum::{Json, Router};
-use serde::Deserialize;
-use serde_json::json;
 use grok_admin::{
     Admin, AdminAuthService, AdminRepository, AdminResult, AdminRouter, AdminSessionRepository,
     AdminStore, Session, TokenService,
 };
 use grok_domain::{Account, QuotaWindow};
+use serde::Deserialize;
+use serde_json::json;
 
 /// 内存认证存储（管理员 + 会话）。
 #[derive(Default)]
@@ -333,7 +333,11 @@ async fn admin_login(
 ) -> impl IntoResponse {
     // 上游反代应透传真实来源 IP（X-Forwarded-For）；当前未接 ConnectInfo，用占位。
     const REMOTE: &str = "127.0.0.1";
-    match state.auth.login(&body.username, &body.password, REMOTE).await {
+    match state
+        .auth
+        .login(&body.username, &body.password, REMOTE)
+        .await
+    {
         Ok((admin, tokens)) => (
             StatusCode::OK,
             Json(json!({
