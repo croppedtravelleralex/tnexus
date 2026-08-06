@@ -1210,7 +1210,11 @@ async fn consumes_only_matching_quota_snapshot() {
 #[tokio::test]
 async fn in_memory_outcome_overrides_persisted_state() {
     let loader = Arc::new(FakeLoader::default());
-    let selector = new_selector(loader, Arc::new(InMemoryLimiter::default()), Duration::zero());
+    let selector = new_selector(
+        loader,
+        Arc::new(InMemoryLimiter::default()),
+        Duration::zero(),
+    );
     // 持久化 ModelState：soft-stop 未过期（rank 2）
     let persisted_soft_stop = RoutingCandidate {
         account: build_account(1, 1, 1),
@@ -1241,11 +1245,18 @@ async fn in_memory_outcome_overrides_persisted_state() {
         .sort_candidates(&mut values, now(), &[], "grok-imagine-image")
         .await
         .expect("sort");
-    assert_eq!(values[0].account.id, 1, "in-memory success overrides persisted soft-stop");
+    assert_eq!(
+        values[0].account.id, 1,
+        "in-memory success overrides persisted soft-stop"
+    );
 
     // 反向：持久化 success + 内存 soft-stop → 内存覆盖 → rank 2 排最后
     let loader2 = Arc::new(FakeLoader::default());
-    let selector2 = new_selector(loader2, Arc::new(InMemoryLimiter::default()), Duration::zero());
+    let selector2 = new_selector(
+        loader2,
+        Arc::new(InMemoryLimiter::default()),
+        Duration::zero(),
+    );
     selector2
         .mark_model_soft_stop(1, "grok-imagine-image")
         .await
@@ -1274,13 +1285,20 @@ async fn in_memory_outcome_overrides_persisted_state() {
         .sort_candidates(&mut values, now(), &[], "grok-imagine-image")
         .await
         .expect("sort");
-    assert_eq!(values[2].account.id, 1, "in-memory soft-stop overrides persisted success");
+    assert_eq!(
+        values[2].account.id, 1,
+        "in-memory soft-stop overrides persisted success"
+    );
 }
 
 #[tokio::test]
 async fn mark_success_persists_on_first_success() {
     let loader = Arc::new(FakeLoader::default());
-    let selector = new_selector(loader.clone(), Arc::new(InMemoryLimiter::default()), Duration::zero());
+    let selector = new_selector(
+        loader.clone(),
+        Arc::new(InMemoryLimiter::default()),
+        Duration::zero(),
+    );
     let a = build_account(1, 1, 1); // 无 failure/cooldown/last_error
     selector.mark_success(&a, false).await;
     assert!(
