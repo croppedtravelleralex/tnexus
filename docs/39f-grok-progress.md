@@ -1,5 +1,30 @@
 # 39f — Grok 移植进度记录（做了的 / 未做的 / 要做的）
 
+## 2026-08-06 收尾批次（生产判定后补完）
+
+- **部署草案 Blocker B1-B4 全修**（`ee30d55`）：redis 6380/postgres 5433 对齐主栈、runtime 加 curl、
+  移除不存在的独立 grok-admin 服务、env 必填占位全补、rollback 自动读 last-deploy tag + readyz
+- **DB 对齐**（`ee30d55`）：migrations/019（web_tier 列 + quota_recovery status 放开 active + tier 索引）、
+  storage 读入 created_at/updated_at/last_used_at/web_tier
+- **admin PG 数据面**（`ee30d55`）：grok2api-rs/pg_admin.rs——PgAdminStore/PgAuthRepo/PgSessionRepo
+  （grok_admins/grok_admin_sessions 表），无 DB 降级内存
+- **CI 工具链**（`ee30d55`）：rust-toolchain.toml 1.97 + workflow pin 1.97.1；grok-gate 15 crate 全含
+- **grok-admin 端点补全**（`9cb872c`）：+5 端点（media get/size-summary、system config/logs、
+  models aliases/sync-state）+ 系统环形日志 + 配置布尔视图，15 测试
+- **生图接线**（`9cb872c`）：GROK_IMAGE_ENABLED=1 接真实 ImageEngine（未开 500 明确错误不外呼）
+- **后台任务**（`9cb872c`）：GROK_TASKS_ENABLED=1 启动 Build 四池探针（TaskScheduler panic 续跑 +
+  Drop abort）；web_quota_refresh/dispatch_probe/pin_sync 待 Go sidecar（TODO 已标注）
+- **前端管理页**（`9cb872c`）：/grok/{models,keys,audits,dashboard,settings} 页面 + grok-tabs/token-gate
+- **验证**：293 测试 / 48 套件全绿；grok-admin + grok2api-rs clippy 0；tsc + next build 通过
+
+### 剩余未完成（切流不阻塞 / 需外部依赖）
+
+- /v1/media/images/{id} 501、/v1/videos 500：media fetcher 需存储 + 视频需上游轮询（G2/G5 收尾 TODO）
+- web_quota_refresh / web_dispatch_probe / pin_sync：需 Go sidecar PG 实现（G6）
+- shadow compare 真实数据、探针 24h、G3-A2 dispatch diff<5%（运行类验收，上线后观测）
+- docs/ARCHITECTURE.md 新文件未提交（8-05 遗留，非 grok 批次）
+
+
 最后更新：**2026-08-06 凌晨**（G0–G5 完成；**G6/G7 大部分完成**：UI 页/OCR/deploy 草案/shadow 脚本/nginx 草案；剩余=部署执行 + N5 挂载 + 合并推送）
 主文档：[39-grok2api-rust-migration.md](39-grok2api-rust-migration.md) · 路线图：[39a](39a-grok-roadmap.md) · 执行计划：[39e](39e-grok-execution-plan.md)
 
