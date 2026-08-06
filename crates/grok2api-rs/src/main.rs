@@ -362,7 +362,13 @@ mod tests {
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let text = String::from_utf8_lossy(&bytes);
         let body: serde_json::Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(body["db"], "error");
+        // 平台差异：Windows 连接拒绝 → "error"；Linux CI 连接超时 → "timeout"。
+        // 脱敏语义一致：两者都不带 detail/DSN。
+        let db_state = body["db"].as_str().unwrap_or("");
+        assert!(
+            db_state == "error" || db_state == "timeout",
+            "db state 应为 error/timeout，实际 {db_state}"
+        );
         assert!(
             body.get("detail").is_none(),
             "readyz 不得回传内部错误 detail"
