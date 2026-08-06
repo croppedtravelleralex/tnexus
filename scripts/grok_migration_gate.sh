@@ -96,7 +96,9 @@ gate_g2() {
 
 gate_g3() {
   gate_g2
-  cargo test -p grok-pool -p grok-pool-index 2>/dev/null || fail "pool crate tests"
+  # G3-P1~P5：poolindex/web_pool/build_pool/selector + ops（grok-pool-index 为 Go 侧目录名，
+  # Rust 全部在 grok-pool；dispatch diff<5% 属运行验收 G3-A2，非门禁可测项）。
+  cargo test -p grok-pool -p grok-ops 2>/dev/null || fail "pool/ops crate tests"
 }
 
 gate_g4() {

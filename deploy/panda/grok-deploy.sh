@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Grok sidecar deploy (draft) — see docs/39-grok2api-rust-migration.md §G6-P2.
+# Grok sidecar deploy — see docs/39-grok2api-rust-migration.md §G6-P2.
 # ============================================================
-# 草案：合并到 main 前需人工 review。禁止在 Panda 构建镜像。
-# 链路：本地/CI 构建 → GHCR → 本脚本仅 pull + up（绝不 docker build / cargo build）。
+# 禁止在 Panda 构建镜像。链路：本地/CI 构建 → GHCR → 本脚本仅 pull + up（绝不 docker build / cargo build）。
 #
 # 用法：
 #   GROK_DATABASE_URL=... ./grok-deploy.sh                 # 部署/升级 latest
 #   GROK_TAG=<sha> ./grok-deploy.sh                         # 部署指定版本
-#   ROLLBACK_TAG=<prev-sha> ./grok-deploy.sh rollback       # 回滚（G6-A4 ≤15min）
+#   ./grok-deploy.sh rollback                               # 回滚到上一次部署版本（自动读 .grok-prev-deploy.txt）
+#   ROLLBACK_TAG=<prev-sha> ./grok-deploy.sh rollback       # 回滚到指定版本（G6-A4 ≤15min）
 #
 # 环境：TNEXUS_ROOT（默认 /root/TNexus）、ENV_FILE（默认 /opt/tnexus/.env）、
 #       GHCR_OWNER、GROK_TAG（默认 latest）、ROLLBACK_TAG。
@@ -30,21 +30,22 @@ fi
 # 镜像 owner 默认 croppedtravelleralex（与 ghcr-image.yml 的 GHCR job 一致）。
 ghcr_owner="${GHCR_OWNER:-croppedtravelleralex}"
 
-deploy() {
-  local tag="${GROK_TAG:-latest}"
-  echo ">>> merging .env + pulling ghcr.io/$ghcr_owner/grok*:$tag"
+# 版本记录：.grok-last-deploy.txt = 当前部署版本；.grok-prev-deploy.txt = 上一个版本。
+last_tag_file="$TNEXUS_ROOT/.grok-last-deploy.txt"
+prev_tag_file="$TNEXUS_ROOT/.grok-prev-deploy.txt"
+
+load_env() {
   set -a
   # shellcheck disable=SC1090
   source "$ENV_FILE"
   set +a
-  export GHCR_OWNER="$ghcr_owner" GROK_TAG="$tag"
+  export GHCR_OWNER="$ghcr_owner" GROK_TAG="$1"
+}
 
-  # git 里保留最新成功 tag，供 rollback 用（部署前记录）。
-  echo "$tag" > "$TNEXUS_ROOT/.grok-last-deploy.txt"
-
-  docker compose --env-file "$ENV_FILE" --profile admin \
+up_and_probe() {
+  docker compose --env-file "$ENV_FILE" \
     -f "$COMPOSE_FILE" pull
-  docker compose --env-file "$ENV_FILE" --profile admin \
+  docker compose --env-file "$ENV_FILE" \
     -f "$COMPOSE_FILE" up -d --force-recreate
 
   sleep 4
@@ -55,20 +56,43 @@ deploy() {
   fi
 }
 
-rollback() {
-  local tag="${ROLLBACK_TAG:?need ROLLBACK_TAG=<prev-sha>}"
-  echo ">>> rollback to ghcr.io/$ghcr_owner/grok*:$tag"
-  set -a
-  # shellcheck disable=SC1090
-  source "$ENV_FILE"
-  set +a
-  export GHCR_OWNER="$ghcr_owner" GROK_TAG="$tag"
+deploy() {
+  local tag="${GROK_TAG:-latest}"
+  echo ">>> merging .env + pulling ghcr.io/$ghcr_owner/grok*:$tag"
+  load_env "$tag"
 
-  docker compose --env-file "$ENV_FILE" --profile admin \
-    -f "$COMPOSE_FILE" pull
-  docker compose --env-file "$ENV_FILE" --profile admin \
-    -f "$COMPOSE_FILE" up -d --force-recreate
-  echo "$tag" > "$TNEXUS_ROOT/.grok-last-deploy.txt"
+  # 部署前记录上一版本，供 rollback 自动回退。
+  local prev=""
+  if [[ -f "$last_tag_file" ]]; then
+    prev="$(cat "$last_tag_file")"
+  fi
+  echo "$tag" > "$last_tag_file"
+  if [[ -n "$prev" && "$prev" != "$tag" ]]; then
+    echo "$prev" > "$prev_tag_file"
+  fi
+
+  up_and_probe
+}
+
+rollback() {
+  local tag="${ROLLBACK_TAG:-}"
+  if [[ -z "$tag" ]]; then
+    # 未显式指定 → 自动读上一版本（无则尝试当前版本，再失败即退出）。
+    tag="$(cat "$prev_tag_file" 2>/dev/null || true)"
+    if [[ -z "$tag" ]]; then
+      tag="$(cat "$last_tag_file" 2>/dev/null || true)"
+    fi
+    if [[ -z "$tag" ]]; then
+      echo "ROLLBACK_TAG 未设置且无版本记录（.grok-prev-deploy.txt / .grok-last-deploy.txt）" >&2
+      exit 1
+    fi
+    echo ">>> 未传 ROLLBACK_TAG，自动回滚到记录版本 $tag"
+  fi
+  echo ">>> rollback to ghcr.io/$ghcr_owner/grok*:$tag"
+  load_env "$tag"
+
+  up_and_probe
+  echo "$tag" > "$last_tag_file"
   echo ">>> rollback complete (downtime ≈ pull + up seconds)"
 }
 
@@ -76,6 +100,6 @@ case "${1:-deploy}" in
   deploy) deploy ;;
   rollback) rollback ;;
   status)
-    docker compose --env-file "$ENV_FILE" --profile admin -f "$COMPOSE_FILE" ps ;;
+    docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps ;;
   *) echo "usage: $0 [deploy|rollback|status]" >&2; exit 2 ;;
 esac

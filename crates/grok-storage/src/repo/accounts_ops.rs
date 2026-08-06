@@ -73,7 +73,7 @@ pub trait AccountOps {
 const ROUTING_COLS: &str = "id, identity_key, provider, enabled, auth_status, priority, \
      observed_model, max_concurrent, minimum_remaining, failure_count, cooldown_until, \
      last_error, last_used_at, observed_model_at, name, email, user_id, team_id, source_key, \
-     created_at, updated_at";
+     created_at, updated_at, web_tier";
 
 fn auth_status_from_str_raw(s: &str) -> Result<AuthStatus, StorageError> {
     match s {
@@ -113,6 +113,7 @@ fn map_routing_row(row: &PgRow) -> Result<Account, StorageError> {
         source_key: row.try_get("source_key")?,
         created_at: row.try_get("created_at")?,
         updated_at: row.try_get("updated_at")?,
+        web_tier: super::routing::web_tier_from_str(&row.try_get::<String, _>("web_tier")?),
         ..Default::default()
     })
 }

@@ -24,6 +24,7 @@
 mod admin;
 mod config;
 mod http;
+mod pg_admin;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -101,13 +102,24 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // 安全红线（Critical-2/3）：/admin 独立端口（GROK_ADMIN_LISTEN，默认 :8091 仅内网），
-    // login/refresh 绕过 guard（见 admin.rs）。
-    let admin_bundle = build_admin_bundle(
-        &cfg.admin_username,
-        cfg.admin_password.as_deref(),
-        &admin_secret,
-    )
-    .await;
+    // login/refresh 绕过 guard（见 admin.rs）。DB 已配置 → PG 数据面（真实号池）；
+    // 否则内存实现（测试/无 DB 降级，账号列表空）。
+    let admin_bundle = if cfg.database_url.trim().is_empty() {
+        build_admin_bundle(
+            &cfg.admin_username,
+            cfg.admin_password.as_deref(),
+            &admin_secret,
+        )
+        .await
+    } else {
+        pg_admin::build_admin_bundle_pg(
+            pool.clone(),
+            &cfg.admin_username,
+            cfg.admin_password.as_deref(),
+            &admin_secret,
+        )
+        .await
+    };
 
     let state = Arc::new(http::AppState { pool: pool.clone() });
     let health_app = build_router(state);

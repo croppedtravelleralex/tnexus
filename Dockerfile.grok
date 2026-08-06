@@ -11,8 +11,8 @@ COPY crates ./crates
 RUN cargo build --release -p grok2api-rs
 
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/grok2api-rs /usr/local/bin/grok2api-rs
-ENV GROK_LISTEN=0.0.0.0:8000
+ENV GROK2API_ADDR=0.0.0.0:8000
 EXPOSE 8000
 ENTRYPOINT ["/usr/local/bin/grok2api-rs"]

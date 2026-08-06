@@ -246,8 +246,22 @@ pub async fn build_admin_bundle(
     let auth_store = Arc::new(InMemoryAuthStore::default());
     let repo = Arc::new(InMemoryAdminRepo(auth_store.clone()));
     let sessions = Arc::new(InMemorySessionRepo(auth_store));
+    let store: Arc<dyn AdminStore> = Arc::new(InMemoryAdminStore::default());
+    build_bundle(repo, sessions, store, username, password, secret).await
+}
+
+/// 共享组装：鉴权 service（guard 与 login/refresh 各一份但共享同一底层存储）+
+/// bootstrap + 路由。`pg_admin.rs` 的 PG 数据面复用本函数。
+pub(crate) async fn build_bundle(
+    repo: Arc<dyn AdminRepository>,
+    sessions: Arc<dyn AdminSessionRepository>,
+    store: Arc<dyn AdminStore>,
+    username: &str,
+    password: Option<&str>,
+    secret: &str,
+) -> AdminHttpBundle {
     let ttl = (chrono::Duration::hours(1), chrono::Duration::days(7));
-    // guard 与 login/refresh 各持一个 AdminAuthService，但共享同一底层 store
+    // guard 与 login/refresh 各持一个 AdminAuthService，但共享同一底层存储
     // （bootstrap / login 写入对 guard 端可见）。
     let router_auth = AdminAuthService::new(
         repo.clone(),
@@ -274,7 +288,6 @@ pub async fn build_admin_bundle(
             );
         }
     }
-    let store = Arc::new(InMemoryAdminStore::default());
     AdminHttpBundle {
         router: AdminRouter::new(router_auth, grok_admin::AccountAdminService::new(store)),
         auth: login_auth,
