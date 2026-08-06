@@ -1,5 +1,13 @@
 # 39f — Grok 移植进度记录（做了的 / 未做的 / 要做的）
 
+
+## 2026-08-06 全 Rust 化（无 chrome 直连，`ca5fc39`/`395439e`）
+
+- **grok-bridge**（新 crate ~1500 行）：自写 CDP 客户端 + /health /v1/sign /v1/fetch /v1/websocket + 会话池，对齐 Python bridge 协议；HttpBridgeClient 协议对齐（修 N8 真正根源）
+- **HttpDirectClient（无 chrome 直连）**：GROK2API_DIRECT=1 → 直连 grok.com（sso cookie + statsig 签名，对齐 Go 生产无桥路径）；GROK2API_SIGNER_URL 缺省 https://grok.wodf.de/sign；GROK_CREDENTIAL_KEY 缺 → 恒 503 不外呼
+- **grok-etl / grok-shadow**（Rust bin，行为全对齐 Python）；gateway 解耦（ChatBackend/ImageBackend trait，provider-web 降 dev-dep）；前端生图 UI + MIME 嗅探
+- 验证：333+63 测试绿、clippy 0、CI 全绿
+
 ## 2026-08-06 收尾批次（生产判定后补完）
 
 - **部署草案 Blocker B1-B4 全修**（`ee30d55`）：redis 6380/postgres 5433 对齐主栈、runtime 加 curl、
