@@ -54,7 +54,6 @@ pub struct AuditSink {
     stats: Arc<AuditStats>,
     /// worker 结束信号（优雅关停排空后置位）。
     join: Option<tokio::task::JoinHandle<()>>,
-    capacity: usize,
 }
 
 impl AuditSink {
@@ -74,7 +73,6 @@ impl AuditSink {
             tx: Some(Mutex::new(tx)),
             stats,
             join: Some(join),
-            capacity,
         }
     }
 
@@ -107,7 +105,8 @@ impl AuditSink {
         let Some(tx) = self.tx.as_ref() else {
             return;
         };
-        let Some(tx) = tx.lock().ok() else { return };
+        let tx = { tx.lock().ok() };
+        let Some(tx) = tx else { return };
         let (ok, rx) = oneshot::channel::<()>();
         // flush 仅用于测试/关停，非推理热路径，允许排队等待发送。
         let _ = tx.send(Msg::Flush(ok)).await;

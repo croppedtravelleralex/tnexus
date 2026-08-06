@@ -141,7 +141,7 @@ impl AuditRepository for FakeAuditRepository {
         let mut st = self.inner.lock().unwrap();
         if st.fail {
             return Err(AuditRepoError::Database(sqlx::Error::Io(
-                std::io::Error::new(std::io::ErrorKind::Other, "fake db down"),
+                std::io::Error::other("fake db down"),
             )));
         }
         st.batches.push(audits.len());
