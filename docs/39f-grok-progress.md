@@ -1,13 +1,13 @@
 # 39f — Grok 移植进度记录（做了的 / 未做的 / 要做的）
 
-最后更新：**2026-08-05**（G0/G1 已合并；G2 已提交在 feat/grok/g2-image；G3-P1/P2/P3 已完成；G3-P4~P7 未开工）
+最后更新：**2026-08-05 夜**（G0/G1 已合并；G2 已提交；**G3–G5 全部完成**；G6/G7 未开工）
 主文档：[39-grok2api-rust-migration.md](39-grok2api-rust-migration.md) · 路线图：[39a](39a-grok-roadmap.md) · 执行计划：[39e](39e-grok-execution-plan.md)
 
 ---
 
 ## 0. 一句话状态
 
-> **G0/G1 已合入 `main`（tag `grok-g0`/`grok-g1`）；G2（Web 生图）已提交于 `feat/grok/g2-image`（含 gateway 生图路由）；G3-P1/P2（poolindex 原语 + web_pool/pins + imagine_quota，commit `c954fde`）与 G3-P3（Build 四池 + 探针监控，见下）已完成；G3-P4~P7 未开工。**
+> **G0/G1 已合入 `main`；G2 已提交；G3–G5 全部完成（246 测试全绿，分支 `feat/grok/g2-image` commits `c954fde`→`ba55e9c`）；G6（UI/切流）、G7（nginx 分流）未开工。**
 
 ---
 
@@ -103,6 +103,25 @@
 **验收映射**：`four_pool_probe_test.go` → `tests/build_pool.rs::rebuild_orders_dispatch_by_billing_quota`；`build_probe_monitor_test.go` → `tests/build_probe.rs::monitor_tracks_running_account_and_delete_transition`（阻塞适配器 + 403 permission-denied → deletable 迁移 + 统计/pools/recent 断言）。dispatch 排序、池分类、DRR 分轨、purge apply 开关均覆盖。
 
 **G3-P3 遗留**：真实 grok-storage repo 实现 `BuildProbeOps`（当前测试用 fake）；`grok2api-rs` 二进制未挂载。
+
+### 2.6 G3-P4/P5 + G4 + G5（✅ 全部完成，commit `d2bd0ef`…`ba55e9c`）
+
+| Phase | 交付 | 测试 |
+|-------|------|------|
+| G3-P4 | selector：quota 闸门/model outcome/tier/票池/in-flight 排序、dispatch 索引水合、容量等待、探索洗牌、粘滞键 | selector 20 ✅ |
+| G3-P5 | storage 写路径（AccountOps/RoutingCandidateRepository 对齐 Go）+ PgBuildProbeOps adapter（transport 注入）+ Redis lease 闸门 | ops 22 + egress 4 ✅ |
+| G4-P1/P2 | grok-admin：JWT HS256 + bcrypt + guard + 账号列表/详情/更新/删除/额度窗口/模型状态端点 | 25 ✅ |
+| G4-P3 | grok-chrome-ticket 票据池（借/还/过期/排序） | 9 ✅ |
+| G4-P4 | TaskScheduler（注册/interval/panic 续跑/状态快照）+ SettingsWatcher | 4 ✅ |
+| G4-P5 | grok-accountsync 并发同步（Semaphore 25 worker、billing/quota/model 三路、observer） | 10 ✅ |
+| G5-P1 | grok-provider-build stored response 往返 + normalize | 12 ✅ |
+| G5-P2 | grok-provider-console SSE 流式 + 分片归一化 | 15 ✅ |
+| G5-P3 | gateway `/v1/responses` + `/v1/messages` 协议转换（OpenAI↔Build↔Anthropic） | 10 ✅ |
+| G5-P4 | gateway `/v1/videos` 创建/轮询/状态映射 | 7 ✅ |
+
+**全量**：45 套件 246 测试全绿（grok 14 crate）；grok crate clippy 0 警告（grok-audit 历史债务已清）。
+
+**剩余缺口**：G5-P3 的 ResponsesBackend/MessagesBackend 真实接线留 TODO（当前 fake）；G3-A4 探针 24h 无 panic 需运行验收；G4-A1 Swagger diff=0 需对照 Go admin 逐端点核对；G6/G7 未开工。
 
 ## 3. 未做的（已知缺口，按严重度）
 
