@@ -1,13 +1,13 @@
 # 39f — Grok 移植进度记录（做了的 / 未做的 / 要做的）
 
-最后更新：**2026-08-05 夜**（G0/G1 已合并；G2 已提交；**G3–G5 全部完成**；G6/G7 未开工）
+最后更新：**2026-08-06 凌晨**（G0–G5 完成；**G6/G7 大部分完成**：UI 页/OCR/deploy 草案/shadow 脚本/nginx 草案；剩余=部署执行 + N5 挂载 + 合并推送）
 主文档：[39-grok2api-rust-migration.md](39-grok2api-rust-migration.md) · 路线图：[39a](39a-grok-roadmap.md) · 执行计划：[39e](39e-grok-execution-plan.md)
 
 ---
 
 ## 0. 一句话状态
 
-> **G0/G1 已合入 `main`；G2 已提交；G3–G5 全部完成（246 测试全绿，分支 `feat/grok/g2-image` commits `c954fde`→`ba55e9c`）；G6（UI/切流）、G7（nginx 分流）未开工。**
+> **G0/G1 已合入 `main`；G2 已提交；G3–G5 全部完成；G6/G7 大部分完成（261 测试 / 47 套件全绿，分支 `feat/grok/g2-image` commits `c954fde`→`578574f`）。剩余：G6-P2 部署执行（Panda 禁区）、G6-P3 shadow 实际运行、N5 gateway 挂载、合并 main + push。**
 
 ---
 
@@ -116,6 +116,20 @@
 **全量**：45 套件 246 测试全绿（grok 14 crate）；grok crate clippy 0 警告（grok-audit 历史债务已清）。
 
 **剩余缺口**：G5-P3 的 ResponsesBackend/MessagesBackend 真实接线留 TODO（当前 fake）；G3-A4 探针 24h 无 panic 需运行验收；G4-A1 Swagger diff=0 需对照 Go admin 逐端点核对；G6/G7 未开工。
+
+### 2.7 G6/G7 大部分（✅ commits `fb874e8`…`578574f`）
+
+| 项 | 交付 | 状态 |
+|----|------|------|
+| G5-P3 真实接线 | gateway backends：BuildResponsesBackend/ConsoleMessagesBackend 接真实 provider（mock 上游 e2e） | ✅ |
+| G4-P2 域端点 | dashboard/models CRUD+绑/keys/audits/settings/chrome-tickets/media/timeline/system + accounts summary/analytics/refresh-*/reauth（34 测试；Swagger 覆盖 12+15≈27/68） | ✅ |
+| G4-A1 对照 | docs/39g-admin-swagger-gap.md（68 端点对照表 + 实现建议） | ✅ 文档，实现未全 |
+| G6-P1 前端 | /grok/accounts 管理页 + grok-admin client | ✅ |
+| G6-P2 部署 | deploy/panda/grok-compose.yml 重写草案 + grok-deploy.sh（deploy/rollback/status） | ✅ 草案（**未执行**） |
+| G6-P3 shadow | scripts/grok_shadow_compare.py（G6-A1/A2/A3 阈值 + --self-test） | ✅ 脚本，未跑真实数据 |
+| G7-P1 | deploy/nginx/grok-router-draft.conf（model=grok-* → :8000 分流段，注释待启用） | ✅ 草案 |
+| G7-P2 | web Studio「Grok OCR」面板（复用 chat completions OCR 链路） | ✅ tsc 通过 |
+| G7-P3 | tnexus-api 死配置 grok2api_base 移除 | ✅ |
 
 ## 3. 未做的（已知缺口，按严重度）
 
