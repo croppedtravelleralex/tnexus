@@ -1,8 +1,8 @@
 //! OpenAI platform OAuth PKCE (mirrors `helper/oauth_login.py`).
 
 use crate::pkce::generate_pkce;
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use anyhow::{anyhow, Context, Result};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, CONTENT_TYPE, ORIGIN, REFERER, USER_AGENT};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -18,7 +18,8 @@ const PLATFORM_OAUTH_AUDIENCE: &str = "https://api.openai.com/v1";
 const PLATFORM_AUTH0_CLIENT: &str = "eyJuYW1lIjoiYXV0aDAtc3BhLWpzIiwidmVyc2lvbiI6IjEuMjEuMCJ9";
 const USER_AGENT_STR: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36";
-const SEC_CH_UA: &str = "\"Google Chrome\";v=\"145\", \"Not?A_Brand\";v=\"8\", \"Chromium\";v=\"145\"";
+const SEC_CH_UA: &str =
+    "\"Google Chrome\";v=\"145\", \"Not?A_Brand\";v=\"8\", \"Chromium\";v=\"145\"";
 
 const SESSION_TTL: Duration = Duration::from_secs(600);
 const MAX_SESSIONS: usize = 64;
@@ -52,7 +53,10 @@ impl OAuthLoginService {
                 .map(|(k, v)| (k.clone(), v.created_at))
                 .collect();
             ordered.sort_by_key(|(_, t)| *t);
-            for (sid, _) in ordered.into_iter().take(sessions.len().saturating_sub(MAX_SESSIONS)) {
+            for (sid, _) in ordered
+                .into_iter()
+                .take(sessions.len().saturating_sub(MAX_SESSIONS))
+            {
                 sessions.remove(&sid);
             }
         }
@@ -163,7 +167,9 @@ impl OAuthLoginService {
             .filter(|s| !s.is_empty())
             .collect();
         if candidates.is_empty() {
-            return Err(anyhow!("既未提供 session_id，callback URL 中也未携带 state"));
+            return Err(anyhow!(
+                "既未提供 session_id，callback URL 中也未携带 state"
+            ));
         }
 
         let session = {
@@ -204,7 +210,10 @@ impl OAuthLoginService {
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         headers.insert(ORIGIN, HeaderValue::from_static(PLATFORM_BASE));
         headers.insert(REFERER, HeaderValue::from_static(PLATFORM_BASE));
-        headers.insert("auth0-client", HeaderValue::from_static(PLATFORM_AUTH0_CLIENT));
+        headers.insert(
+            "auth0-client",
+            HeaderValue::from_static(PLATFORM_AUTH0_CLIENT),
+        );
         headers.insert("sec-ch-ua", HeaderValue::from_static(SEC_CH_UA));
         headers.insert(USER_AGENT, HeaderValue::from_static(USER_AGENT_STR));
 

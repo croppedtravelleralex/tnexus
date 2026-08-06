@@ -55,11 +55,7 @@ impl SchedulingGate {
         };
         match self.backend.reconcile_inflight_above(ceiling) {
             Ok(n) if n > 0 => {
-                warn!(
-                    count = n,
-                    ceiling,
-                    "reset stale image_inflight counters"
-                );
+                warn!(count = n, ceiling, "reset stale image_inflight counters");
             }
             Err(e) => warn!(error = %e, "reconcile_stale_inflight failed"),
             _ => {}
@@ -114,10 +110,7 @@ impl SchedulingGate {
         let Some(row) = accounts.get(&key) else {
             return true;
         };
-        let status = row
-            .get("status")
-            .and_then(|v| v.as_str())
-            .unwrap_or("正常");
+        let status = row.get("status").and_then(|v| v.as_str()).unwrap_or("正常");
         if status != "正常" {
             return false;
         }
@@ -202,7 +195,10 @@ impl SchedulingGate {
             .get("image_quota_unknown")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        let inflight = row.get("image_inflight").and_then(|v| v.as_i64()).unwrap_or(0);
+        let inflight = row
+            .get("image_inflight")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
         let soft = row
             .get("soft_band_percent")
             .and_then(|v| v.as_i64())

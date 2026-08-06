@@ -36,7 +36,10 @@ pub struct PatchConversationBody {
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", get(list_handler).post(create_handler))
-        .route("/{id}", get(get_handler).patch(patch_handler).delete(delete_handler))
+        .route(
+            "/{id}",
+            get(get_handler).patch(patch_handler).delete(delete_handler),
+        )
 }
 
 async fn list_handler(

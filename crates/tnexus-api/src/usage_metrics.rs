@@ -172,7 +172,9 @@ pub fn get_binding_usage_slots(
                 .unwrap_or_else(|| "default".into())
         };
         let slot = slot_index_for_week(&event.ts, week_start, week_end, tz);
-        let Some((day, hour_slot)) = slot else { continue };
+        let Some((day, hour_slot)) = slot else {
+            continue;
+        };
         let payload = by_binding
             .entry(binding)
             .or_insert_with(blank_binding_payload);
@@ -217,7 +219,10 @@ pub fn bump_cf_daily(path: &Path, email: &str, kind: &str) -> Result<()> {
         }
     }
     let today = Utc::now().format("%Y-%m-%d").to_string();
-    let entry = file.by_email.entry(key).or_insert_with(|| json!({ "cf_daily": [] }));
+    let entry = file
+        .by_email
+        .entry(key)
+        .or_insert_with(|| json!({ "cf_daily": [] }));
     let days = entry
         .get_mut("cf_daily")
         .and_then(|v| v.as_array_mut())
@@ -239,7 +244,10 @@ pub fn bump_cf_daily(path: &Path, email: &str, kind: &str) -> Result<()> {
         obj.insert("date".into(), json!(today));
         obj.insert("ok".into(), json!(if kind == "ok" { 1 } else { 0 }));
         obj.insert("cf".into(), json!(if kind == "cf" { 1 } else { 0 }));
-        obj.insert("image_fail".into(), json!(if kind == "image_fail" { 1 } else { 0 }));
+        obj.insert(
+            "image_fail".into(),
+            json!(if kind == "image_fail" { 1 } else { 0 }),
+        );
         days.push(Value::Object(obj));
     }
     while days.len() > 14 {

@@ -1,8 +1,8 @@
 use axum::{
+    extract::Request,
     http::StatusCode,
     middleware::Next,
     response::{IntoResponse, Response},
-    extract::Request,
 };
 use std::env;
 

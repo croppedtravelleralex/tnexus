@@ -1,8 +1,8 @@
 //! Refresh access_token via OpenAI OAuth (subset of `helper/account_ops.py`).
 
+use crate::user_info;
 use anyhow::Result;
 use chrono::Utc;
-use crate::user_info;
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, CONTENT_TYPE, USER_AGENT};
 use serde_json::{json, Map, Value};
 
@@ -31,9 +31,7 @@ pub async fn refresh_access_token(
     );
     headers.insert(
         USER_AGENT,
-        HeaderValue::from_static(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        ),
+        HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"),
     );
 
     let proxy = acc
@@ -101,7 +99,10 @@ pub async fn refresh_access_token(
     acc
 }
 
-pub async fn refresh_account(http: &reqwest::Client, account: &Map<String, Value>) -> Result<Value> {
+pub async fn refresh_account(
+    http: &reqwest::Client,
+    account: &Map<String, Value>,
+) -> Result<Value> {
     let acc = refresh_access_token(http, account, false).await;
     let token = acc
         .get("access_token")

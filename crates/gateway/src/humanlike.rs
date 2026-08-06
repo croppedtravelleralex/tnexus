@@ -47,10 +47,7 @@ pub fn score_account(input: &AccountScoreInput, hour: u8, jitter: f64) -> f64 {
 
 /// Pick index into `candidates` using humanlike scores; falls back to `rr_start % len`.
 /// With probability `epsilon`, explore a random candidate (ε-greedy, aligned with gptimage).
-pub fn pick_account_index(
-    candidates: &[AccountScoreInput],
-    rr_start: usize,
-) -> usize {
+pub fn pick_account_index(candidates: &[AccountScoreInput], rr_start: usize) -> usize {
     if candidates.is_empty() {
         return 0;
     }

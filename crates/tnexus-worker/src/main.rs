@@ -4,13 +4,12 @@ mod upstream;
 use anyhow::{Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use futures::future::try_join_all;
-use std::sync::Arc;
-use tokio::sync::Semaphore;
 use image::GenericImageView;
 use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
 use sqlx::{PgPool, Row};
 use std::io::Cursor;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tnexus_domain::agent::{
     build_director_system_prompt, build_image_prompt, parse_director_response_with_fallback,
@@ -19,6 +18,7 @@ use tnexus_domain::factors::FactorPoint;
 use tnexus_domain::gen_config::GenConfig;
 use tnexus_domain::job::{JobStatus, WorkflowPath};
 use tnexus_storage::ImageStore;
+use tokio::sync::Semaphore;
 use upstream::{
     agent_prompt_text, api_model_name, keywords_json, ImageGenOptions, SlotGenerateTask,
     UpstreamClient,
@@ -112,14 +112,8 @@ async fn main() -> Result<()> {
             continue;
         };
         let job_id = Uuid::parse_str(&job_id).context("parse job id")?;
-        if let Err(e) = process_job(
-            &pool,
-            &mut redis,
-            &upstream,
-            image_store.as_ref(),
-            job_id,
-        )
-        .await
+        if let Err(e) =
+            process_job(&pool, &mut redis, &upstream, image_store.as_ref(), job_id).await
         {
             let err_msg = format!("{e:#}");
             tracing::error!(%job_id, error = %err_msg, "job failed");
@@ -195,18 +189,18 @@ async fn process_job(
             } else {
                 api_model_name(&model_id)
             };
-            let raw = match upstream
-                .director_chat(api_model, &system, &input)
-                .await
-            {
+            let raw = match upstream.director_chat(api_model, &system, &input).await {
                 Ok(s) if !s.trim().is_empty() => s,
                 Ok(_) | Err(_) => {
-                    tracing::warn!(model_id, "director chat empty/failed; using input prompt fallback");
+                    tracing::warn!(
+                        model_id,
+                        "director chat empty/failed; using input prompt fallback"
+                    );
                     serde_json::json!({ "prompt": input }).to_string()
                 }
             };
-            let director_out =
-                parse_director_response_with_fallback(workflow, &raw, &input).map_err(|e| anyhow::anyhow!("{e}"))?;
+            let director_out = parse_director_response_with_fallback(workflow, &raw, &input)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
             let (mut image_prompt, _) =
                 build_image_prompt(workflow, &director_out, &ps_params, upstream_enhance);
             image_prompt = tnexus_domain::append_polish_intensity(&image_prompt, polish_factor);
@@ -245,7 +239,11 @@ async fn process_job(
                 );
                 // Parallel slots share the same director prompt — tag each slot so gateway
                 // duplicate_prompt gate does not 429 casting batches.
-                let slot_prompt = format!("{}\n[tnexus-slot:{}]", hinted_prompt.trim_end(), variant_index);
+                let slot_prompt = format!(
+                    "{}\n[tnexus-slot:{}]",
+                    hinted_prompt.trim_end(),
+                    variant_index
+                );
                 gen_tasks.push(SlotGenerateTask {
                     img_provider: img_provider.clone(),
                     prompt: slot_prompt,
@@ -275,77 +273,82 @@ async fn process_job(
     };
     let sem = Arc::new(Semaphore::new(parallel_cap));
     let redis_slots = redis.clone();
-    let slot_futs = gen_tasks.into_iter().zip(persist_plan).enumerate().map(|(slot_index, (task, plan))| {
-        let sem = sem.clone();
-        let upstream = upstream.clone();
-        let pool = pool.clone();
-        let redis_cm = redis_slots.clone();
-        let image_store = image_store.cloned();
-        let user_id = job.user_id;
-        let (result_label, variant_index, agent_prompt, keywords) = plan;
-        async move {
-            let _permit = sem
-                .acquire()
-                .await
-                .map_err(|_| anyhow::anyhow!("parallel semaphore closed"))?;
-            let slot_start = Instant::now();
-            let generated = upstream.generate_slot(&task).await?;
-            let generation_ms = slot_start.elapsed().as_millis() as u64;
+    let slot_futs =
+        gen_tasks
+            .into_iter()
+            .zip(persist_plan)
+            .enumerate()
+            .map(|(slot_index, (task, plan))| {
+                let sem = sem.clone();
+                let upstream = upstream.clone();
+                let pool = pool.clone();
+                let redis_cm = redis_slots.clone();
+                let image_store = image_store.cloned();
+                let user_id = job.user_id;
+                let (result_label, variant_index, agent_prompt, keywords) = plan;
+                async move {
+                    let _permit = sem
+                        .acquire()
+                        .await
+                        .map_err(|_| anyhow::anyhow!("parallel semaphore closed"))?;
+                    let slot_start = Instant::now();
+                    let generated = upstream.generate_slot(&task).await?;
+                    let generation_ms = slot_start.elapsed().as_millis() as u64;
 
-            if let Some(pipeline) = &generated.pipeline {
-                let email = pipeline
-                    .get("account_email")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown");
-                record_usage_event(email, "", "images_api", true);
-                pipeline_telemetry::append_event(&pipeline_telemetry::PipelineEvent {
-                    ts: pipeline_telemetry::now_rfc3339(),
-                    kind: "worker_slot".into(),
-                    email: email.to_string(),
-                    job_id: Some(job_id.to_string()),
-                    slot_index: Some(slot_index as i32),
-                    ok: true,
-                    quota_before: pipeline.get("quota_before").and_then(|v| v.as_i64()),
-                    quota_after: pipeline.get("quota_after").and_then(|v| v.as_i64()),
-                    timings_ms: pipeline.get("timings_ms").cloned(),
-                    bytes: pipeline.get("bytes").cloned(),
-                    extra: None,
-                });
-            }
+                    if let Some(pipeline) = &generated.pipeline {
+                        let email = pipeline
+                            .get("account_email")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown");
+                        record_usage_event(email, "", "images_api", true);
+                        pipeline_telemetry::append_event(&pipeline_telemetry::PipelineEvent {
+                            ts: pipeline_telemetry::now_rfc3339(),
+                            kind: "worker_slot".into(),
+                            email: email.to_string(),
+                            job_id: Some(job_id.to_string()),
+                            slot_index: Some(slot_index as i32),
+                            ok: true,
+                            quota_before: pipeline.get("quota_before").and_then(|v| v.as_i64()),
+                            quota_after: pipeline.get("quota_after").and_then(|v| v.as_i64()),
+                            timings_ms: pipeline.get("timings_ms").cloned(),
+                            bytes: pipeline.get("bytes").cloned(),
+                            extra: None,
+                        });
+                    }
 
-            let result_id = persist_slot(
-                &pool,
-                image_store.as_ref(),
-                user_id,
-                job_id,
-                SlotPersistTask {
-                    result_label,
-                    variant_index,
-                    agent_prompt,
-                    keywords,
-                    generated,
-                },
-                generation_ms,
-            )
-            .await?;
+                    let result_id = persist_slot(
+                        &pool,
+                        image_store.as_ref(),
+                        user_id,
+                        job_id,
+                        SlotPersistTask {
+                            result_label,
+                            variant_index,
+                            agent_prompt,
+                            keywords,
+                            generated,
+                        },
+                        generation_ms,
+                    )
+                    .await?;
 
-            let completed = slot_index + 1;
-            let progress = 55 + ((30 * completed) / total_slots) as u8;
-            let mut redis_pub = redis_cm.clone();
-            publish_slot_done(
-                &mut redis_pub,
-                job_id,
-                slot_index,
-                variant_index,
-                result_id,
-                generation_ms,
-                progress,
-            )
-            .await?;
+                    let completed = slot_index + 1;
+                    let progress = 55 + ((30 * completed) / total_slots) as u8;
+                    let mut redis_pub = redis_cm.clone();
+                    publish_slot_done(
+                        &mut redis_pub,
+                        job_id,
+                        slot_index,
+                        variant_index,
+                        result_id,
+                        generation_ms,
+                        progress,
+                    )
+                    .await?;
 
-            Ok::<(usize, u64), anyhow::Error>((slot_index, generation_ms))
-        }
-    });
+                    Ok::<(usize, u64), anyhow::Error>((slot_index, generation_ms))
+                }
+            });
     let slot_outcomes = try_join_all(slot_futs).await?;
     phase_timings.insert(
         "sse_stream_ms".into(),
@@ -425,9 +428,7 @@ async fn persist_slot(
     };
 
     let (orig, prev, thumb) = if let (Some(store), Some(bytes)) = (image_store, bytes.as_ref()) {
-        let asset = store
-            .store_image_variants(user_id, job_id, bytes)
-            .await?;
+        let asset = store.store_image_variants(user_id, job_id, bytes).await?;
         (
             Some(asset.original_key),
             Some(asset.preview_key),
@@ -510,7 +511,8 @@ async fn load_job(pool: &PgPool, job_id: Uuid) -> Result<JobRow> {
     let director_models: serde_json::Value = row.get("director_models");
     let gen_config: serde_json::Value = row.get("gen_config");
     let actor_image_counts: serde_json::Value = row.get("actor_image_counts");
-    let models: Vec<String> = serde_json::from_value(director_models).unwrap_or_else(|_| vec!["gpt".into()]);
+    let models: Vec<String> =
+        serde_json::from_value(director_models).unwrap_or_else(|_| vec!["gpt".into()]);
     Ok(JobRow {
         user_id: row.get("user_id"),
         mode: row.get("mode"),
@@ -540,9 +542,7 @@ async fn save_phase_timings(
     Ok(())
 }
 
-fn aggregate_latency_percentiles_from_slot_ms(
-    slots: &[(usize, u64)],
-) -> Option<serde_json::Value> {
+fn aggregate_latency_percentiles_from_slot_ms(slots: &[(usize, u64)]) -> Option<serde_json::Value> {
     if slots.is_empty() {
         return None;
     }
@@ -570,8 +570,8 @@ fn aggregate_latency_percentiles_from_slot_ms(
 }
 
 fn record_usage_event(email: &str, binding: &str, metric: &str, ok: bool) {
-    let path = std::env::var("USAGE_EVENTS_FILE")
-        .unwrap_or_else(|_| "data/usage_events.ndjson".into());
+    let path =
+        std::env::var("USAGE_EVENTS_FILE").unwrap_or_else(|_| "data/usage_events.ndjson".into());
     if let Some(parent) = std::path::Path::new(&path).parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -584,7 +584,11 @@ fn record_usage_event(email: &str, binding: &str, metric: &str, ok: bool) {
     });
     if let Ok(line) = serde_json::to_string(&payload) {
         use std::io::Write;
-        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
             let _ = writeln!(file, "{line}");
         }
     }
@@ -596,12 +600,14 @@ async fn set_status(
     status: JobStatus,
     error: Option<&str>,
 ) -> Result<()> {
-    sqlx::query("UPDATE jobs SET status = $2, error_message = $3, updated_at = NOW() WHERE id = $1")
-        .bind(job_id)
-        .bind(status.as_str())
-        .bind(error)
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "UPDATE jobs SET status = $2, error_message = $3, updated_at = NOW() WHERE id = $1",
+    )
+    .bind(job_id)
+    .bind(status.as_str())
+    .bind(error)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 

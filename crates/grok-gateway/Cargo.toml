@@ -22,9 +22,10 @@ grok-image-pipeline = { path = "../grok-image-pipeline" }
 grok-pool = { path = "../grok-pool" }
 grok-provider-build = { path = "../grok-provider-build" }
 grok-provider-console = { path = "../grok-provider-console" }
-grok-provider-web = { path = "../grok-provider-web" }
 
 [dev-dependencies]
 grok-egress = { path = "../grok-egress" }
+# 测试构造真实引擎（ChatEngine/ImageEngine）用；正常依赖已与 provider-web 解耦。
+grok-provider-web = { path = "../grok-provider-web" }
 http-body-util = { workspace = true }
 reqwest = { workspace = true }

@@ -20,8 +20,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use grok_conversation::{normalize_chat_input, ChatMessage, NormalizedChatInput};
-use grok_provider_web::{
-    public_models, ChatEngine, ChatRequest as ProviderChatRequest, ImagineRequest, ALIAS_OCR,
+use grok_domain::{
+    public_models, ChatBackend, ChatRequest as ProviderChatRequest, ImagineRequest, ALIAS_OCR,
 };
 
 use crate::error::GatewayError;
@@ -287,9 +287,9 @@ pub async fn chat_completions(
         request_id: new_request_id(),
     };
 
-    let engine: &ChatEngine = state
+    let engine: &dyn ChatBackend = state
         .engine
-        .as_ref()
+        .as_deref()
         .ok_or_else(|| GatewayError::Internal("ChatEngine not configured".into()))?;
 
     // 3) 执行推理（池 / lease / payload / bridge）。

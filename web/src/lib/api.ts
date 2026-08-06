@@ -696,6 +696,16 @@ export const proxyApi = {
 const GATEWAY_BASE = (process.env.NEXT_PUBLIC_GATEWAY_BASE ?? "http://localhost:8014").replace(/\/$/, "");
 const GATEWAY_KEY = process.env.NEXT_PUBLIC_GATEWAY_KEY ?? "";
 
+/** 嗅探 base64 图片 MIME：JPEG(FF D8→/9j/)、PNG(89 50 4E 47→iVBOR)、WEBP(RIFF→UklGR)。
+ *  仅比较字符串前缀，零解码开销；无法识别时回退 png。 */
+export function sniffImageMime(b64: string): "png" | "jpeg" | "webp" {
+  const s = b64.replace(/^data:[^,]+;base64,/, "").slice(0, 16);
+  if (s.startsWith("/9j/")) return "jpeg";
+  if (s.startsWith("UklGR")) return "webp";
+  if (s.startsWith("iVBORw0KGgo")) return "png";
+  return "png";
+}
+
 async function readChatStream(
   res: Response,
   onDelta: (text: string) => void,
@@ -817,6 +827,54 @@ export const chatApi = {
    * 输入为 `data:image/...;base64,` data URI；返回识别文本。
    * 后端若未暴露 /api/backend/grok/ocr 专用端点，则复用本端点（见 crates/grok-gateway）。
    */
+  /**
+   * 生图（独立端点 /v1/images/generations）：grok chat/completions 无 image_mode，
+   * 必须走此端点。返回 b64 数组（resp format 固定 b64_json）。
+   * 500/503 时附加可读提示（GROK_IMAGE_ENABLED / bridge 未就绪）。
+   */
+  generateImage: async (prompt: string, n: number): Promise<string[]> => {
+    let res: Response;
+    try {
+      res = await fetch(`${GATEWAY_BASE}/v1/images/generations`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(GATEWAY_KEY ? { Authorization: `Bearer ${GATEWAY_KEY}` } : {}),
+        },
+        body: JSON.stringify({ prompt, n, response_format: "b64_json" }),
+      });
+    } catch {
+      throw new Error("无法连接生图服务（gateway 不可达）");
+    }
+    if (!res.ok) {
+      const text = await res.text();
+      let message = text || res.statusText;
+      try {
+        const json = JSON.parse(text) as {
+          error?: { message?: string } | string;
+          message?: string;
+        };
+        message =
+          typeof json.error === "string"
+            ? json.error
+            : (json.error?.message ?? json.message ?? message);
+      } catch {
+        // keep raw text
+      }
+      if (res.status === 500 || res.status === 503) {
+        message = `${message}（需 gateway 开启 GROK_IMAGE_ENABLED=1 且 browser-bridge 就绪）`;
+      }
+      throw new Error(message);
+    }
+    const data = (await res.json()) as {
+      data?: Array<{ b64_json?: string; url?: string }>;
+    };
+    const items = (data.data ?? [])
+      .map((d) => d.b64_json ?? d.url ?? "")
+      .filter(Boolean);
+    return items;
+  },
+
   extractText: async (dataUrl: string, prompt?: string): Promise<string> => {
     const body = {
       model: "gpt-4o-mini", // 内部通道 id，gateway 映射到 grok OCR 语义（与 chat 页一致）

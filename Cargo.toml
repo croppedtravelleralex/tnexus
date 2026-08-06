@@ -30,6 +30,9 @@ members = [
     "crates/grok-provider-console",
     "crates/grok-admin",
     "crates/grok-accountsync",
+    "crates/grok-bridge",
+    "crates/grok-etl",
+    "crates/grok-shadow",
 ]
 
 [workspace.package]
@@ -75,6 +78,8 @@ http-body-util = "0.1"
 hmac = "0.12"
 sha2 = "0.10"
 tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.26"
+url = "2"
 tokio-stream = { version = "0.1", features = ["sync"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }

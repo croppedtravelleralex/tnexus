@@ -1,25 +1,24 @@
 //! gptimage-gateway-rs MVP gateway (Rust face).
 
-mod pipeline_telemetry;
-mod scheduling_gate;
-mod dispatch_gate;
-mod humanlike;
-mod duplicate_prompt;
 mod accounts_routes;
 mod auth_routes;
 mod backend_routes;
 mod config;
+mod dispatch_gate;
+mod duplicate_prompt;
+mod humanlike;
 mod image_archive;
 mod image_assets;
+mod pipeline_telemetry;
+mod scheduling_gate;
 mod state;
 mod upstream_face;
 
-use tnexus_accounts_db::AccountsBackend;
-use crate::humanlike::{AccountScoreInput, pick_account_index};
-use crate::scheduling_gate::SchedulingGate;
+use crate::humanlike::{pick_account_index, AccountScoreInput};
 use crate::image_assets::ImageAssetStore;
+use crate::scheduling_gate::SchedulingGate;
+use accounts_routes::{activity_daily, list_accounts, reload_from_storage, scheduling_bulk};
 use anyhow::Context;
-use gateway_auth::{AuthConfig, AuthService};
 use auth_routes::{
     list_users, login, logout, me, register, require_admin, require_auth, require_member,
     set_user_disabled,
@@ -34,30 +33,29 @@ use axum::{
     Json, Router,
 };
 use backend_routes::{admin_status, capabilities};
-use accounts_routes::{activity_daily, list_accounts, reload_from_storage, scheduling_bulk};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use config::DataPlane;
 use futures_util::StreamExt;
+use gateway_auth::{AuthConfig, AuthService};
 use helper_client::{
     HelperClient, ImageRunRequest, PinAccount, QuotaRefreshRequest, TextRunRequest,
 };
 use protocol::{
-    chat_completion_response, chat_completion_response_with_image_b64, classify_fault,
-    chat_should_use_image_path, extract_chat_image_prompt, fold_chat_messages_for_upstream,
-    image_generation_b64_multi_response,
-    image_generation_b64_multi_response_with_pipeline,
+    chat_completion_response, chat_completion_response_with_image_b64, chat_should_use_image_path,
+    classify_fault, extract_chat_image_prompt, fold_chat_messages_for_upstream,
+    image_generation_b64_multi_response, image_generation_b64_multi_response_with_pipeline,
     image_generation_response, image_generation_url_multi_response,
-    image_generation_url_multi_response_with_pipeline, image_generation_url_response,
-    openai_error, ChatCompletionRequest,
-    ImageEditRequest, ImageGenerationRequest, MAX_IMAGE_BATCH_N,
+    image_generation_url_multi_response_with_pipeline, image_generation_url_response, openai_error,
+    ChatCompletionRequest, ImageEditRequest, ImageGenerationRequest, MAX_IMAGE_BATCH_N,
 };
 use serde_json::{json, Value};
 use state::AppState;
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
+use tnexus_accounts_db::AccountsBackend;
 use tokio::sync::Mutex;
 use tower_http::{
     cors::{AllowOrigin, Any, CorsLayer},
@@ -153,8 +151,8 @@ async fn main() -> anyhow::Result<()> {
         .map(PathBuf::from)
         .filter(|p| p.is_dir());
 
-    let asset_secret = image_assets::asset_signing_secret_from_env()
-        .context("image asset signing secret")?;
+    let asset_secret =
+        image_assets::asset_signing_secret_from_env().context("image asset signing secret")?;
     let image_assets = Arc::new(ImageAssetStore::new(
         asset_secret,
         image_assets::asset_ttl_secs_from_env(),
@@ -264,10 +262,7 @@ async fn main() -> anyhow::Result<()> {
     let mut app = Router::new()
         .route("/health", get(health))
         .route("/api/backend/capabilities", get(capabilities))
-        .route(
-            "/v1/images/assets/{asset_id}",
-            get(get_image_asset),
-        )
+        .route("/v1/images/assets/{asset_id}", get(get_image_asset))
         .nest("/api/auth", auth_public.merge(auth_protected))
         .nest("/api/admin", admin_api)
         .nest("/api/accounts", admin_accounts)
@@ -502,10 +497,8 @@ async fn collect_image_accounts(
                 }
             })
             .collect();
-        let start = pick_account_index(
-            &inputs,
-            st.image_account_rr.fetch_add(1, Ordering::Relaxed),
-        );
+        let start =
+            pick_account_index(&inputs, st.image_account_rr.fetch_add(1, Ordering::Relaxed));
         if start > 0 {
             let mut rotated = Vec::with_capacity(accounts.len());
             for i in 0..accounts.len() {
@@ -541,7 +534,9 @@ mod upstream_image_retryable_tests {
         assert!(upstream_image_retryable(&anyhow::anyhow!(
             "error sending request for uri (https://chatgpt.com/): client error (ProxyConnect)"
         )));
-        assert!(!upstream_image_retryable(&anyhow::anyhow!("unknown upstream fault")));
+        assert!(!upstream_image_retryable(&anyhow::anyhow!(
+            "unknown upstream fault"
+        )));
     }
 }
 
@@ -732,7 +727,9 @@ fn check_dispatch_backpressure(st: &AppState, email: &str) -> Option<Response> {
     None
 }
 
-async fn acquire_image_permit(st: &AppState) -> Result<tokio::sync::OwnedSemaphorePermit, Response> {
+async fn acquire_image_permit(
+    st: &AppState,
+) -> Result<tokio::sync::OwnedSemaphorePermit, Response> {
     st.image_queue_depth.fetch_add(1, Ordering::Relaxed);
     match st.image_sem.clone().acquire_owned().await {
         Ok(permit) => {
@@ -852,7 +849,12 @@ async fn chat_image_completions(
             let msg = bridge
                 .error
                 .unwrap_or_else(|| "chat image bridge failed".into());
-            err(StatusCode::BAD_GATEWAY, msg, "image_failed", Some("upstream"))
+            err(
+                StatusCode::BAD_GATEWAY,
+                msg,
+                "image_failed",
+                Some("upstream"),
+            )
         }
         Err(e) => {
             error!(error=%e, "chat image upstream failed");
@@ -1079,10 +1081,7 @@ async fn generate_one_image(
                     result = Ok(bridge);
                     break;
                 }
-                Err(e) if is_admin
-                    && upstream_image_retryable(&e)
-                    && try_no + 1 < max_attempts =>
-                {
+                Err(e) if is_admin && upstream_image_retryable(&e) && try_no + 1 < max_attempts => {
                     warn!(
                         email=%cand.email,
                         attempt=try_no + 1,
@@ -1231,7 +1230,9 @@ fn image_batch_bridge_failure(
     log_label: &str,
 ) -> Response {
     let fault = r.fault.as_deref();
-    let msg = r.error.unwrap_or_else(|| format!("{log_label} bridge failed"));
+    let msg = r
+        .error
+        .unwrap_or_else(|| format!("{log_label} bridge failed"));
     let class = classify_fault(fault, Some(&msg));
     warn!(email=%account.email, elapsed_ms, fault=?fault, error=%msg, log_label, "image batch bridge failed");
     let (code, err_code) = match class {
@@ -1242,7 +1243,12 @@ fn image_batch_bridge_failure(
     err(code, msg, err_code, Some(class.as_str()))
 }
 
-fn image_batch_upstream_failure(st: &AppState, account: &PinAccount, elapsed_ms: u128, e: &anyhow::Error) -> Response {
+fn image_batch_upstream_failure(
+    st: &AppState,
+    account: &PinAccount,
+    elapsed_ms: u128,
+    e: &anyhow::Error,
+) -> Response {
     error!(email=%account.email, elapsed_ms, error=%e, "image call failed");
     err(
         StatusCode::BAD_GATEWAY,
@@ -1287,11 +1293,10 @@ async fn image_generations(
 
     let is_admin = user.claims.role.is_admin();
     let preferred = preferred_email(&headers);
-    let candidates =
-        match collect_image_accounts(&st, preferred, is_admin).await {
-            Ok(c) => c,
-            Err(r) => return r,
-        };
+    let candidates = match collect_image_accounts(&st, preferred, is_admin).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
 
     if st.duplicate_prompt.check(
         candidates.first().map(|a| a.email.as_str()).unwrap_or(""),
@@ -1368,10 +1373,7 @@ async fn image_generations(
     let t0 = Instant::now();
     let mut batch_items: Vec<ImageBatchItem> = Vec::with_capacity(batch_n as usize);
     for _ in 0..batch_n {
-        let start_idx = st
-            .image_account_rr
-            .fetch_add(1, Ordering::Relaxed)
-            % candidates.len();
+        let start_idx = st.image_account_rr.fetch_add(1, Ordering::Relaxed) % candidates.len();
         match generate_one_image(&st, &candidates, start_idx, is_admin, &req).await {
             Ok(item) => {
                 let pipeline = item.upstream_metrics.as_ref().map(|m| {
@@ -1385,10 +1387,7 @@ async fn image_generations(
                         &req.prompt,
                     )
                 });
-                batch_items.push(ImageBatchItem {
-                    pipeline,
-                    ..item
-                });
+                batch_items.push(ImageBatchItem { pipeline, ..item });
             }
             Err(Err(e)) => {
                 drop(permit);
@@ -1561,22 +1560,22 @@ async fn run_upstream_image_edit(
         mask_bytes,
         asset_ids,
     )
-        .await
-        .map(|(bytes, metrics)| {
-            let b64 = BASE64.encode(&bytes);
-            let bridge = helper_client::BridgeOk {
-                ok: true,
-                content: None,
-                b64_json: Some(b64),
-                conversation_id: None,
-                fault: None,
-                error: None,
-                elapsed_ms: Some(metrics.wall_ms),
-                raw: None,
-                quota: None,
-            };
-            (bridge, metrics)
-        })
+    .await
+    .map(|(bytes, metrics)| {
+        let b64 = BASE64.encode(&bytes);
+        let bridge = helper_client::BridgeOk {
+            ok: true,
+            content: None,
+            b64_json: Some(b64),
+            conversation_id: None,
+            fault: None,
+            error: None,
+            elapsed_ms: Some(metrics.wall_ms),
+            raw: None,
+            quota: None,
+        };
+        (bridge, metrics)
+    })
 }
 
 async fn image_edits(
@@ -1606,7 +1605,12 @@ async fn image_edits(
         };
         match parse_image_edit_multipart(multipart).await {
             Ok(req) => image_edits_json(st, user, headers, req).await,
-            Err(msg) => err(StatusCode::BAD_REQUEST, msg, "multipart_invalid", Some("client")),
+            Err(msg) => err(
+                StatusCode::BAD_REQUEST,
+                msg,
+                "multipart_invalid",
+                Some("client"),
+            ),
         }
     } else {
         let bytes = match axum::body::to_bytes(request.into_body(), MAX_REQUEST_BODY_BYTES).await {
@@ -1664,16 +1668,10 @@ async fn parse_image_edit_multipart(mut multipart: Multipart) -> Result<ImageEdi
                     .map_err(|e| format!("model field: {e}"))?;
             }
             "size" => {
-                size = field
-                    .text()
-                    .await
-                    .map_err(|e| format!("size field: {e}"))?;
+                size = field.text().await.map_err(|e| format!("size field: {e}"))?;
             }
             "n" => {
-                let text = field
-                    .text()
-                    .await
-                    .map_err(|e| format!("n field: {e}"))?;
+                let text = field.text().await.map_err(|e| format!("n field: {e}"))?;
                 n = text.parse().unwrap_or(1);
             }
             "image" | "image[]" => {
@@ -1829,10 +1827,7 @@ async fn image_edits_json(
     let t0 = Instant::now();
     let mut batch_items: Vec<ImageBatchItem> = Vec::with_capacity(batch_n as usize);
     for _ in 0..batch_n {
-        let start_idx = st
-            .image_account_rr
-            .fetch_add(1, Ordering::Relaxed)
-            % candidates.len();
+        let start_idx = st.image_account_rr.fetch_add(1, Ordering::Relaxed) % candidates.len();
         match generate_one_image_edit(
             &st,
             &candidates,
@@ -1842,7 +1837,8 @@ async fn image_edits_json(
             &image_bytes,
             mask_bytes.as_deref(),
         )
-        .await {
+        .await
+        {
             Ok(item) => {
                 let pipeline = item.upstream_metrics.as_ref().map(|m| {
                     finalize_upstream_image(
@@ -1855,10 +1851,7 @@ async fn image_edits_json(
                         &req.prompt,
                     )
                 });
-                batch_items.push(ImageBatchItem {
-                    pipeline,
-                    ..item
-                });
+                batch_items.push(ImageBatchItem { pipeline, ..item });
             }
             Err(Err(e)) => {
                 drop(permit);
@@ -1868,7 +1861,12 @@ async fn image_edits_json(
             Err(Ok(r)) => {
                 drop(permit);
                 let account = candidates[start_idx].clone();
-                return image_batch_bridge_failure(&account, t0.elapsed().as_millis(), r, "image edit");
+                return image_batch_bridge_failure(
+                    &account,
+                    t0.elapsed().as_millis(),
+                    r,
+                    "image edit",
+                );
             }
         }
     }
@@ -1978,9 +1976,9 @@ async fn get_image_asset(
 #[cfg(test)]
 mod auth_integration {
     use super::*;
-    use gateway_auth::{AuthConfig, AuthMode, AuthService, Role};
     use axum::body::Body;
     use axum::http::Request;
+    use gateway_auth::{AuthConfig, AuthMode, AuthService, Role};
     use helper_client::{HelperClient, PinAccount};
     use std::collections::HashMap;
     use tokio::sync::Semaphore;

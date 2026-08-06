@@ -56,7 +56,10 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/nurture/enqueue", post(nurture_enqueue))
         .route("/nurture/process-one", post(nurture_process_one))
         .route("/ip-nurture/presets", get(ip_nurture_presets))
-        .route("/ip-nurture/bindings", get(ip_nurture_bindings).post(ip_nurture_save_binding))
+        .route(
+            "/ip-nurture/bindings",
+            get(ip_nurture_bindings).post(ip_nurture_save_binding),
+        )
         .route("/image-pipeline/snapshot", get(image_pipeline_snapshot))
         .route("/risk/metrics", get(risk_metrics))
 }
@@ -75,10 +78,11 @@ async fn ops_summary(
     .fetch_one(&state.pool)
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let jobs_done: i64 = sqlx::query_scalar("SELECT COUNT(*)::bigint FROM jobs WHERE status = 'done'")
-        .fetch_one(&state.pool)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let jobs_done: i64 =
+        sqlx::query_scalar("SELECT COUNT(*)::bigint FROM jobs WHERE status = 'done'")
+            .fetch_one(&state.pool)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let jobs_failed: i64 =
         sqlx::query_scalar("SELECT COUNT(*)::bigint FROM jobs WHERE status = 'failed'")
             .fetch_one(&state.pool)
@@ -194,7 +198,11 @@ async fn nurture_process_one(
     let mut nurture_email = body.email.trim().to_lowercase();
     let mut nurture_binding = String::new();
     if !body.access_token.is_empty() {
-        if let Some(account) = state.accounts.export_account_for_token(&body.access_token).await {
+        if let Some(account) = state
+            .accounts
+            .export_account_for_token(&body.access_token)
+            .await
+        {
             payload["account"] = account.clone();
             if nurture_email.is_empty() {
                 nurture_email = account

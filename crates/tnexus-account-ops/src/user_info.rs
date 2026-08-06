@@ -7,7 +7,10 @@ use serde_json::{json, Map, Value};
 const USER_AGENT_STR: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36";
 
-pub async fn merge_user_info(http: &reqwest::Client, account: &Map<String, Value>) -> Map<String, Value> {
+pub async fn merge_user_info(
+    http: &reqwest::Client,
+    account: &Map<String, Value>,
+) -> Map<String, Value> {
     let mut acc = account.clone();
     let token = acc
         .get("access_token")
@@ -33,11 +36,17 @@ pub async fn merge_user_info(http: &reqwest::Client, account: &Map<String, Value
                 }
             }
         }
-        acc.insert("last_quota_refresh_at".into(), json!(chrono::Utc::now().to_rfc3339()));
+        acc.insert(
+            "last_quota_refresh_at".into(),
+            json!(chrono::Utc::now().to_rfc3339()),
+        );
     }
     acc.insert(
         "source_type".into(),
-        json!(acc.get("source_type").and_then(|v| v.as_str()).unwrap_or("tnexus_refresh")),
+        json!(acc
+            .get("source_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("tnexus_refresh")),
     );
     acc
 }
@@ -75,7 +84,10 @@ fn normalize_me(data: Value) -> Result<Value> {
     if !email.is_empty() {
         out.insert("email".into(), json!(email));
     }
-    if let Some(plan) = obj.get("plan_type").or_else(|| obj.get("subscription_plan")) {
+    if let Some(plan) = obj
+        .get("plan_type")
+        .or_else(|| obj.get("subscription_plan"))
+    {
         out.insert("type".into(), plan.clone());
     }
     if let Some(features) = obj.get("features").and_then(|v| v.as_array()) {

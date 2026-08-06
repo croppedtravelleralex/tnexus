@@ -13,17 +13,8 @@ use serde_json::Value;
 use crate::attachments::FileAttachment;
 
 /// OCR 对外模型别名（39 主文档 §4.2/§10）。
-pub const ALIAS_OCR: &str = "grok-vision-ocr";
-/// 别名内部映射到的上游模型（web/catalog.go grok-chat-fast）。
-pub const UPSTREAM_OCR_MODEL: &str = "grok-chat-fast";
-/// OCR 默认 system prompt（可配置，39 主文档 §4.2）。
-pub const DEFAULT_OCR_SYSTEM_PROMPT: &str =
-    "提取图中全部可见文字，保持版面顺序；无文字则回复「无文字内容」。";
-
-/// 公开的对外模型路由（含 G1 OCR 别名）。
-pub fn public_models() -> Vec<(&'static str, &'static str)> {
-    vec![("grok-chat", "grok-chat"), (ALIAS_OCR, UPSTREAM_OCR_MODEL)]
-}
+// 模型路由 / OCR 常量契约在 grok-domain::provider（端口层），此处 re-export 兼容旧路径。
+pub use grok_domain::{public_models, ALIAS_OCR, DEFAULT_OCR_SYSTEM_PROMPT, UPSTREAM_OCR_MODEL};
 
 /// 构造 grok Web chat 上游 payload（对应 Go `buildWebChatPayload`）。
 ///

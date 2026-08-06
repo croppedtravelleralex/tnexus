@@ -1,5 +1,5 @@
-use crate::accounts_store::AccountsStore;
 use crate::account_ops;
+use crate::accounts_store::AccountsStore;
 use crate::config::AppConfig;
 use crate::local_nurture::{LocalNurtureStore, OutlookRecoveryStore};
 use crate::quota_prime_job::QuotaPrimeJob;
@@ -30,11 +30,7 @@ pub struct AppState {
 
 impl AppState {
     pub async fn new(config: AppConfig, pool: PgPool) -> anyhow::Result<Self> {
-        let auth = AuthService::new(
-            pool.clone(),
-            config.jwt_secret.clone(),
-            config.jwt_ttl_secs,
-        )?;
+        let auth = AuthService::new(pool.clone(), config.jwt_secret.clone(), config.jwt_ttl_secs)?;
 
         if let (Some(email), Some(password)) = (
             config.bootstrap_admin_email.clone(),

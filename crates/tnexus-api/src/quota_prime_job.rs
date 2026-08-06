@@ -16,18 +16,14 @@ impl QuotaPrimeJob {
     }
 
     pub async fn status(&self) -> Value {
-        self.inner
-            .read()
-            .await
-            .clone()
-            .unwrap_or_else(|| {
-                json!({
-                    "running": false,
-                    "state": "idle",
-                    "queue": [],
-                    "source": "tnexus-local",
-                })
+        self.inner.read().await.clone().unwrap_or_else(|| {
+            json!({
+                "running": false,
+                "state": "idle",
+                "queue": [],
+                "source": "tnexus-local",
             })
+        })
     }
 
     pub async fn enqueue_tokens(

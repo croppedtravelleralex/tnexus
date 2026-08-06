@@ -17,28 +17,8 @@ use grok_pool::SharedPool;
 use crate::attachments::prepare_file_attachments;
 use crate::bridge::BridgeClient;
 use crate::chat::{build_web_chat_payload, DEFAULT_OCR_SYSTEM_PROMPT};
-use crate::error::ProviderError;
-
-/// 一次 grok Web chat / OCR 请求（已归一化）。
-#[derive(Debug, Clone)]
-pub struct ChatRequest {
-    /// 归一化 prompt（`[role]\ntext` 段落拼接）。
-    pub prompt: String,
-    /// 归一化图片清单（HTTPS URL 或 data URI）。
-    pub images: Vec<String>,
-    /// OCR 路径（`grok-vision-ocr`）→ 强制禁生图 + fast 模型。
-    pub ocr: bool,
-    /// OCR system prompt 覆盖；None 用默认。
-    pub system_prompt: Option<String>,
-    /// 审计请求 ID。
-    pub request_id: String,
-}
-
-impl ChatRequest {
-    pub fn ocr_model(model: &str) -> bool {
-        model == crate::chat::ALIAS_OCR
-    }
-}
+use grok_domain::ProviderError;
+use grok_domain::{ChatBackend, ChatRequest};
 
 /// egress lease 获取超时（G1 单槽 web scope；时长可经构造覆盖）。
 const DEFAULT_LEASE_DURATION: Duration = Duration::from_secs(5);
@@ -96,7 +76,7 @@ impl ChatEngine {
             Ok(lease) => lease,
             Err(e) => {
                 self.pool.dispatch_failure(account_id).await;
-                return Err(ProviderError::Lease(e));
+                return Err(ProviderError::Lease(e.to_string()));
             }
         };
 
@@ -155,12 +135,18 @@ impl ChatEngine {
     }
 }
 
+#[async_trait::async_trait]
+impl ChatBackend for ChatEngine {
+    async fn chat(&self, req: &ChatRequest) -> Result<String, grok_domain::ProviderError> {
+        ChatEngine::chat(self, req).await
+    }
+}
+
 // ---- 测试 ----
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::bridge::{BridgeClient, MockBridgeClient};
-    use crate::error::ProviderError;
     use grok_domain::{Account, AuthStatus, Provider};
     use grok_egress::InMemoryLeaseManager;
     use std::collections::HashMap;

@@ -105,18 +105,13 @@ impl ImageAssetStore {
     }
 }
 
-pub fn serve_image_asset(
-    store: &ImageAssetStore,
-    asset_id: Uuid,
-    query: AssetQuery,
-) -> Response {
+pub fn serve_image_asset(store: &ImageAssetStore, asset_id: Uuid, query: AssetQuery) -> Response {
     match store.get_valid(asset_id, query.exp, &query.sig) {
         Ok(asset) => {
             let mut resp = Response::new(Body::from(asset.bytes));
             *resp.status_mut() = StatusCode::OK;
             if let Ok(ct) = HeaderValue::from_str(&asset.content_type) {
-                resp.headers_mut()
-                    .insert(header::CONTENT_TYPE, ct);
+                resp.headers_mut().insert(header::CONTENT_TYPE, ct);
             }
             resp.headers_mut().insert(
                 header::CACHE_CONTROL,
@@ -136,8 +131,7 @@ pub fn serve_image_asset(
 }
 
 pub fn sign_token(secret: &[u8], asset_id: &str, exp: u64) -> String {
-    let mut mac =
-        HmacSha256::new_from_slice(secret).expect("HMAC accepts any key length");
+    let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC accepts any key length");
     mac.update(format!("{asset_id}:{exp}").as_bytes());
     hex::encode(mac.finalize().into_bytes())
 }

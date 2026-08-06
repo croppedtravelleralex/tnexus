@@ -100,7 +100,10 @@ pub async fn upload_image_bytes(
 
     let put_headers = resource_put_headers(&mime_type);
     let put_resp = RequirementsClient::apply_headers(
-        client.client().put(meta.upload_url.clone()).body(data.to_vec()),
+        client
+            .client()
+            .put(meta.upload_url.clone())
+            .body(data.to_vec()),
         &put_headers,
     )
     .send()
@@ -179,9 +182,7 @@ pub fn decode_image_payload(raw: &str) -> Result<Vec<u8>> {
         trimmed
     };
     base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64)
-        .or_else(|_| {
-            base64::Engine::decode(&base64::engine::general_purpose::STANDARD_NO_PAD, b64)
-        })
+        .or_else(|_| base64::Engine::decode(&base64::engine::general_purpose::STANDARD_NO_PAD, b64))
         .context("decode image base64")
 }
 

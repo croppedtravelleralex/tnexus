@@ -42,10 +42,7 @@ pub struct StoredAsset {
 impl AssetStorage {
     pub async fn from_config(cfg: &R2Config) -> Result<Self> {
         let endpoint = cfg.endpoint.clone().unwrap_or_else(|| {
-            format!(
-                "https://{}.r2.cloudflarestorage.com",
-                cfg.account_id.trim()
-            )
+            format!("https://{}.r2.cloudflarestorage.com", cfg.account_id.trim())
         });
         let credentials = Credentials::new(
             cfg.access_key_id.trim(),
@@ -96,16 +93,10 @@ impl AssetStorage {
     }
 
     pub async fn presign_get(&self, key: &str, ttl_secs: u64, download: bool) -> Result<String> {
-        let mut req = self
-            .client
-            .get_object()
-            .bucket(&self.bucket)
-            .key(key);
+        let mut req = self.client.get_object().bucket(&self.bucket).key(key);
         if download {
             let filename = key.rsplit('/').next().unwrap_or("image.png");
-            req = req.response_content_disposition(format!(
-                "attachment; filename=\"{filename}\""
-            ));
+            req = req.response_content_disposition(format!("attachment; filename=\"{filename}\""));
         }
         let presigned = req
             .presigned(

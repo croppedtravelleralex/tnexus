@@ -32,7 +32,11 @@ fn text_chat_body(prompt: &str) -> Value {
     })
 }
 
-pub async fn run_text_nurture(http: &reqwest::Client, access_token: &str, prompt: &str) -> Result<Value> {
+pub async fn run_text_nurture(
+    http: &reqwest::Client,
+    access_token: &str,
+    prompt: &str,
+) -> Result<Value> {
     let token = access_token.trim();
     if token.is_empty() {
         anyhow::bail!("access_token required");
@@ -50,10 +54,7 @@ pub async fn run_text_nurture(http: &reqwest::Client, access_token: &str, prompt
     );
     headers.insert(USER_AGENT, HeaderValue::from_static(USER_AGENT_STR));
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    headers.insert(
-        "oai-language",
-        HeaderValue::from_static("en-US"),
-    );
+    headers.insert("oai-language", HeaderValue::from_static("en-US"));
 
     let resp = http
         .post("https://chatgpt.com/backend-api/conversation")
@@ -66,7 +67,10 @@ pub async fn run_text_nurture(http: &reqwest::Client, access_token: &str, prompt
     let status = resp.status();
     let body = resp.text().await.unwrap_or_default();
     if !status.is_success() {
-        anyhow::bail!("nurture HTTP {status}: {}", body.chars().take(400).collect::<String>());
+        anyhow::bail!(
+            "nurture HTTP {status}: {}",
+            body.chars().take(400).collect::<String>()
+        );
     }
 
     Ok(json!({

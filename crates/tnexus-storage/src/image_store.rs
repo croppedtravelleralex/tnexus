@@ -75,7 +75,9 @@ impl ImageStore {
     ) -> Result<StoredAsset> {
         match &self.backend {
             ImageStoreBackend::R2(s) => s.store_image_variants(user_id, job_id, image_bytes).await,
-            ImageStoreBackend::Local(s) => s.store_image_variants(user_id, job_id, image_bytes).await,
+            ImageStoreBackend::Local(s) => {
+                s.store_image_variants(user_id, job_id, image_bytes).await
+            }
         }
     }
 

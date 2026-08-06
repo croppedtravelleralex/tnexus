@@ -55,7 +55,9 @@ pub async fn run_image(
 ) -> Result<(Vec<u8>, upstream::ImageRunMetrics)> {
     let refs = file_ids_to_references(asset_ids);
     let mut runtime = UpstreamRuntime::new(to_upstream(account))?;
-    runtime.run_image_with_references(&prompt, &model, &refs).await
+    runtime
+        .run_image_with_references(&prompt, &model, &refs)
+        .await
 }
 
 pub async fn run_image_edit(

@@ -107,7 +107,8 @@ impl UpstreamRuntime {
         model: &str,
         references: &[ImageReference],
     ) -> Result<(Vec<u8>, ImageRunMetrics)> {
-        self.run_image_with_references_inner(prompt, model, references).await
+        self.run_image_with_references_inner(prompt, model, references)
+            .await
     }
 
     pub async fn run_image_edit_with_metrics(
@@ -118,8 +119,15 @@ impl UpstreamRuntime {
         file_name: &str,
         mask_bytes: Option<&[u8]>,
     ) -> Result<(Vec<u8>, ImageRunMetrics)> {
-        self.run_image_edit_with_metrics_and_assets(prompt, model, image_bytes, file_name, mask_bytes, &[])
-            .await
+        self.run_image_edit_with_metrics_and_assets(
+            prompt,
+            model,
+            image_bytes,
+            file_name,
+            mask_bytes,
+            &[],
+        )
+        .await
     }
 
     pub async fn run_image_edit_with_metrics_and_assets(
@@ -151,7 +159,8 @@ impl UpstreamRuntime {
             let mask_upload = upload_image_bytes(self.client(), mask, "mask.png").await?;
             references.push(uploaded_to_reference(&mask_upload));
         }
-        self.run_image_with_references_inner(prompt, model, &references).await
+        self.run_image_with_references_inner(prompt, model, &references)
+            .await
     }
 
     async fn run_image_with_references_inner(
@@ -192,15 +201,12 @@ impl UpstreamRuntime {
         metrics.sse_events = consumed.parser.event_count() as u32;
 
         let state = consumed.parser.state();
-        let mut ready_for_download = consumed
-            .parser
-            .image_ready()
-            .unwrap_or(ImageSseReady {
-                conversation_id: state.conversation_id.clone(),
-                file_ids: state.file_ids.clone(),
-                sediment_ids: state.sediment_ids.clone(),
-                event_count: consumed.parser.event_count(),
-            });
+        let mut ready_for_download = consumed.parser.image_ready().unwrap_or(ImageSseReady {
+            conversation_id: state.conversation_id.clone(),
+            file_ids: state.file_ids.clone(),
+            sediment_ids: state.sediment_ids.clone(),
+            event_count: consumed.parser.event_count(),
+        });
 
         if ready_for_download.file_ids.is_empty()
             && ready_for_download.sediment_ids.is_empty()
@@ -285,7 +291,8 @@ impl UpstreamRuntime {
 
         let t0 = Instant::now();
         let access_token = self.client.account().access_token.clone();
-        let bytes = download_image_bytes(self.client.client(), &download_url, &access_token).await?;
+        let bytes =
+            download_image_bytes(self.client.client(), &download_url, &access_token).await?;
         metrics.download_ms = t0.elapsed().as_millis() as u64;
         metrics.image_bytes = bytes.len() as u64;
         metrics.wall_ms = wall_start.elapsed().as_millis() as u64;

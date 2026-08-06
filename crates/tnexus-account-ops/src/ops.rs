@@ -113,10 +113,7 @@ impl OpsServices {
             if token.is_empty() {
                 continue;
             }
-            let email = emails
-                .get(token)
-                .cloned()
-                .unwrap_or_default();
+            let email = emails.get(token).cloned().unwrap_or_default();
             jobs.push_back(NurtureJob {
                 access_token: token.to_string(),
                 prompt: prompt.clone(),
@@ -133,7 +130,10 @@ impl OpsServices {
     }
 
     pub fn record_nurture_success(&self) {
-        *self.nurture_completed_today.lock().expect("nurture completed") += 1;
+        *self
+            .nurture_completed_today
+            .lock()
+            .expect("nurture completed") += 1;
         *self.nurture_last_error.lock().expect("nurture err") = None;
     }
 
@@ -199,21 +199,11 @@ impl OpsServices {
 
     pub fn quota_prime_done_one(&self, ok: bool, err: Option<String>) {
         let mut st = self.quota_state.lock().expect("quota state");
-        let processed = st
-            .get("processed")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0)
-            + 1;
-        let succeeded = st
-            .get("succeeded")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0)
-            + if ok { 1 } else { 0 };
-        let failed = st
-            .get("failed")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0)
-            + if ok { 0 } else { 1 };
+        let processed = st.get("processed").and_then(|v| v.as_u64()).unwrap_or(0) + 1;
+        let succeeded =
+            st.get("succeeded").and_then(|v| v.as_u64()).unwrap_or(0) + if ok { 1 } else { 0 };
+        let failed =
+            st.get("failed").and_then(|v| v.as_u64()).unwrap_or(0) + if ok { 0 } else { 1 };
         let depth = self.quota_queue.lock().expect("quota queue").len();
         *st = json!({
             "running": depth > 0,
@@ -228,7 +218,10 @@ impl OpsServices {
     }
 
     pub fn outlook_settings_snapshot(&self) -> Value {
-        self.outlook_settings.lock().expect("outlook settings").clone()
+        self.outlook_settings
+            .lock()
+            .expect("outlook settings")
+            .clone()
     }
 
     pub fn outlook_status(&self) -> Value {
@@ -352,7 +345,8 @@ impl OpsServices {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).context("mkdir proxy runtime parent")?;
         }
-        fs::write(&path, serde_json::to_string_pretty(&settings)?).context("write proxy runtime")?;
+        fs::write(&path, serde_json::to_string_pretty(&settings)?)
+            .context("write proxy runtime")?;
         self.proxy_runtime_get()
     }
 
@@ -431,7 +425,10 @@ impl OpsServices {
                         }
                         scanned += 1;
                         let trace_url = "https://www.cloudflare.com/cdn-cgi/trace";
-                        let cf_ok = http.get(trace_url).send().await
+                        let cf_ok = http
+                            .get(trace_url)
+                            .send()
+                            .await
                             .map(|resp| resp.status().is_success())
                             .unwrap_or(false);
                         items.push(json!({

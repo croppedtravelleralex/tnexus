@@ -43,7 +43,11 @@ pub async fn create_job(
     row_to_job(row)
 }
 
-pub async fn get_job(state: &AppState, job_id: Uuid, user_id: Option<Uuid>) -> Result<Option<JobRecord>> {
+pub async fn get_job(
+    state: &AppState,
+    job_id: Uuid,
+    user_id: Option<Uuid>,
+) -> Result<Option<JobRecord>> {
     let row = if let Some(uid) = user_id {
         sqlx::query(
             "SELECT id, user_id, mode, workflow_path, ps_enabled, provider, director_models, gen_config, director_factors, ps_factors, input_prompt, status, error_message, phase_timings_ms, created_at, updated_at FROM jobs WHERE id = $1 AND user_id = $2",
@@ -74,7 +78,11 @@ pub async fn list_jobs(state: &AppState, user_id: Uuid, limit: i64) -> Result<Ve
     rows.into_iter().map(row_to_job).collect()
 }
 
-pub async fn list_job_summaries(state: &AppState, user_id: Uuid, limit: i64) -> Result<Vec<JobListItem>> {
+pub async fn list_job_summaries(
+    state: &AppState,
+    user_id: Uuid,
+    limit: i64,
+) -> Result<Vec<JobListItem>> {
     let rows = sqlx::query(
         r#"SELECT j.id, j.input_prompt, j.status, j.created_at, j.updated_at,
                   COUNT(r.id)::bigint AS result_count,
@@ -161,7 +169,11 @@ pub async fn list_results(state: &AppState, job_id: Uuid) -> Result<Vec<JobResul
     rows.into_iter().map(row_to_result).collect()
 }
 
-pub async fn get_job_detail(state: &AppState, job_id: Uuid, user_id: Uuid) -> Result<Option<JobDetail>> {
+pub async fn get_job_detail(
+    state: &AppState,
+    job_id: Uuid,
+    user_id: Uuid,
+) -> Result<Option<JobDetail>> {
     let job = get_job(state, job_id, Some(user_id)).await?;
     let Some(job) = job else {
         return Ok(None);
@@ -171,7 +183,10 @@ pub async fn get_job_detail(state: &AppState, job_id: Uuid, user_id: Uuid) -> Re
     for r in results {
         views.push(result_to_view(state, r).await?);
     }
-    Ok(Some(JobDetail { job, results: views }))
+    Ok(Some(JobDetail {
+        job,
+        results: views,
+    }))
 }
 
 pub async fn get_job_status(
@@ -179,13 +194,11 @@ pub async fn get_job_status(
     job_id: Uuid,
     user_id: Uuid,
 ) -> Result<Option<(String, Option<String>)>> {
-    let row = sqlx::query(
-        "SELECT status, error_message FROM jobs WHERE id = $1 AND user_id = $2",
-    )
-    .bind(job_id)
-    .bind(user_id)
-    .fetch_optional(&state.pool)
-    .await?;
+    let row = sqlx::query("SELECT status, error_message FROM jobs WHERE id = $1 AND user_id = $2")
+        .bind(job_id)
+        .bind(user_id)
+        .fetch_optional(&state.pool)
+        .await?;
     Ok(row.map(|r| (r.get("status"), r.get("error_message"))))
 }
 
@@ -209,27 +222,19 @@ pub async fn result_to_view(_state: &AppState, r: JobResultRecord) -> Result<Job
         .as_ref()
         .map(|s| !s.trim().is_empty())
         .unwrap_or(false)
-        || r
-            .r2_key_thumb
+        || r.r2_key_thumb
             .as_ref()
             .map(|s| !s.trim().is_empty())
             .unwrap_or(false)
-        || r
-            .r2_key_preview
+        || r.r2_key_preview
             .as_ref()
             .map(|s| !s.trim().is_empty())
             .unwrap_or(false)
-        || r
-            .r2_key_original
+        || r.r2_key_original
             .as_ref()
             .map(|s| !s.trim().is_empty())
             .unwrap_or(false);
-    if let Some(url) = r
-        .source_url
-        .as_ref()
-        .filter(|s| !s.is_empty())
-        .cloned()
-    {
+    if let Some(url) = r.source_url.as_ref().filter(|s| !s.is_empty()).cloned() {
         let keywords = r.keywords.and_then(|v| serde_json::from_value(v).ok());
         if url.contains("/v1/images/assets/") {
             if has_persisted {
@@ -313,13 +318,11 @@ pub async fn result_to_view(_state: &AppState, r: JobResultRecord) -> Result<Job
         .as_ref()
         .map(|s| !s.trim().is_empty())
         .unwrap_or(false)
-        || r
-            .r2_key_preview
+        || r.r2_key_preview
             .as_ref()
             .map(|s| !s.trim().is_empty())
             .unwrap_or(false)
-        || r
-            .r2_key_thumb
+        || r.r2_key_thumb
             .as_ref()
             .map(|s| !s.trim().is_empty())
             .unwrap_or(false);
@@ -369,7 +372,8 @@ fn row_to_job(row: sqlx::postgres::PgRow) -> Result<JobRecord> {
         workflow_path: row.get("workflow_path"),
         ps_enabled: row.get("ps_enabled"),
         provider: row.get("provider"),
-        director_models: serde_json::from_value(director_models).unwrap_or_else(|_| vec!["gpt".into()]),
+        director_models: serde_json::from_value(director_models)
+            .unwrap_or_else(|_| vec!["gpt".into()]),
         gen_config: serde_json::from_value(gen_config).unwrap_or_default(),
         director_factors: serde_json::from_value(director_factors).unwrap_or_default(),
         ps_factors: serde_json::from_value(ps_factors).unwrap_or_default(),

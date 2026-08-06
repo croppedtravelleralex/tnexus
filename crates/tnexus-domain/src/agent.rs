@@ -99,11 +99,7 @@ pub fn build_image_prompt(
         }
         (WorkflowPath::KeywordPs, DirectorOutput::KeywordPs(out)) => {
             let keywords = out.keywords.join(", ");
-            let mut prompt = format!(
-                "{}. Style anchors: {}.",
-                out.user_intent.trim(),
-                keywords
-            );
+            let mut prompt = format!("{}. Style anchors: {}.", out.user_intent.trim(), keywords);
             prompt.push_str(&format_render_suffix(ps));
             (prompt, true)
         }
@@ -172,7 +168,9 @@ fn extract_json_value(raw: &str) -> Result<serde_json::Value, String> {
         }
     }
     let json_start = trimmed.find('{').ok_or("no json in director response")?;
-    let json_end = trimmed.rfind('}').ok_or("no json end in director response")?;
+    let json_end = trimmed
+        .rfind('}')
+        .ok_or("no json end in director response")?;
     serde_json::from_str(&trimmed[json_start..=json_end])
         .map_err(|e| format!("invalid director json: {e}"))
 }

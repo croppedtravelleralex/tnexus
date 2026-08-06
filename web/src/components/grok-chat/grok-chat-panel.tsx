@@ -1,11 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Bot, Eraser, Loader2, Send, Sparkles } from "lucide-react";
-import { chatApi } from "@/lib/api";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Bot, Eraser, Image as ImageIcon, Loader2, Send, Sparkles } from "lucide-react";
+import { chatApi, sniffImageMime } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import { ChatImageThumb } from "@/components/chat/chat-image-thumb";
+import { ImageLightbox, type LightboxImage } from "@/components/image-lightbox";
+import { estimateBase64Bytes, formatBytes } from "@/lib/chat-conversations";
 
 /** Grok 对话模型选项（gateway 非 OCR 时会归一化到上游 grok-chat；下拉保留可读性/未来透传）。 */
 export const GROK_CHAT_MODELS = [
@@ -22,6 +25,8 @@ interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   error?: boolean;
+  /** 生图结果（b64，无 data URI 前缀）。 */
+  images?: string[];
 }
 
 let nextId = 1;
@@ -37,11 +42,19 @@ export function GrokChatPanel() {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
+  const [imagining, setImagining] = useState(false);
+  const [imageCount, setImageCount] = useState(1);
+  const [lightboxOpen, setLightboxOpen] = useState(false);
+  const [lightboxIndex, setLightboxIndex] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const sendingRef = useRef(sending);
   useEffect(() => {
     sendingRef.current = sending;
   }, [sending]);
+  const imaginingRef = useRef(imagining);
+  useEffect(() => {
+    imaginingRef.current = imagining;
+  }, [imagining]);
 
   const appendAssistant = useCallback((content: string, isError = false) => {
     setMessages((prev) => {
@@ -88,10 +101,62 @@ export function GrokChatPanel() {
   }, [draft, messages, model, appendAssistant]);
 
   const clear = useCallback(() => {
-    if (sendingRef.current) return;
+    if (sendingRef.current || imaginingRef.current) return;
     setMessages([]);
     setError("");
   }, []);
+
+  const lightboxImages = useMemo((): LightboxImage[] => {
+    const out: LightboxImage[] = [];
+    for (const m of messages) {
+      for (let j = 0; j < (m.images?.length ?? 0); j += 1) {
+        const b64 = m.images![j];
+        out.push({
+          id: `${m.id}-img-${j}`,
+          src: `data:image/${sniffImageMime(b64)};base64,${b64}`,
+          sizeLabel: formatBytes(estimateBase64Bytes(b64)),
+        });
+      }
+    }
+    return out;
+  }, [messages]);
+
+  const openLightbox = useCallback((imageIndex: number) => {
+    setLightboxIndex(imageIndex);
+    setLightboxOpen(true);
+  }, []);
+
+  /** 生图：prompt 取 draft，结果以独立 assistant 消息呈现（不走流式）。 */
+  const imagine = useCallback(async () => {
+    const text = draft.trim();
+    if (!text || sendingRef.current || imaginingRef.current) return;
+    setDraft("");
+    setError("");
+    setMessages((prev) => [...prev, makeMessage("user", text)]);
+    setImagining(true);
+    try {
+      const items = await chatApi.generateImage(text, imageCount);
+      if (items.length === 0) throw new Error("生图返回空结果");
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: nextId++,
+          role: "assistant" as const,
+          content: `已生成 ${items.length} 张图片`,
+          images: items,
+        },
+      ]);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg);
+      setMessages((prev) => [
+        ...prev,
+        { id: nextId++, role: "assistant" as const, content: msg, error: true },
+      ]);
+    } finally {
+      setImagining(false);
+    }
+  }, [draft, imageCount]);
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -121,7 +186,7 @@ export function GrokChatPanel() {
             ))}
           </select>
         </div>
-        <Button variant="ghost" size="sm" onClick={clear} disabled={sending || messages.length === 0}>
+        <Button variant="ghost" size="sm" onClick={clear} disabled={sending || imagining || messages.length === 0}>
           <Eraser className="size-4" />
           清空
         </Button>
@@ -137,7 +202,9 @@ export function GrokChatPanel() {
             <p className="text-base font-medium text-[var(--neo-ink)]">开始一段 Grok 对话</p>
             <p className="max-w-md text-sm leading-relaxed text-[var(--neo-muted)]">
               对话走 gateway <code className="rounded bg-[var(--neo-surface-muted)] px-1">/v1/chat/completions</code>
-              （SSE 流式）。当前为内存会话，刷新后清空。
+              （SSE 流式）；生图走{" "}
+              <code className="rounded bg-[var(--neo-surface-muted)] px-1">/v1/images/generations</code>
+              （需 gateway 开启 GROK_IMAGE_ENABLED=1 且 browser-bridge 就绪）。当前为内存会话，刷新后清空。
             </p>
           </div>
         ) : (
@@ -167,6 +234,21 @@ export function GrokChatPanel() {
                   )}
                 >
                   {m.content || <span className="text-[var(--neo-muted)]">…</span>}
+                  {m.images && m.images.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {m.images.map((b64, j) => {
+                        const imageIndex = lightboxImages.findIndex((li) => li.id === `${m.id}-img-${j}`);
+                        return (
+                          <ChatImageThumb
+                            key={j}
+                            b64={b64}
+                            mime={sniffImageMime(b64)}
+                            onOpen={() => openLightbox(imageIndex >= 0 ? imageIndex : 0)}
+                          />
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               </div>
             ))}
@@ -174,6 +256,12 @@ export function GrokChatPanel() {
               <div className="flex items-center gap-2 pl-10 text-sm text-[var(--neo-muted)]">
                 <Loader2 className="size-4 animate-spin" />
                 生成中…
+              </div>
+            )}
+            {imagining && (
+              <div className="flex items-center gap-2 pl-10 text-sm text-[var(--neo-muted)]">
+                <Loader2 className="size-4 animate-spin" />
+                正在生成图片…
               </div>
             )}
           </div>
@@ -191,20 +279,51 @@ export function GrokChatPanel() {
             className="min-h-[44px] max-h-40 flex-1 resize-none border-none bg-transparent px-2 py-2 text-[15px] leading-relaxed shadow-none placeholder:text-[var(--neo-muted)] focus-visible:outline-none"
             disabled={sending}
           />
+          <select
+            value={imageCount}
+            onChange={(e) => setImageCount(Number(e.target.value))}
+            className="neo-input h-9 rounded-lg px-1.5 text-sm text-[var(--neo-ink)] focus-visible:outline-none"
+            aria-label="生图数量"
+            title="生图数量"
+            disabled={sending || imagining}
+          >
+            {[1, 2, 3, 4].map((n) => (
+              <option key={n} value={n}>
+                {n}张
+              </option>
+            ))}
+          </select>
+          <Button
+            size="icon"
+            onClick={() => void imagine()}
+            disabled={sending || imagining || !draft.trim()}
+            aria-label="生成图片"
+            title="生成图片（/v1/images/generations）"
+          >
+            {imagining ? <Loader2 className="size-4 animate-spin" /> : <ImageIcon className="size-4" />}
+          </Button>
           <Button
             size="icon"
             onClick={() => void send()}
-            disabled={sending || !draft.trim()}
+            disabled={sending || imagining || !draft.trim()}
             aria-label="发送"
           >
             {sending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
           </Button>
         </div>
-        {error && !sending && (
+        <ImageLightbox
+          images={lightboxImages}
+          currentIndex={lightboxIndex}
+          open={lightboxOpen}
+          onOpenChange={setLightboxOpen}
+          onIndexChange={setLightboxIndex}
+        />
+        {error && !sending && !imagining && (
           <p className="mx-auto mt-2 max-w-3xl text-xs text-rose-600">{error}</p>
         )}
         <p className="mx-auto mt-2 max-w-3xl text-[11px] text-[var(--neo-muted)]">
-          模型下拉为非 OCR 文本通道；gateway 会归一化到上游 grok-chat。
+          模型下拉为非 OCR 文本通道；gateway 会归一化到上游 grok-chat。生图需 gateway 开启
+          GROK_IMAGE_ENABLED=1 且 browser-bridge 就绪，否则返回 500/503。
         </p>
       </div>
     </div>

@@ -1,0 +1,21 @@
+# grok-bridge 运行镜像（debian-slim；Chrome 不内置，宿主挂载）。
+# 发布链路：本地/CI 构建 → GHCR → Panda 仅 deploy（pull + up）。
+# 构建阶段与 grok2api-rs 共用 rust:1.94-bookworm + libclang。
+FROM rust:1.94-bookworm AS builder
+WORKDIR /build
+COPY Cargo.toml Cargo.lock ./
+COPY crates/grok-domain crates/grok-domain
+COPY crates/grok-bridge crates/grok-bridge
+RUN cargo build --release -p grok-bridge
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /build/target/release/grok-bridge /usr/local/bin/grok-bridge
+# Chrome 由宿主机提供，通过 GROK_BRIDGE_CHROME_PATH 指向（或容器内另行安装）。
+ENV GROK_BRIDGE_ADDR=0.0.0.0:8192
+EXPOSE 8192
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+  CMD curl -sf http://127.0.0.1:8192/health || exit 1
+ENTRYPOINT ["/usr/local/bin/grok-bridge"]

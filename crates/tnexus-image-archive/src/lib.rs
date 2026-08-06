@@ -95,12 +95,11 @@ pub async fn bind_newapi_user_id(
 }
 
 pub async fn get_newapi_user_id(pool: &PgPool, tnexus_user_id: Uuid) -> Result<Option<i64>> {
-    let row = sqlx::query_scalar::<_, Option<i64>>(
-        "SELECT newapi_user_id FROM users WHERE id = $1",
-    )
-    .bind(tnexus_user_id)
-    .fetch_one(pool)
-    .await?;
+    let row =
+        sqlx::query_scalar::<_, Option<i64>>("SELECT newapi_user_id FROM users WHERE id = $1")
+            .bind(tnexus_user_id)
+            .fetch_one(pool)
+            .await?;
     Ok(row)
 }
 
@@ -134,7 +133,12 @@ pub async fn persist_gateway_image(
                 .store_image_variants(storage_user, record_id, &input.image_bytes)
                 .await
                 .context("store gateway image variants")?;
-            (Some(asset.original_key), Some(asset.preview_key), Some(asset.thumb_key), None)
+            (
+                Some(asset.original_key),
+                Some(asset.preview_key),
+                Some(asset.thumb_key),
+                None,
+            )
         } else {
             let b64 = base64::Engine::encode(
                 &base64::engine::general_purpose::STANDARD,

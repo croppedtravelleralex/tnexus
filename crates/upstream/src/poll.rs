@@ -8,7 +8,7 @@ use tracing::info;
 use wreq::Client;
 
 use crate::requirements::{RequirementsClient, BASE_URL};
-use crate::sse::{extract_conversation_ids, real_image_file_re, sediment_re, file_service_re};
+use crate::sse::{extract_conversation_ids, file_service_re, real_image_file_re, sediment_re};
 
 // Align with gptimage `image_generation_poll_timeout_secs` (300s on Panda).
 const DEFAULT_POLL_TIMEOUT_SECS: u64 = 300;
@@ -53,11 +53,18 @@ pub struct ImagePollConfig {
 
 impl ImagePollConfig {
     pub fn from_env() -> Self {
-        let timeout_secs = env_u64("UPSTREAM_IMAGE_POLL_TIMEOUT_SECS", DEFAULT_POLL_TIMEOUT_SECS);
-        let initial_secs =
-            env_f64("UPSTREAM_IMAGE_POLL_INITIAL_WAIT_SECS", DEFAULT_POLL_INITIAL_WAIT_SECS);
-        let interval_secs =
-            env_f64("UPSTREAM_IMAGE_POLL_INTERVAL_SECS", DEFAULT_POLL_INTERVAL_SECS);
+        let timeout_secs = env_u64(
+            "UPSTREAM_IMAGE_POLL_TIMEOUT_SECS",
+            DEFAULT_POLL_TIMEOUT_SECS,
+        );
+        let initial_secs = env_f64(
+            "UPSTREAM_IMAGE_POLL_INITIAL_WAIT_SECS",
+            DEFAULT_POLL_INITIAL_WAIT_SECS,
+        );
+        let interval_secs = env_f64(
+            "UPSTREAM_IMAGE_POLL_INTERVAL_SECS",
+            DEFAULT_POLL_INTERVAL_SECS,
+        );
         let interval = Duration::from_secs_f64(interval_secs.max(0.5));
         let timeout = Duration::from_secs(timeout_secs.max(30));
         let tasks_every_n = env_u32(
@@ -190,10 +197,8 @@ fn message_is_structured_image_error(message: &serde_json::Map<String, Value>) -
         .and_then(|c| c.get("content_type"))
         .and_then(|v| v.as_str())
         == Some("text");
-    let is_assistant_role = author
-        .and_then(|a| a.get("role"))
-        .and_then(|v| v.as_str())
-        == Some("assistant");
+    let is_assistant_role =
+        author.and_then(|a| a.get("role")).and_then(|v| v.as_str()) == Some("assistant");
     is_error && is_text_only && is_assistant_role
 }
 
@@ -318,9 +323,7 @@ pub fn conversation_has_image_gen_activity(data: &Value) -> bool {
         None => return false,
     };
     for node in mapping.values() {
-        let metadata = node
-            .get("message")
-            .and_then(|v| v.get("metadata"));
+        let metadata = node.get("message").and_then(|v| v.get("metadata"));
         if metadata
             .and_then(|m| m.get("async_task_type"))
             .and_then(|v| v.as_str())
@@ -365,7 +368,11 @@ pub fn find_terminal_upstream_block_in_conversation(data: &Value) -> Option<(Str
     None
 }
 
-fn walk_image_reference_ids(value: &Value, file_ids: &mut Vec<String>, sediment_ids: &mut Vec<String>) {
+fn walk_image_reference_ids(
+    value: &Value,
+    file_ids: &mut Vec<String>,
+    sediment_ids: &mut Vec<String>,
+) {
     match value {
         Value::String(s) => {
             for cap in file_service_re().captures_iter(s) {
@@ -398,8 +405,13 @@ fn has_image_asset_pointer(value: &Value) -> bool {
             if map.get("content_type").and_then(|v| v.as_str()) == Some("image_asset_pointer") {
                 return true;
             }
-            let asset_pointer = map.get("asset_pointer").and_then(|v| v.as_str()).unwrap_or("");
-            if asset_pointer.starts_with("file-service://") || asset_pointer.starts_with("sediment://") {
+            let asset_pointer = map
+                .get("asset_pointer")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if asset_pointer.starts_with("file-service://")
+                || asset_pointer.starts_with("sediment://")
+            {
                 return true;
             }
             map.values().any(has_image_asset_pointer)
@@ -434,10 +446,8 @@ pub fn extract_image_ids_from_conversation(data: &Value) -> (Vec<String>, Vec<St
         }
         let metadata = message.get("metadata").unwrap_or(&Value::Null);
         let content = message.get("content").unwrap_or(&Value::Null);
-        let is_image_gen = metadata
-            .get("async_task_type")
-            .and_then(|v| v.as_str())
-            == Some("image_gen");
+        let is_image_gen =
+            metadata.get("async_task_type").and_then(|v| v.as_str()) == Some("image_gen");
         let has_asset = has_image_asset_pointer(content) || has_image_asset_pointer(metadata);
         if role == "assistant" && !is_image_gen && !has_asset {
             continue;
@@ -456,7 +466,11 @@ pub fn extract_image_ids_from_conversation(data: &Value) -> (Vec<String>, Vec<St
 }
 
 /// GET `/backend-api/conversation/{id}`.
-pub async fn get_conversation<F>(client: &Client, headers_fn: F, conversation_id: &str) -> Result<Value>
+pub async fn get_conversation<F>(
+    client: &Client,
+    headers_fn: F,
+    conversation_id: &str,
+) -> Result<Value>
 where
     F: Fn(&str) -> Vec<(String, String)>,
 {
@@ -501,10 +515,7 @@ where
     let status = resp.status();
     let text = resp.text().await.context("tasks body")?;
     if !status.is_success() {
-        bail!(
-            "tasks HTTP {status}: {}",
-            &text[..text.len().min(240)]
-        );
+        bail!("tasks HTTP {status}: {}", &text[..text.len().min(240)]);
     }
     let data: Value = serde_json::from_str(&text).context("parse tasks json")?;
     let tasks = data
@@ -594,9 +605,7 @@ where
     while Instant::now() < deadline {
         attempt += 1;
 
-        if tasks_gets < config.max_tasks_gets
-            && attempt % config.tasks_every_n_attempts == 0
-        {
+        if tasks_gets < config.max_tasks_gets && attempt % config.tasks_every_n_attempts == 0 {
             tasks_gets += 1;
             if let Ok(tasks) = query_tasks(client, &headers_fn, conversation_id).await {
                 if let Some(err) = last_task_error_from_tasks(&tasks) {
@@ -613,7 +622,8 @@ where
                 if let Some(reason) = detect_image_gen_failure_from_conversation(&conversation) {
                     bail!("upstream image generation failed: {reason}");
                 }
-                let (conv_files, conv_sediments) = extract_image_ids_from_conversation(&conversation);
+                let (conv_files, conv_sediments) =
+                    extract_image_ids_from_conversation(&conversation);
                 add_unique_file_ids(&mut file_ids, &conv_files);
                 add_unique_sediment_ids(&mut sediment_ids, &conv_sediments);
 
@@ -621,12 +631,14 @@ where
                     && sediment_ids.is_empty()
                     && !conversation_has_image_gen_activity(&conversation)
                 {
-                    if let Some((code, msg)) = find_terminal_upstream_block_in_conversation(&conversation)
+                    if let Some((code, msg)) =
+                        find_terminal_upstream_block_in_conversation(&conversation)
                     {
                         bail!("upstream image generation failed ({code}): {msg}");
                     }
                     if !last_task_error.is_empty() {
-                        if let Some((code, msg)) = classify_terminal_upstream_text(&last_task_error) {
+                        if let Some((code, msg)) = classify_terminal_upstream_text(&last_task_error)
+                        {
                             bail!("upstream image generation failed ({code}): {msg}");
                         }
                     }

@@ -156,7 +156,10 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/refresh", post(refresh_accounts))
         .route("/refresh/progress/{progress_id}", get(get_refresh_progress))
         .route("/re-login", post(relogin_accounts))
-        .route("/re-login/progress/{progress_id}", get(get_relogin_progress))
+        .route(
+            "/re-login/progress/{progress_id}",
+            get(get_relogin_progress),
+        )
         .route("/oauth/start", post(oauth_start))
         .route("/oauth/finish", post(oauth_finish))
         .merge(accounts_extended::routes())
@@ -238,7 +241,10 @@ async fn export_accounts(
     Json(body): Json<ExportBody>,
 ) -> Result<Response, (StatusCode, String)> {
     if body.format != "json" {
-        return Err((StatusCode::BAD_REQUEST, "only json export is supported".into()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "only json export is supported".into(),
+        ));
     }
     let tokens: Vec<String> = body
         .access_tokens
@@ -298,10 +304,7 @@ async fn get_schedulable_breakdown(
     Json(st.accounts.schedulable_breakdown().await)
 }
 
-async fn reload_from_storage(
-    State(st): State<Arc<AppState>>,
-    _admin: AdminUser,
-) -> Json<Value> {
+async fn reload_from_storage(State(st): State<Arc<AppState>>, _admin: AdminUser) -> Json<Value> {
     match st.accounts.reload().await {
         Ok(total) => Json(json!({ "ok": true, "total": total })),
         Err(err) => Json(json!({ "ok": false, "error": err.to_string() })),

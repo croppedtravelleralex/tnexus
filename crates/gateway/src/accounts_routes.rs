@@ -71,7 +71,11 @@ fn compute_stats(items: &[Value]) -> Value {
         } else {
             abnormal += 1;
         }
-        if item.get("image_schedulable").and_then(|v| v.as_bool()).unwrap_or(false) {
+        if item
+            .get("image_schedulable")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
             schedulable += 1;
         }
     }
@@ -143,9 +147,7 @@ pub async fn scheduling_bulk(
     State(st): State<Arc<AppState>>,
     Json(body): Json<SchedulingBulkBody>,
 ) -> Json<Value> {
-    let updated = st
-        .scheduling_gate
-        .set_bulk(&body.emails, body.enabled);
+    let updated = st.scheduling_gate.set_bulk(&body.emails, body.enabled);
     Json(json!({
         "ok": true,
         "updated": updated,

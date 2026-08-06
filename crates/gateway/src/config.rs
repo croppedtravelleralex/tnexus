@@ -7,8 +7,8 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::Semaphore;
 use tnexus_accounts_db::AccountsDb;
+use tokio::sync::Semaphore;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataPlane {

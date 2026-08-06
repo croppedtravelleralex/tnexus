@@ -15,10 +15,12 @@ impl AccountsPg {
     }
 
     pub async fn list_account_values(&self) -> Result<Vec<Value>> {
-        let rows = sqlx::query("SELECT email, access_token, data FROM tnexus_accounts ORDER BY updated_at DESC")
-            .fetch_all(&self.pool)
-            .await
-            .context("list tnexus_accounts")?;
+        let rows = sqlx::query(
+            "SELECT email, access_token, data FROM tnexus_accounts ORDER BY updated_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("list tnexus_accounts")?;
 
         let mut out = Vec::with_capacity(rows.len());
         for row in rows {

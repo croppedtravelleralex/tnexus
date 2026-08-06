@@ -2,12 +2,12 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use tnexus_accounts_db::{AccountsBackend, AccountsDb};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tnexus_accounts_db::{AccountsBackend, AccountsDb};
 use tokio::sync::RwLock;
 
 const STATE_VERIFIED: &str = "verified_ready";
@@ -215,7 +215,8 @@ impl AccountsStore {
             .get("image_quota_unknown")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        let image_quota_state = if Self::is_unlimited_type(out.get("type").and_then(|v| v.as_str())) {
+        let image_quota_state = if Self::is_unlimited_type(out.get("type").and_then(|v| v.as_str()))
+        {
             "unlimited"
         } else if image_quota_unknown {
             "unknown"
@@ -324,7 +325,11 @@ impl AccountsStore {
         })
     }
 
-    pub async fn set_scheduling_by_token(&self, access_token: &str, enabled: bool) -> Result<Option<Value>> {
+    pub async fn set_scheduling_by_token(
+        &self,
+        access_token: &str,
+        enabled: bool,
+    ) -> Result<Option<Value>> {
         let email = {
             let guard = self.inner.read().await;
             guard
@@ -342,15 +347,20 @@ impl AccountsStore {
         Ok(Some(Self::row_to_json(row, &scheduling)))
     }
 
-    pub async fn set_scheduling_bulk(&self, access_tokens: &[String], enabled: bool) -> Result<usize> {
+    pub async fn set_scheduling_bulk(
+        &self,
+        access_tokens: &[String],
+        enabled: bool,
+    ) -> Result<usize> {
         let emails: Vec<String> = {
             let guard = self.inner.read().await;
             access_tokens
                 .iter()
                 .filter_map(|token| {
-                    guard.values().find(|row| row.access_token == *token).map(|row| {
-                        row.email.to_lowercase()
-                    })
+                    guard
+                        .values()
+                        .find(|row| row.access_token == *token)
+                        .map(|row| row.email.to_lowercase())
                 })
                 .collect()
         };
@@ -389,17 +399,19 @@ impl AccountsStore {
         for row in guard.values() {
             let receive_state = Self::receive_state_for(&row.email, &scheduling);
             let has_token = !row.access_token.is_empty();
-            let status = row
-                .field_str("status")
-                .unwrap_or_else(|| {
-                    if has_token {
-                        "正常".to_string()
-                    } else {
-                        "异常".to_string()
-                    }
-                });
+            let status = row.field_str("status").unwrap_or_else(|| {
+                if has_token {
+                    "正常".to_string()
+                } else {
+                    "异常".to_string()
+                }
+            });
             let manual_on = Self::manual_scheduling_enabled(&receive_state);
-            let quota = row.fields.get("quota").and_then(|v| v.as_i64()).unwrap_or(0);
+            let quota = row
+                .fields
+                .get("quota")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
             let inflight = row
                 .fields
                 .get("image_inflight")
@@ -416,7 +428,13 @@ impl AccountsStore {
                 excluded_by_failure_evidence += 1;
             } else if !manual_on {
                 excluded_by_receive_state += 1;
-            } else if quota <= 0 && !row.fields.get("image_quota_unknown").and_then(|v| v.as_bool()).unwrap_or(false) {
+            } else if quota <= 0
+                && !row
+                    .fields
+                    .get("image_quota_unknown")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+            {
                 excluded_by_quota += 1;
             } else if inflight > 0 {
                 excluded_by_inflight += 1;
@@ -682,15 +700,18 @@ fn compute_stats(items: &[Value]) -> Value {
             "禁用" => disabled += 1,
             _ => abnormal += 1,
         }
-        if item.get("image_schedulable").and_then(|v| v.as_bool()).unwrap_or(false) {
+        if item
+            .get("image_schedulable")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
             schedulable += 1;
         }
         let receive = item
             .get("panda_receive_state")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        if receive.is_empty()
-            || matches!(receive, "verified_ready" | "verified" | "local_verified")
+        if receive.is_empty() || matches!(receive, "verified_ready" | "verified" | "local_verified")
         {
             scheduling_enabled += 1;
         }
@@ -699,7 +720,11 @@ fn compute_stats(items: &[Value]) -> Value {
         if quota > 0 {
             verified_quota_count += 1;
             available_image_quota += quota;
-        } else if item.get("image_quota_unknown").and_then(|v| v.as_bool()).unwrap_or(false) {
+        } else if item
+            .get("image_quota_unknown")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
             verified_quota_count += 1;
         } else {
             stale_quota_count += 1;

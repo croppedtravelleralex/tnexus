@@ -20,7 +20,8 @@ const PLATFORM_OAUTH_AUDIENCE: &str = "https://api.openai.com/v1";
 const PLATFORM_AUTH0_CLIENT: &str = "eyJuYW1lIjoiYXV0aDAtc3BhLWpzIiwidmVyc2lvbiI6IjEuMjEuMCJ9";
 const USER_AGENT_STR: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36";
-const SEC_CH_UA: &str = "\"Google Chrome\";v=\"145\", \"Not?A_Brand\";v=\"8\", \"Chromium\";v=\"145\"";
+const SEC_CH_UA: &str =
+    "\"Google Chrome\";v=\"145\", \"Not?A_Brand\";v=\"8\", \"Chromium\";v=\"145\"";
 
 pub async fn relogin_account(account: &Map<String, Value>) -> Result<Map<String, Value>> {
     let email = account
@@ -149,7 +150,10 @@ pub async fn relogin_account(account: &Map<String, Value>) -> Result<Map<String,
     acc.insert("status".into(), json!("正常"));
     acc.insert(
         "source_type".into(),
-        json!(acc.get("source_type").and_then(|v| v.as_str()).unwrap_or("password")),
+        json!(acc
+            .get("source_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("password")),
     );
     Ok(user_info::merge_user_info(&http, &acc).await)
 }
@@ -184,9 +188,7 @@ async fn fetch_sentinel_header(http: &reqwest::Client, device_id: &str) -> Resul
         .unwrap_or("")
         .trim();
     if token.is_empty() {
-        anyhow::bail!(
-            "sentinel returned empty token (set OPENAI_SENTINEL_HEADER if PoW required)"
-        );
+        anyhow::bail!("sentinel returned empty token (set OPENAI_SENTINEL_HEADER if PoW required)");
     }
     Ok(json!({
         "p": "",
@@ -205,7 +207,9 @@ async fn complete_token_exchange(
     expected_state: &str,
 ) -> Result<Map<String, Value>> {
     let auth_cookie = cookie_value(jar, "oai-client-auth-session")
-        .or_else(|_| std::env::var("OAI_CLIENT_AUTH_SESSION").map_err(|_| anyhow!("missing cookie")))
+        .or_else(|_| {
+            std::env::var("OAI_CLIENT_AUTH_SESSION").map_err(|_| anyhow!("missing cookie"))
+        })
         .context("missing oai-client-auth-session after login")?;
     let workspace_id = workspace_id_from_cookie(&auth_cookie)?;
     let select_resp = http
@@ -213,7 +217,10 @@ async fn complete_token_exchange(
         .header("User-Agent", USER_AGENT_STR)
         .header("Accept", "application/json")
         .header("Content-Type", "application/json")
-        .header("Referer", "https://auth.openai.com/sign-in-with-chatgpt/codex/consent")
+        .header(
+            "Referer",
+            "https://auth.openai.com/sign-in-with-chatgpt/codex/consent",
+        )
         .json(&json!({ "workspace_id": workspace_id }))
         .send()
         .await

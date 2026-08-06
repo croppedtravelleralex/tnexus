@@ -8,10 +8,12 @@ import { estimateBase64Bytes, formatBytes } from "@/lib/chat-conversations";
 type Props = {
   b64: string;
   onOpen: () => void;
+  /** 图片 MIME 类型（grok 生图可能返回 JPEG/WEBP；缺省 png 保持 gpt 面板兼容）。 */
+  mime?: "png" | "jpeg" | "webp";
 };
 
-export function ChatImageThumb({ b64, onOpen }: Props) {
-  const src = `data:image/png;base64,${b64}`;
+export function ChatImageThumb({ b64, onOpen, mime = "png" }: Props) {
+  const src = `data:image/${mime};base64,${b64}`;
   const [dimensions, setDimensions] = useState<string | null>(null);
   const sizeLabel = formatBytes(estimateBase64Bytes(b64));
 
@@ -28,7 +30,7 @@ export function ChatImageThumb({ b64, onOpen }: Props) {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `chat-image-${Date.now()}.png`;
+      a.download = `chat-image-${Date.now()}.${mime}`;
       a.click();
       URL.revokeObjectURL(url);
     } catch {

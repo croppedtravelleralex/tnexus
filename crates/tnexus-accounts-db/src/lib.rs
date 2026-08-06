@@ -417,7 +417,10 @@ mod tests {
         db.touch_inflight("test@example.com", 1).unwrap();
         let items = db.list_account_values().unwrap();
         assert_eq!(items.len(), 1);
-        assert_eq!(items[0].get("image_inflight").and_then(|v| v.as_i64()), Some(1));
+        assert_eq!(
+            items[0].get("image_inflight").and_then(|v| v.as_i64()),
+            Some(1)
+        );
     }
 
     #[test]
@@ -447,7 +450,10 @@ mod tests {
         let reset = db.reconcile_inflight_above(8).unwrap();
         assert_eq!(reset, 1);
         let items = db.list_account_values().unwrap();
-        assert_eq!(items[0].get("image_inflight").and_then(|v| v.as_i64()), Some(0));
+        assert_eq!(
+            items[0].get("image_inflight").and_then(|v| v.as_i64()),
+            Some(0)
+        );
     }
 
     #[test]

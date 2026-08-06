@@ -70,7 +70,10 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/login", post(login))
         .route("/logout", post(logout))
         .route("/me", get(me))
-        .route("/preferences", get(get_preferences).patch(patch_preferences))
+        .route(
+            "/preferences",
+            get(get_preferences).patch(patch_preferences),
+        )
         .route("/newapi/bind", post(bind_newapi_self))
         .route("/users", get(list_users))
         .route("/users/{id}/newapi", post(admin_bind_newapi))
@@ -193,13 +196,12 @@ async fn get_preferences(
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let id = Uuid::parse_str(&user.claims.sub)
         .map_err(|_| (StatusCode::BAD_REQUEST, "bad user id".into()))?;
-    let row: Option<serde_json::Value> = sqlx::query_scalar(
-        "SELECT preferences FROM users WHERE id = $1",
-    )
-    .bind(id)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let row: Option<serde_json::Value> =
+        sqlx::query_scalar("SELECT preferences FROM users WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(row.unwrap_or_else(|| serde_json::json!({}))))
 }
 
@@ -215,31 +217,26 @@ async fn patch_preferences(
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let id = Uuid::parse_str(&user.claims.sub)
         .map_err(|_| (StatusCode::BAD_REQUEST, "bad user id".into()))?;
-    let current: serde_json::Value = sqlx::query_scalar(
-        "SELECT preferences FROM users WHERE id = $1",
-    )
-    .bind(id)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-    .unwrap_or_else(|| serde_json::json!({}));
+    let current: serde_json::Value =
+        sqlx::query_scalar("SELECT preferences FROM users WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .unwrap_or_else(|| serde_json::json!({}));
     let merged = merge_preferences(current, body.preferences);
-    let updated: serde_json::Value = sqlx::query_scalar(
-        "UPDATE users SET preferences = $2 WHERE id = $1 RETURNING preferences",
-    )
-    .bind(id)
-    .bind(&merged)
-    .fetch_one(&state.pool)
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let updated: serde_json::Value =
+        sqlx::query_scalar("UPDATE users SET preferences = $2 WHERE id = $1 RETURNING preferences")
+            .bind(id)
+            .bind(&merged)
+            .fetch_one(&state.pool)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(updated))
 }
 
 /// Deep-merge user preferences at the top level; nested objects are merged recursively.
-fn merge_preferences(
-    current: serde_json::Value,
-    patch: serde_json::Value,
-) -> serde_json::Value {
+fn merge_preferences(current: serde_json::Value, patch: serde_json::Value) -> serde_json::Value {
     let serde_json::Value::Object(mut base) = current else {
         return patch;
     };

@@ -17,7 +17,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::json;
 
-use grok_provider_web::{ChatEngine, ImageEngine};
+use grok_domain::{ChatBackend, ImageBackend};
 
 use crate::handlers::{
     chat_completions, image_generations, media_images, messages_completions, models,
@@ -28,10 +28,10 @@ use crate::video::{create_video, get_video, VideoBackend};
 /// 应用共享状态。
 #[derive(Clone)]
 pub struct AppState {
-    /// 推理引擎。生产在 `with_engine` 注入；默认 None（未配置时推理请求 500）。
-    pub engine: Option<Arc<ChatEngine>>,
-    /// 生图引擎（G2）。None 时 `/v1/images/generations` 返回 503。
-    pub image_engine: Option<Arc<ImageEngine>>,
+    /// 推理引擎（端口）。生产在 `with_engine` 注入；默认 None（未配置时推理请求 500）。
+    pub engine: Option<Arc<dyn ChatBackend>>,
+    /// 生图引擎（端口，G2）。None 时 `/v1/images/generations` 返回 503。
+    pub image_engine: Option<Arc<dyn ImageBackend>>,
     /// 媒体取回器（G2-A4 `/v1/media/images/{id}`）。None 时返回 501。
     pub media_fetcher: Option<Arc<dyn MediaFetcher>>,
     /// `/v1/responses` 协议后端（Build provider，G5-P3）。None 时返回 500。
@@ -66,8 +66,8 @@ impl AppState {
     }
 }
 
-/// 构建带 chat engine 的应用状态（image engine 未配置）。
-pub fn with_engine(engine: ChatEngine) -> AppState {
+/// 构建带 chat engine 的应用状态（image engine 未配置）。泛型接受任意 `ChatBackend` 实现。
+pub fn with_engine<E: ChatBackend + 'static>(engine: E) -> AppState {
     AppState {
         engine: Some(Arc::new(engine)),
         image_engine: None,
@@ -80,7 +80,10 @@ pub fn with_engine(engine: ChatEngine) -> AppState {
 }
 
 /// 构建带 chat + image 引擎的应用状态。
-pub fn with_engines(engine: ChatEngine, image_engine: ImageEngine) -> AppState {
+pub fn with_engines<E: ChatBackend + 'static, I: ImageBackend + 'static>(
+    engine: E,
+    image_engine: I,
+) -> AppState {
     AppState {
         engine: Some(Arc::new(engine)),
         image_engine: Some(Arc::new(image_engine)),
@@ -93,9 +96,9 @@ pub fn with_engines(engine: ChatEngine, image_engine: ImageEngine) -> AppState {
 }
 
 /// 构建带 chat + image 引擎 + 媒体取回器的应用状态（测试注入）。
-pub fn with_engines_and_media(
-    engine: ChatEngine,
-    image_engine: ImageEngine,
+pub fn with_engines_and_media<E: ChatBackend + 'static, I: ImageBackend + 'static>(
+    engine: E,
+    image_engine: I,
     media_fetcher: Arc<dyn MediaFetcher>,
 ) -> AppState {
     AppState {

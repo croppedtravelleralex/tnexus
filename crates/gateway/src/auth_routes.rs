@@ -1,7 +1,6 @@
 //! Auth HTTP routes and JWT extraction for gateway.
 
 use crate::state::AppState;
-use gateway_auth::{AuthError, AuthMode, AuthService, Claims, Role, User};
 use axum::{
     extract::{FromRequestParts, Request, State},
     http::{header, request::Parts, HeaderMap, StatusCode},
@@ -10,6 +9,7 @@ use axum::{
     Json,
 };
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
+use gateway_auth::{AuthError, AuthMode, AuthService, Claims, Role, User};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;

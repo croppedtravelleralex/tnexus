@@ -167,10 +167,7 @@ pub fn extract_chat_image_prompt(text: &str) -> String {
     let t = text.trim();
     let lower = t.to_lowercase();
     if lower.starts_with("/image") {
-        let rest = t
-            .chars()
-            .skip_while(|c| *c == '/')
-            .collect::<String>();
+        let rest = t.chars().skip_while(|c| *c == '/').collect::<String>();
         let rest = rest
             .trim_start_matches("image")
             .trim_start_matches("IMAGE")
@@ -182,12 +179,13 @@ pub fn extract_chat_image_prompt(text: &str) -> String {
         };
     }
     if lower.starts_with("/img") {
-        let rest = t.chars().skip(4).collect::<String>().trim_start().to_string();
-        return if rest.is_empty() {
-            t.to_string()
-        } else {
-            rest
-        };
+        let rest = t
+            .chars()
+            .skip(4)
+            .collect::<String>()
+            .trim_start()
+            .to_string();
+        return if rest.is_empty() { t.to_string() } else { rest };
     }
     if let Some(rest) = t
         .strip_prefix("/image ")
@@ -406,7 +404,11 @@ pub fn image_generation_url_response(url: &str, prompt: &str) -> Value {
 }
 
 /// OpenAI-compatible image response with TNexus pipeline telemetry extension.
-pub fn image_generation_response_with_pipeline(data: Value, pipeline: Value, prompt: &str) -> Value {
+pub fn image_generation_response_with_pipeline(
+    data: Value,
+    pipeline: Value,
+    prompt: &str,
+) -> Value {
     json!({
         "created": chrono_secs(),
         "data": data,
@@ -415,27 +417,24 @@ pub fn image_generation_response_with_pipeline(data: Value, pipeline: Value, pro
     })
 }
 
-pub fn image_generation_url_response_with_pipeline(url: &str, pipeline: Value, prompt: &str) -> Value {
-    image_generation_response_with_pipeline(
-        json!([{ "url": url }]),
-        pipeline,
-        prompt,
-    )
+pub fn image_generation_url_response_with_pipeline(
+    url: &str,
+    pipeline: Value,
+    prompt: &str,
+) -> Value {
+    image_generation_response_with_pipeline(json!([{ "url": url }]), pipeline, prompt)
 }
 
-pub fn image_generation_b64_response_with_pipeline(b64: &str, pipeline: Value, prompt: &str) -> Value {
-    image_generation_response_with_pipeline(
-        json!([{ "b64_json": b64 }]),
-        pipeline,
-        prompt,
-    )
+pub fn image_generation_b64_response_with_pipeline(
+    b64: &str,
+    pipeline: Value,
+    prompt: &str,
+) -> Value {
+    image_generation_response_with_pipeline(json!([{ "b64_json": b64 }]), pipeline, prompt)
 }
 
 pub fn image_generation_b64_multi_response(b64s: &[String], prompt: &str) -> Value {
-    let data: Vec<Value> = b64s
-        .iter()
-        .map(|b64| json!({ "b64_json": b64 }))
-        .collect();
+    let data: Vec<Value> = b64s.iter().map(|b64| json!({ "b64_json": b64 })).collect();
     json!({
         "created": chrono_secs(),
         "data": data,
@@ -444,10 +443,7 @@ pub fn image_generation_b64_multi_response(b64s: &[String], prompt: &str) -> Val
 }
 
 pub fn image_generation_url_multi_response(urls: &[String], prompt: &str) -> Value {
-    let data: Vec<Value> = urls
-        .iter()
-        .map(|url| json!({ "url": url }))
-        .collect();
+    let data: Vec<Value> = urls.iter().map(|url| json!({ "url": url })).collect();
     json!({
         "created": chrono_secs(),
         "data": data,
@@ -460,10 +456,7 @@ pub fn image_generation_b64_multi_response_with_pipeline(
     pipeline: Value,
     prompt: &str,
 ) -> Value {
-    let data: Vec<Value> = b64s
-        .iter()
-        .map(|b64| json!({ "b64_json": b64 }))
-        .collect();
+    let data: Vec<Value> = b64s.iter().map(|b64| json!({ "b64_json": b64 })).collect();
     image_generation_response_with_pipeline(json!(data), pipeline, prompt)
 }
 
@@ -472,10 +465,7 @@ pub fn image_generation_url_multi_response_with_pipeline(
     pipeline: Value,
     prompt: &str,
 ) -> Value {
-    let data: Vec<Value> = urls
-        .iter()
-        .map(|url| json!({ "url": url }))
-        .collect();
+    let data: Vec<Value> = urls.iter().map(|url| json!({ "url": url })).collect();
     image_generation_response_with_pipeline(json!(data), pipeline, prompt)
 }
 

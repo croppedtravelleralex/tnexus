@@ -13,7 +13,6 @@ pub mod attachments;
 pub mod bridge;
 pub mod chat;
 pub mod engine;
-pub mod error;
 pub mod expand;
 pub mod image;
 
@@ -22,7 +21,10 @@ pub use bridge::{default_bridge_url, BridgeClient, HttpBridgeClient, MockBridgeC
 pub use chat::{
     build_web_chat_payload, public_models, ALIAS_OCR, DEFAULT_OCR_SYSTEM_PROMPT, UPSTREAM_OCR_MODEL,
 };
-pub use engine::{ChatEngine, ChatRequest};
-pub use error::ProviderError;
+pub use engine::ChatEngine;
 pub use expand::expand_prompt;
-pub use image::{ImageEngine, ImagineRequest, ImagineResult};
+pub use image::ImageEngine;
+// 契约类型/端口在 grok-domain（跨 crate 共享），此处 re-export 保持旧调用路径。
+pub use grok_domain::{
+    ChatBackend, ChatRequest, ImageBackend, ImagineRequest, ImagineResult, ProviderError,
+};

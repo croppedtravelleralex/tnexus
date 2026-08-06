@@ -10,7 +10,7 @@
 use base64::Engine;
 
 use crate::bridge::BridgeClient;
-use crate::error::ProviderError;
+use grok_domain::ProviderError;
 
 /// 单张图片附件（进入 chat payload 的 `fileAttachments`）。
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]

@@ -76,7 +76,8 @@ impl AuthService {
         password: &str,
         display_name: &str,
     ) -> Result<()> {
-        self.ensure_admin_account(account, password, display_name).await
+        self.ensure_admin_account(account, password, display_name)
+            .await
     }
 
     /// Create or update the bootstrap admin account from env on every API start.
@@ -92,12 +93,10 @@ impl AuthService {
             return Err(anyhow!("admin password must be at least 6 characters"));
         }
         let hash = hash_password(password)?;
-        let existing = sqlx::query(
-            "SELECT id FROM users WHERE email = $1",
-        )
-        .bind(&account)
-        .fetch_optional(&self.pool)
-        .await?;
+        let existing = sqlx::query("SELECT id FROM users WHERE email = $1")
+            .bind(&account)
+            .fetch_optional(&self.pool)
+            .await?;
 
         if let Some(row) = existing {
             let id: Uuid = row.get("id");
@@ -173,12 +172,7 @@ impl AuthService {
         Ok(())
     }
 
-    pub async fn register(
-        &self,
-        email: &str,
-        password: &str,
-        display_name: &str,
-    ) -> Result<User> {
+    pub async fn register(&self, email: &str, password: &str, display_name: &str) -> Result<User> {
         if password.len() < 6 {
             return Err(anyhow!("password must be at least 6 characters"));
         }

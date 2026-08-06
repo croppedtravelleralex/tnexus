@@ -168,7 +168,10 @@ pub async fn outlook_auto_recovery_status(state: &AppState) -> Result<Value, Str
     get_json(state, "/v1/outlook/auto-recovery/status").await
 }
 
-pub async fn outlook_auto_recovery_settings(state: &AppState, body: Value) -> Result<Value, String> {
+pub async fn outlook_auto_recovery_settings(
+    state: &AppState,
+    body: Value,
+) -> Result<Value, String> {
     post_json(state, "/v1/outlook/auto-recovery/settings", body).await
 }
 
@@ -176,8 +179,15 @@ pub async fn outlook_recover_one(state: &AppState, body: Value) -> Result<Value,
     post_json(state, "/v1/outlook/recover-one", body).await
 }
 
-pub async fn outlook_recover_progress(state: &AppState, progress_id: &str) -> Result<Value, String> {
-    get_json(state, &format!("/v1/outlook/recover/progress/{progress_id}")).await
+pub async fn outlook_recover_progress(
+    state: &AppState,
+    progress_id: &str,
+) -> Result<Value, String> {
+    get_json(
+        state,
+        &format!("/v1/outlook/recover/progress/{progress_id}"),
+    )
+    .await
 }
 
 pub async fn quota_prime_enqueue(state: &AppState, body: Value) -> Result<Value, String> {
@@ -221,7 +231,11 @@ pub async fn oauth_start(state: &AppState, email_hint: &str) -> Result<Value, St
     .await
 }
 
-pub async fn oauth_finish(state: &AppState, session_id: &str, callback: &str) -> Result<Value, String> {
+pub async fn oauth_finish(
+    state: &AppState,
+    session_id: &str,
+    callback: &str,
+) -> Result<Value, String> {
     post_json(
         state,
         "/v1/oauth/finish",
@@ -231,14 +245,24 @@ pub async fn oauth_finish(state: &AppState, session_id: &str, callback: &str) ->
 }
 
 pub async fn refresh_one(state: &AppState, account: Value) -> Result<Value, String> {
-    let data = post_json(state, "/v1/accounts/refresh-one", json!({ "account": account })).await?;
+    let data = post_json(
+        state,
+        "/v1/accounts/refresh-one",
+        json!({ "account": account }),
+    )
+    .await?;
     data.get("account")
         .cloned()
         .ok_or_else(|| "refresh-one 响应缺少 account".into())
 }
 
 pub async fn relogin_one(state: &AppState, account: Value) -> Result<Value, String> {
-    let data = post_json(state, "/v1/accounts/relogin-one", json!({ "account": account })).await?;
+    let data = post_json(
+        state,
+        "/v1/accounts/relogin-one",
+        json!({ "account": account }),
+    )
+    .await?;
     data.get("account")
         .cloned()
         .ok_or_else(|| "relogin-one 响应缺少 account".into())
@@ -303,9 +327,7 @@ pub async fn spawn_relogin(
     progress: ProgressStore,
     progress_id: String,
 ) {
-    progress
-        .init(&progress_id, tokens.len())
-        .await;
+    progress.init(&progress_id, tokens.len()).await;
     let mut relogined = 0usize;
     let mut errors: Vec<Value> = Vec::new();
     let mut updated_items: Vec<Value> = Vec::new();
@@ -325,7 +347,12 @@ pub async fn spawn_relogin(
                     .unwrap_or("正常")
                     .to_string();
                 let quota = updated.get("quota").and_then(|v| v.as_i64()).unwrap_or(0);
-                if state.accounts.merge_remote_items(&[updated.clone()]).await.is_ok() {
+                if state
+                    .accounts
+                    .merge_remote_items(&[updated.clone()])
+                    .await
+                    .is_ok()
+                {
                     relogined += 1;
                     updated_items.push(updated);
                 }

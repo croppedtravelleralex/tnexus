@@ -87,7 +87,10 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/outlook-recovery/status", get(outlook_recovery_status))
         .route("/outlook-recovery/enable", post(outlook_recovery_enable))
         .route("/recover-outlook", post(recover_outlook))
-        .route("/recover-outlook/progress/{progress_id}", get(recover_outlook_progress))
+        .route(
+            "/recover-outlook/progress/{progress_id}",
+            get(recover_outlook_progress),
+        )
 }
 
 async fn delete_accounts(

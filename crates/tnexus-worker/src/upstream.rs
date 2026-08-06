@@ -129,11 +129,7 @@ impl UpstreamClient {
     }
 
     pub async fn generate_slot(&self, task: &SlotGenerateTask) -> Result<GeneratedImage> {
-        let format = if self.url_mode() {
-            "url"
-        } else {
-            "b64_json"
-        };
+        let format = if self.url_mode() { "url" } else { "b64_json" };
         let base = match task.img_provider.as_str() {
             "grok" => &self.grok2api_base,
             _ => &self.gptimage_base,
@@ -143,8 +139,16 @@ impl UpstreamClient {
             _ => &self.chatgpt_image_model,
         };
         let enhance_field = "prompt_enhance";
-        self.generate_one(base, model, &task.prompt, task.ps_enabled, enhance_field, &task.opts, format)
-            .await
+        self.generate_one(
+            base,
+            model,
+            &task.prompt,
+            task.ps_enabled,
+            enhance_field,
+            &task.opts,
+            format,
+        )
+        .await
     }
 
     pub async fn generate_slots_parallel(

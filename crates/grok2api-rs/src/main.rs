@@ -199,7 +199,8 @@ fn gateway_state(
         default_protocol_backends(cfg.build_base_url.clone(), cfg.console_base_url.clone());
     let engine = ChatEngine::new(pool.clone(), lease.clone(), bridge.clone(), None);
     let mut state = AppState {
-        engine: Some(Arc::new(engine)),
+        // 端口注入：ChatEngine 实现 grok_domain::ChatBackend，Arc 直接 upcast。
+        engine: Some(Arc::new(engine) as Arc<dyn grok_domain::ChatBackend>),
         responses_backend: responses,
         messages_backend: messages,
         ..AppState::empty()
@@ -217,7 +218,7 @@ fn gateway_state(
                 Arc::new(grok_image_pipeline::InMemoryTraceRepository::new()),
             ),
         );
-        state.image_engine = Some(Arc::new(image_engine));
+        state.image_engine = Some(Arc::new(image_engine) as Arc<dyn grok_domain::ImageBackend>);
         tracing::info!("GROK_IMAGE_ENABLED=1：/v1/images/generations 已接线真实引擎");
     } else {
         tracing::warn!("GROK_IMAGE_ENABLED 未设置：生图路由 500（需 bridge + 票池侧车）");

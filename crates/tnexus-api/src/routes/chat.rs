@@ -23,10 +23,7 @@ pub fn routes() -> Router<Arc<AppState>> {
 }
 
 async fn chat_models(State(st): State<Arc<AppState>>) -> Result<Json<Value>, (StatusCode, String)> {
-    let url = format!(
-        "{}/v1/models",
-        st.config.gateway_base.trim_end_matches('/')
-    );
+    let url = format!("{}/v1/models", st.config.gateway_base.trim_end_matches('/'));
     let client = reqwest::Client::new();
     let mut req = client.get(&url);
     if let Some(token) = &st.config.gateway_internal_token {
@@ -53,7 +50,10 @@ async fn chat_completions(
     user: AuthUser,
     Json(body): Json<Value>,
 ) -> Result<Response, (StatusCode, String)> {
-    let stream = body.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
+    let stream = body
+        .get("stream")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let wants_image = body
         .get("image_mode")
         .and_then(|v| v.as_bool())
@@ -97,9 +97,9 @@ async fn chat_completions(
     });
 
     if stream {
-        let stream = resp.bytes_stream().map(|chunk| {
-            chunk.map_err(|e| std::io::Error::other(e))
-        });
+        let stream = resp
+            .bytes_stream()
+            .map(|chunk| chunk.map_err(|e| std::io::Error::other(e)));
         let body = Body::from_stream(stream);
         return Ok(Response::builder()
             .status(StatusCode::OK)

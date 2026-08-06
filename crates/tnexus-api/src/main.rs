@@ -33,9 +33,10 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-            "tnexus_api=info,tower_http=info".into()
-        }))
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "tnexus_api=info,tower_http=info".into()),
+        )
         .with(tracing_subscriber::fmt::layer())
         .init();
 
@@ -67,13 +68,19 @@ fn build_router(state: Arc<AppState>) -> Router {
         .nest("/api/logs", routes::media::routes())
         .nest("/api/images", routes::media::image_routes())
         .nest("/api/ops", routes::ops::routes())
-        .nest("/api/ops/webshare-cf-scan", routes::proxy::webshare_routes())
+        .nest(
+            "/api/ops/webshare-cf-scan",
+            routes::proxy::webshare_routes(),
+        )
         .nest("/api/proxy", routes::proxy::routes())
         .with_state(state.clone());
 
     let cors = build_cors(&state.config.cors_origins);
 
-    let mut app = Router::new().merge(api).layer(cors).layer(TraceLayer::new_for_http());
+    let mut app = Router::new()
+        .merge(api)
+        .layer(cors)
+        .layer(TraceLayer::new_for_http());
 
     if let Some(dir) = &state.config.static_dir {
         let index = format!("{dir}/index.html");
@@ -101,10 +108,8 @@ fn build_router(state: Arc<AppState>) -> Router {
 }
 
 fn build_cors(origins: &[String]) -> CorsLayer {
-    let allowed: Vec<axum::http::HeaderValue> = origins
-        .iter()
-        .filter_map(|o| o.parse().ok())
-        .collect();
+    let allowed: Vec<axum::http::HeaderValue> =
+        origins.iter().filter_map(|o| o.parse().ok()).collect();
     CorsLayer::new()
         .allow_origin(AllowOrigin::list(allowed))
         .allow_methods([

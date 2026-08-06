@@ -13,7 +13,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use grok_conversation::ConversationError;
-use grok_provider_web::ProviderError;
+use grok_domain::ProviderError;
 use serde_json::json;
 
 /// 推理端点错误，携带 HTTP 状态码（OAI 风格 `{error:{message,type,param}}`）。

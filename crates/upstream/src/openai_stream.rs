@@ -100,8 +100,7 @@ impl OpenAiSseStream {
         }
         self.out
             .push_back(format_finish_chunk(&self.chunk_id, &self.model));
-        self.out
-            .push_back(Bytes::from_static(b"data: [DONE]\n\n"));
+        self.out.push_back(Bytes::from_static(b"data: [DONE]\n\n"));
         self.finished = true;
     }
 
@@ -110,8 +109,11 @@ impl OpenAiSseStream {
             return;
         };
         if event.event_type == "conversation.delta" && !event.delta.is_empty() {
-            self.out
-                .push_back(format_delta_chunk(&self.chunk_id, &self.model, &event.delta));
+            self.out.push_back(format_delta_chunk(
+                &self.chunk_id,
+                &self.model,
+                &event.delta,
+            ));
         }
         if event.done {
             self.body_done = true;
@@ -154,7 +156,10 @@ impl Stream for OpenAiSseStream {
     }
 }
 
-pub fn chat_image_b64_sse_stream(model: &str, b64: &str) -> impl Stream<Item = std::result::Result<Bytes, Error>> {
+pub fn chat_image_b64_sse_stream(
+    model: &str,
+    b64: &str,
+) -> impl Stream<Item = std::result::Result<Bytes, Error>> {
     let chunk_id = format!("chatcmpl-{}", Uuid::new_v4());
     futures_util::stream::iter(vec![
         Ok(format_image_b64_delta_chunk(&chunk_id, model, b64)),

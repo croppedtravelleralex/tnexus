@@ -17,6 +17,7 @@ pub mod egress;
 pub mod imagine_quota;
 pub mod model_route;
 pub mod pipeline;
+pub mod provider;
 
 pub use account::*;
 pub use audit::*;
@@ -25,3 +26,4 @@ pub use egress::*;
 pub use imagine_quota::*;
 pub use model_route::*;
 pub use pipeline::*;
+pub use provider::*;

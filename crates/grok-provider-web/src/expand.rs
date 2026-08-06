@@ -11,7 +11,7 @@ use grok_domain::egress::Scope;
 use serde_json::{json, Value};
 
 use crate::bridge::BridgeClient;
-use crate::error::ProviderError;
+use grok_domain::ProviderError;
 
 /// 扩写 system 指令（对齐 Go 扩写语义：只做润色/扩写，产出可直接生图的 prompt）。
 pub const EXPAND_SYSTEM_PROMPT: &str =

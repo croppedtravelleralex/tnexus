@@ -1,0 +1,14 @@
+[package]
+name = "grok-shadow"
+version.workspace = true
+edition.workspace = true
+description = "Grok 移植 shadow compare（G6-A1/A2/A3，Rust port of scripts/grok_shadow_compare.py）"
+
+[[bin]]
+name = "grok-shadow"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true }

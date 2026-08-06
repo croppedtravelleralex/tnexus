@@ -1,28 +1,31 @@
 use crate::config::JOB_EVENTS_PREFIX;
 use crate::config::JOB_QUEUE_KEY;
-use crate::jobs::{create_job, delete_jobs, get_job_detail, get_job_status, list_job_summaries, list_jobs};
+use crate::jobs::{
+    create_job, delete_jobs, get_job_detail, get_job_status, list_job_summaries, list_jobs,
+};
 use crate::middleware::AuthUser;
-use crate::models::{parse_director_models, parse_mode, parse_provider, parse_workflow, JobDetail, JobListItem, JobRecord};
+use crate::models::{
+    parse_director_models, parse_mode, parse_provider, parse_workflow, JobDetail, JobListItem,
+    JobRecord,
+};
 use crate::state::AppState;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
-    response::{
-        sse::{Event, KeepAlive, Sse},
-    },
+    response::sse::{Event, KeepAlive, Sse},
     routing::{delete, get, post},
     Json, Router,
 };
 use futures::{stream::Stream, StreamExt};
-use tokio::sync::mpsc;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
 use tnexus_domain::factors::FactorPoint;
 use tnexus_domain::gen_config::GenConfig;
-use serde_json::Value;
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
 #[derive(Deserialize)]
@@ -50,7 +53,12 @@ struct CreateJobResponse {
 
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/", post(create_job_handler).get(list_jobs_handler).delete(delete_jobs_handler))
+        .route(
+            "/",
+            post(create_job_handler)
+                .get(list_jobs_handler)
+                .delete(delete_jobs_handler),
+        )
         .route("/summaries", get(list_summaries_handler))
         .route("/{id}", get(get_job_handler))
         .route("/{id}/status", get(get_job_status_handler))
@@ -83,7 +91,10 @@ async fn create_job_handler(
     let director_models = if body.mode == "casting" {
         models_input
     } else {
-        vec![models_input.first().cloned().unwrap_or_else(|| "gpt".into())]
+        vec![models_input
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "gpt".into())]
     };
 
     let user_id = Uuid::parse_str(&user.claims.sub)

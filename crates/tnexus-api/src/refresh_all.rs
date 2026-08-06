@@ -109,7 +109,15 @@ impl RefreshAllStore {
 
         let store = self.clone();
         tokio::spawn(async move {
-            run_refresh_all(state, tokens, concurrency, delay_ms, cancel, job_state.clone()).await;
+            run_refresh_all(
+                state,
+                tokens,
+                concurrency,
+                delay_ms,
+                cancel,
+                job_state.clone(),
+            )
+            .await;
             let mut st = job_state.write().await;
             if st.get("state").and_then(|v| v.as_str()) == Some("running") {
                 st["state"] = json!("completed");
@@ -176,7 +184,12 @@ async fn run_refresh_all(
                         .and_then(|v| v.as_str())
                         .unwrap_or("正常");
                     let quota = updated.get("quota").and_then(|v| v.as_i64()).unwrap_or(0);
-                    if state.accounts.merge_remote_items(&[updated.clone()]).await.is_ok() {
+                    if state
+                        .accounts
+                        .merge_remote_items(&[updated.clone()])
+                        .await
+                        .is_ok()
+                    {
                         refreshed += 1;
                     }
                     recent.push(json!({

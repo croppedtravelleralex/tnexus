@@ -114,7 +114,10 @@ pub fn api_router(state: Arc<AppState>) -> Router {
         .route("/v1/outlook/recover/progress/{id}", get(outlook_progress))
         .route("/v1/quota-window/prime", post(quota_prime))
         .route("/v1/quota-window/prime/status", get(quota_prime_status))
-        .route("/v1/proxy/runtime", get(proxy_runtime_get).post(proxy_runtime_save))
+        .route(
+            "/v1/proxy/runtime",
+            get(proxy_runtime_get).post(proxy_runtime_save),
+        )
         .route("/v1/proxy/test", post(proxy_test))
         .route("/v1/webshare-cf-scan/status", get(webshare_status))
         .route("/v1/webshare-cf-scan/inventory", get(webshare_inventory))
@@ -189,7 +192,10 @@ async fn nurture_enqueue(
     Json(body): Json<NurtureEnqueueIn>,
 ) -> Json<Value> {
     let emails = token_email_map(&body.accounts);
-    Json(st.ops.nurture_enqueue(&body.access_tokens, &body.prompt, &emails))
+    Json(
+        st.ops
+            .nurture_enqueue(&body.access_tokens, &body.prompt, &emails),
+    )
 }
 
 async fn nurture_process_one(
@@ -206,9 +212,7 @@ async fn nurture_process_one(
                 } else {
                     job.email.as_str()
                 };
-                if let Err(e) =
-                    crate::usage_events::record_dialogues_nurture(&job.email, binding)
-                {
+                if let Err(e) = crate::usage_events::record_dialogues_nurture(&job.email, binding) {
                     tracing::warn!(error = %e, "dialogues_nurture usage event failed");
                 }
                 Json(v)
@@ -284,10 +288,7 @@ async fn proxy_test(
     State(st): State<Arc<AppState>>,
     Json(body): Json<Map<String, Value>>,
 ) -> Result<Json<Value>, StatusCode> {
-    let url = body
-        .get("url")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let url = body.get("url").and_then(|v| v.as_str()).unwrap_or("");
     st.ops
         .proxy_test(&st.http, url)
         .await

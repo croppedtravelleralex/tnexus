@@ -20,47 +20,9 @@ use grok_pool::SharedPool;
 use serde_json::Value;
 
 use crate::bridge::BridgeClient;
-use crate::error::ProviderError;
 use crate::expand::expand_prompt;
-
-/// 一次生图请求（OpenAI `POST /v1/images/generations` 语义，G2 子集）。
-#[derive(Debug, Clone)]
-pub struct ImagineRequest {
-    /// 提示词。
-    pub prompt: String,
-    /// 生图数量（默认 1）。
-    pub n: usize,
-    /// 输出格式：`url` 或 `b64_json`。
-    pub response_format: String,
-    /// 是否走 `imagine-lite`。
-    pub lite: bool,
-    /// 是否先扩写提示词（prompt_enhance）。
-    pub enhance: bool,
-    /// 审计请求 ID。
-    pub request_id: String,
-}
-
-impl Default for ImagineRequest {
-    fn default() -> Self {
-        Self {
-            prompt: String::new(),
-            n: 1,
-            response_format: "url".to_string(),
-            lite: false,
-            enhance: false,
-            request_id: String::new(),
-        }
-    }
-}
-
-/// 生图结果（上游数据）。
-#[derive(Debug, Clone)]
-pub struct ImagineResult {
-    /// 每张图的 URL 或 b64。
-    pub items: Vec<String>,
-    /// 是否 b64 输出。
-    pub b64: bool,
-}
+use grok_domain::ProviderError;
+use grok_domain::{ImageBackend, ImagineRequest, ImagineResult};
 
 /// egress lease 超时（生图可能较长）。
 const DEFAULT_LEASE_DURATION: Duration = Duration::from_secs(30);
@@ -130,7 +92,7 @@ impl ImageEngine {
             Ok(l) => l,
             Err(e) => {
                 self.pool.dispatch_failure(account_id).await;
-                return Err(ProviderError::Lease(e));
+                return Err(ProviderError::Lease(e.to_string()));
             }
         };
 
@@ -296,6 +258,16 @@ fn extract_images(v: &Value) -> Vec<String> {
         }
     }
     out
+}
+
+#[async_trait::async_trait]
+impl ImageBackend for ImageEngine {
+    async fn imagine(
+        &self,
+        req: &ImagineRequest,
+    ) -> Result<ImagineResult, grok_domain::ProviderError> {
+        ImageEngine::imagine(self, req).await
+    }
 }
 
 #[cfg(test)]

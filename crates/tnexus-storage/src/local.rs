@@ -12,7 +12,8 @@ pub struct LocalAssetStorage {
 impl LocalAssetStorage {
     pub fn new(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
-        std::fs::create_dir_all(&root).with_context(|| format!("create image store {}", root.display()))?;
+        std::fs::create_dir_all(&root)
+            .with_context(|| format!("create image store {}", root.display()))?;
         Ok(Self { root })
     }
 
@@ -34,9 +35,12 @@ impl LocalAssetStorage {
 
         let (preview_bytes, thumb_bytes) = generate_variants(image_bytes)?;
 
-        self.put_bytes(&original_key, image_bytes, "image/png").await?;
-        self.put_bytes(&preview_key, &preview_bytes, "image/webp").await?;
-        self.put_bytes(&thumb_key, &thumb_bytes, "image/webp").await?;
+        self.put_bytes(&original_key, image_bytes, "image/png")
+            .await?;
+        self.put_bytes(&preview_key, &preview_bytes, "image/webp")
+            .await?;
+        self.put_bytes(&thumb_key, &thumb_bytes, "image/webp")
+            .await?;
 
         Ok(StoredAsset {
             original_key,

@@ -1,6 +1,5 @@
 use crate::jobs::result_to_view;
 use crate::middleware::{AdminUser, AuthUser};
-use tnexus_auth::Role;
 use crate::models::JobResultRecord;
 use crate::state::AppState;
 use axum::{
@@ -15,6 +14,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use sqlx::Row;
 use std::sync::Arc;
+use tnexus_auth::Role;
 use tnexus_image_archive::get_newapi_user_id;
 use uuid::Uuid;
 
@@ -77,7 +77,11 @@ fn parse_tags(value: Option<serde_json::Value>) -> Vec<String> {
 }
 
 fn tags_to_json(tags: &[String]) -> serde_json::Value {
-    serde_json::Value::Array(tags.iter().map(|t| serde_json::Value::String(t.clone())).collect())
+    serde_json::Value::Array(
+        tags.iter()
+            .map(|t| serde_json::Value::String(t.clone()))
+            .collect(),
+    )
 }
 
 #[derive(Debug, Deserialize)]
@@ -345,80 +349,80 @@ async fn worker_row_to_item(
     state: &AppState,
     row: &sqlx::postgres::PgRow,
 ) -> Result<Option<Value>, (StatusCode, String)> {
-        let record = JobResultRecord {
-            id: row.get("id"),
-            job_id: row.get("job_id"),
-            provider: row.get("provider"),
-            r2_key_original: row.get("r2_key_original"),
-            r2_key_preview: row.get("r2_key_preview"),
-            r2_key_thumb: row.get("r2_key_thumb"),
-            agent_prompt: row.get("agent_prompt"),
-            revised_prompt: row.get("revised_prompt"),
-            keywords: row.get("keywords"),
-            inline_preview_b64: row.get("inline_preview_b64"),
-            source_url: row.get("source_url"),
-            width: row.get("width"),
-            height: row.get("height"),
-            size_bytes: row.get("size_bytes"),
-            generation_ms: row.get("generation_ms"),
-            created_at: row.get("created_at"),
-        };
-        let prompt: String = row.get("input_prompt");
-        let created_at: DateTime<Utc> = row.get("created_at");
-        let updated_at: DateTime<Utc> = row.get("updated_at");
-        let phase_timings: serde_json::Value = row.get("phase_timings_ms");
-        let wall_ms = phase_timings
-            .get("wall_clock_ms")
-            .and_then(|v| v.as_u64())
-            .unwrap_or_else(|| (updated_at - created_at).num_milliseconds().max(0) as u64);
-        let has_r2_thumb = record
-            .r2_key_thumb
-            .as_ref()
-            .map(|s| !s.trim().is_empty())
-            .unwrap_or(false);
-        let view = result_to_view(&state, record)
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        let preview = view.preview_url.clone();
-        let thumb = view.thumb_url.clone();
-        let download = view.download_url.clone();
-        let url = download
-            .clone()
-            .or(preview.clone())
-            .or(thumb.clone())
-            .unwrap_or_default();
-        let has_inline = view
-            .preview_b64
-            .as_ref()
-            .map(|s| !s.trim().is_empty())
-            .unwrap_or(false);
-        let thumb_api_url = if has_inline || has_r2_thumb {
-            Some(format!("/api/images/thumb/{}", view.id))
-        } else {
-            None
-        };
-        if url.is_empty() && thumb_api_url.is_none() {
-            return Ok(None);
-        }
-        let keywords: Option<serde_json::Value> = row.get("keywords");
-        let tags = parse_tags(keywords);
-        let size_bytes: Option<i64> = row.get("size_bytes");
-        Ok(Some(json!({
-            "rel": view.id.to_string(),
-            "name": format!("{}.png", view.id),
-            "date": created_at.format("%Y-%m-%d").to_string(),
-            "size": size_bytes.unwrap_or(0),
-            "url": url,
-            "thumbnail_url": thumb.clone().or(Some(url.clone())),
-            "thumb_api_url": thumb_api_url,
-            "b64_json": view.b64_json,
-            "preview_b64": view.preview_b64,
-            "created_at": created_at.to_rfc3339(),
-            "duration_ms": wall_ms,
-            "prompt": prompt,
-            "tags": tags,
-            "source": "studio",
-        })))
+    let record = JobResultRecord {
+        id: row.get("id"),
+        job_id: row.get("job_id"),
+        provider: row.get("provider"),
+        r2_key_original: row.get("r2_key_original"),
+        r2_key_preview: row.get("r2_key_preview"),
+        r2_key_thumb: row.get("r2_key_thumb"),
+        agent_prompt: row.get("agent_prompt"),
+        revised_prompt: row.get("revised_prompt"),
+        keywords: row.get("keywords"),
+        inline_preview_b64: row.get("inline_preview_b64"),
+        source_url: row.get("source_url"),
+        width: row.get("width"),
+        height: row.get("height"),
+        size_bytes: row.get("size_bytes"),
+        generation_ms: row.get("generation_ms"),
+        created_at: row.get("created_at"),
+    };
+    let prompt: String = row.get("input_prompt");
+    let created_at: DateTime<Utc> = row.get("created_at");
+    let updated_at: DateTime<Utc> = row.get("updated_at");
+    let phase_timings: serde_json::Value = row.get("phase_timings_ms");
+    let wall_ms = phase_timings
+        .get("wall_clock_ms")
+        .and_then(|v| v.as_u64())
+        .unwrap_or_else(|| (updated_at - created_at).num_milliseconds().max(0) as u64);
+    let has_r2_thumb = record
+        .r2_key_thumb
+        .as_ref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    let view = result_to_view(&state, record)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let preview = view.preview_url.clone();
+    let thumb = view.thumb_url.clone();
+    let download = view.download_url.clone();
+    let url = download
+        .clone()
+        .or(preview.clone())
+        .or(thumb.clone())
+        .unwrap_or_default();
+    let has_inline = view
+        .preview_b64
+        .as_ref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    let thumb_api_url = if has_inline || has_r2_thumb {
+        Some(format!("/api/images/thumb/{}", view.id))
+    } else {
+        None
+    };
+    if url.is_empty() && thumb_api_url.is_none() {
+        return Ok(None);
+    }
+    let keywords: Option<serde_json::Value> = row.get("keywords");
+    let tags = parse_tags(keywords);
+    let size_bytes: Option<i64> = row.get("size_bytes");
+    Ok(Some(json!({
+        "rel": view.id.to_string(),
+        "name": format!("{}.png", view.id),
+        "date": created_at.format("%Y-%m-%d").to_string(),
+        "size": size_bytes.unwrap_or(0),
+        "url": url,
+        "thumbnail_url": thumb.clone().or(Some(url.clone())),
+        "thumb_api_url": thumb_api_url,
+        "b64_json": view.b64_json,
+        "preview_b64": view.preview_b64,
+        "created_at": created_at.to_rfc3339(),
+        "duration_ms": wall_ms,
+        "prompt": prompt,
+        "tags": tags,
+        "source": "studio",
+    })))
 }
 
 async fn api_row_to_item(
@@ -824,8 +828,8 @@ async fn get_image_thumb(
     headers: HeaderMap,
     Query(q): Query<ThumbQuery>,
 ) -> Result<Response, (StatusCode, String)> {
-    let id = Uuid::parse_str(id.trim())
-        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid id".into()))?;
+    let id =
+        Uuid::parse_str(id.trim()).map_err(|_| (StatusCode::BAD_REQUEST, "invalid id".into()))?;
     let user_id = Uuid::parse_str(&user.claims.sub)
         .map_err(|_| (StatusCode::BAD_REQUEST, "bad user".into()))?;
     let is_admin = user.claims.role == Role::Admin;
@@ -837,8 +841,12 @@ async fn get_image_thumb(
     }
 
     if let Some(bytes) = load_stored_bytes(&state, &row, true).await? {
-        let img = image::load_from_memory(&bytes)
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("decode image: {e}")))?;
+        let img = image::load_from_memory(&bytes).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("decode image: {e}"),
+            )
+        })?;
         return encode_thumbnail(&img, &headers, q.w);
     }
 
@@ -857,8 +865,8 @@ async fn get_image_original(
     user: AuthUser,
     Path(id): Path<String>,
 ) -> Result<Response, (StatusCode, String)> {
-    let id = Uuid::parse_str(id.trim())
-        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid id".into()))?;
+    let id =
+        Uuid::parse_str(id.trim()).map_err(|_| (StatusCode::BAD_REQUEST, "invalid id".into()))?;
     let user_id = Uuid::parse_str(&user.claims.sub)
         .map_err(|_| (StatusCode::BAD_REQUEST, "bad user".into()))?;
     let is_admin = user.claims.role == Role::Admin;
@@ -890,11 +898,13 @@ fn serve_original_bytes(raw: &str) -> Result<Response, (StatusCode, String)> {
     } else {
         raw
     };
-    let input = base64::Engine::decode(
-        &base64::engine::general_purpose::STANDARD,
-        bytes,
-    )
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("b64 decode: {e}")))?;
+    let input =
+        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, bytes).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("b64 decode: {e}"),
+            )
+        })?;
     let content_type = sniff_image_content_type(&input);
     Ok(([(header::CONTENT_TYPE, content_type)], input).into_response())
 }
@@ -911,19 +921,29 @@ fn sniff_image_content_type(bytes: &[u8]) -> &'static str {
     }
 }
 
-fn serve_resized_thumb(raw: &str, headers: &HeaderMap, width: u32) -> Result<Response, (StatusCode, String)> {
+fn serve_resized_thumb(
+    raw: &str,
+    headers: &HeaderMap,
+    width: u32,
+) -> Result<Response, (StatusCode, String)> {
     let bytes = if raw.starts_with("data:") {
         raw.split_once(',').map(|(_, p)| p).unwrap_or(raw)
     } else {
         raw
     };
-    let input = base64::Engine::decode(
-        &base64::engine::general_purpose::STANDARD,
-        bytes,
-    )
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("b64 decode: {e}")))?;
-    let img = image::load_from_memory(&input)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("decode image: {e}")))?;
+    let input =
+        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, bytes).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("b64 decode: {e}"),
+            )
+        })?;
+    let img = image::load_from_memory(&input).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("decode image: {e}"),
+        )
+    })?;
     encode_thumbnail(&img, headers, width)
 }
 
