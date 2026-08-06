@@ -173,7 +173,10 @@ pub async fn responses_completions(
     Json(req): Json<ResponsesRequest>,
 ) -> Result<Response, GatewayError> {
     let normalized = normalize_responses_input(&req)?;
-    let backend = state.responses_backend.as_ref().ok_or(GatewayError::NotConfigured)?;
+    let backend = state
+        .responses_backend
+        .as_ref()
+        .ok_or(GatewayError::NotConfigured)?;
     let text = backend.complete(&req.model, &normalized).await?;
     let request_id = new_request_id();
     if req.stream {
@@ -193,7 +196,10 @@ pub async fn messages_completions(
     Json(req): Json<MessagesRequest>,
 ) -> Result<Response, GatewayError> {
     let normalized = normalize_messages_input(&req)?;
-    let backend = state.messages_backend.as_ref().ok_or(GatewayError::NotConfigured)?;
+    let backend = state
+        .messages_backend
+        .as_ref()
+        .ok_or(GatewayError::NotConfigured)?;
     let text = backend.complete(&req.model, &normalized).await?;
     let request_id = new_request_id();
     if req.stream {

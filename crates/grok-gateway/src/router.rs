@@ -234,4 +234,3 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
 pub fn build_app_empty() -> Router {
     build_app(AppState::empty())
 }
-

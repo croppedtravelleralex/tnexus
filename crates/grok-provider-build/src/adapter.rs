@@ -213,18 +213,15 @@ impl BuildAdapter {
         if body != Value::Null {
             rb = rb.header("Content-Type", "application/json").json(&body);
         }
-        let resp = rb
-            .send()
-            .await
-            .map_err(|e| {
-                if e.is_timeout() {
-                    ProviderError::Timeout(cfg.timeout)
-                } else if e.is_connect() {
-                    ProviderError::Http(format!("连接上游失败: {e}"))
-                } else {
-                    ProviderError::Http(format!("请求上游失败: {e}"))
-                }
-            })?;
+        let resp = rb.send().await.map_err(|e| {
+            if e.is_timeout() {
+                ProviderError::Timeout(cfg.timeout)
+            } else if e.is_connect() {
+                ProviderError::Http(format!("连接上游失败: {e}"))
+            } else {
+                ProviderError::Http(format!("请求上游失败: {e}"))
+            }
+        })?;
         let status = resp.status().as_u16();
         let text = resp
             .text()

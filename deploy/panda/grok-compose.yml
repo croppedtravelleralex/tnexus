@@ -49,7 +49,10 @@ services:
       start_period: 10s
 
   # ── 浏览器桥（token 刷新 / 取票，grok2api-rs 依赖）──
+  # 镜像来自 Go 侧存储仓（非本仓 CI 产物）。构建就绪前用 --profile bridge 排除，
+  # chat 会因 bridge 不可达返回上游错误；生图需同时设 GROK_IMAGE_ENABLED=1。
   browser-bridge:
+    profiles: ["bridge"]
     image: ghcr.io/${GHCR_OWNER:-croppedtravelleralex}/grok-browser-bridge:${GROK_TAG:-latest}
     network_mode: host
     restart: unless-stopped

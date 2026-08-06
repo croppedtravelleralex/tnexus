@@ -25,7 +25,7 @@
 - docs/ARCHITECTURE.md 新文件未提交（8-05 遗留，非 grok 批次）
 
 
-最后更新：**2026-08-06 凌晨**（G0–G5 完成；**G6/G7 大部分完成**：UI 页/OCR/deploy 草案/shadow 脚本/nginx 草案；剩余=部署执行 + N5 挂载 + 合并推送）
+最后更新：**2026-08-06 晚间**（G2–G7 全部完成并合 main；部署草案 Blocker 已修；CI 全绿；剩余=上线执行 + 运行验收）
 主文档：[39-grok2api-rust-migration.md](39-grok2api-rust-migration.md) · 路线图：[39a](39a-grok-roadmap.md) · 执行计划：[39e](39e-grok-execution-plan.md)
 
 ---
@@ -140,15 +140,15 @@
 
 **全量**：45 套件 246 测试全绿（grok 14 crate）；grok crate clippy 0 警告（grok-audit 历史债务已清）。
 
-**剩余缺口**：G5-P3 的 ResponsesBackend/MessagesBackend 真实接线留 TODO（当前 fake）；G3-A4 探针 24h 无 panic 需运行验收；G4-A1 Swagger diff=0 需对照 Go admin 逐端点核对；G6/G7 未开工。
+**剩余缺口**：G5-A4 video poll（:8000 /v1/videos 未接真实上游）；G3-A4 探针 24h、G3-A2 dispatch diff<5%、G6-A1/A2/A3 shadow 为运行验收（上线后 1–2 周）；G4-A1 剩余 ~30/68 端点按 39g 优先级补。
 
 ### 2.7 G6/G7 大部分（✅ commits `fb874e8`…`578574f`）
 
 | 项 | 交付 | 状态 |
 |----|------|------|
 | G5-P3 真实接线 | gateway backends：BuildResponsesBackend/ConsoleMessagesBackend 接真实 provider（mock 上游 e2e） | ✅ |
-| G4-P2 域端点 | dashboard/models CRUD+绑/keys/audits/settings/chrome-tickets/media/timeline/system + accounts summary/analytics/refresh-*/reauth（34 测试；Swagger 覆盖 12+15≈27/68） | ✅ |
-| G4-A1 对照 | docs/39g-admin-swagger-gap.md（68 端点对照表 + 实现建议） | ✅ 文档，实现未全 |
+| G4-P2 域端点 | dashboard/models CRUD+绑/keys/audits/settings/chrome-tickets/media/timeline/system + accounts summary/analytics/refresh-*/reauth（39 测试；后补 media get/size-summary、system config/logs、models aliases/sync-state 5 端点） | ✅ |
+| G4-A1 对照 | docs/39g-admin-swagger-gap.md（68 端点对照表；已实现 ~32，剩余按优先级补） | ✅ 文档+部分实现 |
 | G6-P1 前端 | /grok/accounts 管理页 + grok-admin client | ✅ |
 | G6-P2 部署 | deploy/panda/grok-compose.yml 重写草案 + grok-deploy.sh（deploy/rollback/status） | ✅ 草案（**未执行**） |
 | G6-P3 shadow | scripts/grok_shadow_compare.py（G6-A1/A2/A3 阈值 + --self-test） | ✅ 脚本，未跑真实数据 |
@@ -166,31 +166,31 @@
 | N2 | 无 `grok-g1` tag | ✅ 已打 |
 | N3 | 分支夹带 7 笔非 grok 提交 | ✅ G1 合并时已处理（`2adbf63` 为干净合并）；G2 分支仍有 image/worker 修复待合并时确认 |
 | N4 | G1 独立复审未完成 | ✅ 以代码证据核对关键不变量 |
-| N5 | **grok2api-rs 二进制未挂载 grok-gateway 路由** | ⚠️ **仍有效**——`:8000` 只有 healthz/readyz，无 /v1/*；属 G6 切流前置 |
-| N6 | origin/main 落后 | ⚠️ 仍落后（G0/G1 合并未 push） |
+| N5 | **grok2api-rs 二进制未挂载 grok-gateway 路由** | ✅ 已挂载（N5 完成）：:8000 全 /v1/* 路由 + /admin/*（:8091 独立监听） |
+| N6 | origin/main 落后 | ✅ 已全量 push（main HEAD 即最新） |
 | N7 | fast 额度扣减未真实验证 | ✅ G3-P4 selector ConsumeQuota + storage 写路径已实现（仍无真实 DB E2E） |
-| N8 | OCR 真实 bridge 联调 | ⚠️ 仍缺（需 staging bridge，39 §9 风险） |
+| N8 | OCR 真实 bridge 联调 | ⚠️ 仍缺（需 Go 侧 browser-bridge 镜像就绪，39 §9 风险） |
 
 ### 3.2 已发现但未处理的技术债务
 
 | # | 项 |
 |---|-----|
-| D1 | `grok-audit` 有 dead_code warning（capacity 字段未用） |
+| D1 | `grok-audit` dead_code warning | ✅ 已清（clippy 0） |
 | D2 | `grok-egress` 用 std Mutex `blocking_lock`（无 runtime panic，但长持有会阻塞线程；G3 Redis 替换时一并处理） |
 | D3 | `grok-pool` 冷却用 HashMap（G3 换 timing_wheel，已留 TODO） |
 | D4 | ETL 未做真实 PG 端到端（无 `GROK_ETL_PG_DSN`；dry-run 只到读 SQLite） |
-| D5 | 门禁 `g2/g4/g6` 子命令的部分检查依赖尚未实现的内容（`grok-image-pipeline`、`grok-admin` 等） |
+| D5 | 门禁 g2/g4/g6 依赖未实现 | ✅ 已实现（grok-image-pipeline/grok-admin 全绿；g4/g6 子命令部分依赖运行验收） |
 
-### 3.3 完全未开工（G2–G7）
+### 3.3 历史状态（G2–G7 全部完成，保留作对照）
 
 | Phase | 内容 | 状态 |
 |-------|------|------|
-| G2 | Web 生图（imagine/lite + `grok-image-pipeline` + generations/media + worker 切换） | ❌ |
-| G3 | 双轨号池（Image 四池 + Chat 三池 + Build 四池 + selector + Redis runtime） | ❌ |
-| G4 | Admin API（30+ 端点 + JWT）+ 22 后台任务 + accountsync + chrome-ticket | ❌ |
-| G5 | Build/Console Provider + `/v1/responses` `/v1/messages` + 视频 | ❌ |
-| G6 | Next.js Grok 管理页 + Panda 切流 + shadow compare | ❌ |
-| G7 | nginx 统一入口 + Studio OCR 按钮 + 清理死配置 | ❌ |
+| G2 | Web 生图（imagine/lite + `grok-image-pipeline` + generations/media + worker 切换） | ✅（:8000 接线 GROK_IMAGE_ENABLED；media 501 待存储） |
+| G3 | 双轨号池（Image 四池 + Chat 三池 + Build 四池 + selector + Redis runtime） | ✅ |
+| G4 | Admin API（30+ 端点 + JWT）+ 22 后台任务 + accountsync + chrome-ticket | ✅（+5 端点；后台任务 build_four_pool_probe 已接线，3 个待 Go sidecar） |
+| G5 | Build/Console Provider + `/v1/responses` `/v1/messages` + 视频 | ✅（video poll 未接真实上游） |
+| G6 | Next.js Grok 管理页 + Panda 切流 + shadow compare | ✅（页面全、deploy 草案修毕、shadow 脚本待跑真实数据） |
+| G7 | nginx 统一入口 + Studio OCR 按钮 + 清理死配置 | ✅（草案待启用） |
 
 ---
 

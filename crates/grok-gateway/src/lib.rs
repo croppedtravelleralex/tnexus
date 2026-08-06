@@ -17,8 +17,8 @@ pub mod router;
 pub mod video;
 
 pub use backends::{default_protocol_backends, BuildResponsesBackend, ConsoleMessagesBackend};
-pub use handlers::ProtocolBackend;
 pub use error::GatewayError;
+pub use handlers::ProtocolBackend;
 pub use router::{
     build_app, with_default_protocol_backends, with_engine, with_engines, with_engines_and_media,
     with_protocol_backend, with_protocol_backends, with_video_backend, AppState,

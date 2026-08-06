@@ -187,7 +187,10 @@ fn sanitize_message(msg: &str) -> String {
 /// 显式 [`BuildResponsesBackend::new`] / [`ConsoleMessagesBackend::new`] 不受此限
 /// （信任调用方注入，如内部网/mock）。
 /// (responses, messages) 后端对。
-pub type ProtocolBackendPair = (Option<Arc<dyn ProtocolBackend>>, Option<Arc<dyn ProtocolBackend>>);
+pub type ProtocolBackendPair = (
+    Option<Arc<dyn ProtocolBackend>>,
+    Option<Arc<dyn ProtocolBackend>>,
+);
 
 pub fn default_protocol_backends(
     build_base_url: Option<String>,
@@ -198,18 +201,18 @@ pub fn default_protocol_backends(
     let responses = if build_token.trim().is_empty() {
         None
     } else {
-        Some(Arc::new(BuildResponsesBackend::new(
-            build_base_url,
-            build_token,
-        )) as Arc<dyn ProtocolBackend>)
+        Some(
+            Arc::new(BuildResponsesBackend::new(build_base_url, build_token))
+                as Arc<dyn ProtocolBackend>,
+        )
     };
     let messages = if console_token.trim().is_empty() {
         None
     } else {
-        Some(Arc::new(ConsoleMessagesBackend::new(
-            console_base_url,
-            console_token,
-        )) as Arc<dyn ProtocolBackend>)
+        Some(
+            Arc::new(ConsoleMessagesBackend::new(console_base_url, console_token))
+                as Arc<dyn ProtocolBackend>,
+        )
     };
     (responses, messages)
 }

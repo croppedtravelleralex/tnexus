@@ -5,7 +5,7 @@
 ## 读什么（按顺序）
 
 1. **[plan.md](plan.md)** — 合并施工总控与详细待办
-2. **[docs/39-grok2api-rust-migration.md](docs/39-grok2api-rust-migration.md)** — **grok2api 完整 Rust 移植进 TNexus**（号池/Admin/运维/OCR；未开工）
+2. **[docs/39f-grok-progress.md](docs/39f-grok-progress.md)** — **grok2api 完整 Rust 移植进 TNexus**（号池/Admin/运维/OCR；**G2–G7 已完成并合 main**，剩余上线执行 + 运行验收）
 3. **[docs/38-tnexus-production-cutover.md](docs/38-tnexus-production-cutover.md)** — **1:1 替代 gptimage 生产切流路线图**
 3. **[docs/36-image-delivery-bandwidth-strategy.md](docs/36-image-delivery-bandwidth-strategy.md)** — AVIF/WebP 显示、R2/Edge 302、带宽分层
 4. **[docs/37-gptimage-tnexus-comparison.md](docs/37-gptimage-tnexus-comparison.md)** — 与 Python `:8012` 横向对比

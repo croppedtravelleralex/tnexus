@@ -136,13 +136,13 @@ async fn post(app: &axum::Router, path: &str, body: Value) -> (StatusCode, Strin
 #[tokio::test]
 async fn responses_via_real_build_backend() {
     let (base, mock) = spawn_mock(1);
-    let responses = Some(std::sync::Arc::new(
-        grok_gateway::BuildResponsesBackend::new(Some(base.clone()), "test-token".into()),
-    ) as std::sync::Arc<dyn grok_gateway::ProtocolBackend>);
-    let app = grok_gateway::build_app(grok_gateway::with_protocol_backends(
-        responses,
-        None,
-    ));
+    let responses = Some(
+        std::sync::Arc::new(grok_gateway::BuildResponsesBackend::new(
+            Some(base.clone()),
+            "test-token".into(),
+        )) as std::sync::Arc<dyn grok_gateway::ProtocolBackend>,
+    );
+    let app = grok_gateway::build_app(grok_gateway::with_protocol_backends(responses, None));
     let (status, body) = post(
         &app,
         "/v1/responses",
@@ -164,13 +164,13 @@ async fn responses_via_real_build_backend() {
 #[tokio::test]
 async fn messages_via_real_console_backend() {
     let (base, mock) = spawn_mock(1);
-    let messages = Some(std::sync::Arc::new(
-        grok_gateway::ConsoleMessagesBackend::new(Some(base.clone()), "test-token".into()),
-    ) as std::sync::Arc<dyn grok_gateway::ProtocolBackend>);
-    let app = grok_gateway::build_app(grok_gateway::with_protocol_backends(
-        None,
-        messages,
-    ));
+    let messages = Some(
+        std::sync::Arc::new(grok_gateway::ConsoleMessagesBackend::new(
+            Some(base.clone()),
+            "test-token".into(),
+        )) as std::sync::Arc<dyn grok_gateway::ProtocolBackend>,
+    );
+    let app = grok_gateway::build_app(grok_gateway::with_protocol_backends(None, messages));
     let (status, body) = post(
         &app,
         "/v1/messages",

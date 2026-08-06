@@ -1,16 +1,16 @@
 # 39g — Admin Swagger 缺口清单（G4-A1 对照）
 
 对照源：Go `backend/internal/transport/http/server.go`（`/api/admin/v1` group，11 个 handler 域）
-Rust 侧：`crates/grok-admin`（AdminRouter 7 路由 + auth 5 端点）
-日期：2026-08-05
+Rust 侧：`crates/grok-admin`（AdminRouter 7 路由 + auth 5 端点 + domains 19）
+日期：2026-08-05（2026-08-06 更新计数）
 
 ## 0. 结论
 
 - Go 端点总数：**68**（11 域；含 adminauth 5 个公开/受保护认证端点）
-- Rust 已实现：**12**（auth 5 ✅ + 账号域 7 ✅）
-- 缺失：**56**（其中 G6 UI 所需优先约 20）
+- Rust 已实现：**~31**（auth 5 + 账号域 7 + domains 19：dashboard/models/keys/audits/settings/chrome-tickets/media/timeline/system 均已实现核心集）
+- 缺失：**~37**（低优先级扩展端点：批量操作、导出、明细级查询等）
 
-G4-A1（Swagger diff=0）**不达标**——账号域与 auth 域覆盖完整，其余 9 个域（model/keys/audits/dashboard/settings/egress/media/timeline/chrome-tickets/system）全部缺失。
+G4-A1（Swagger diff=0）**不达标**——核心域已覆盖（含 2026-08-06 补的 media get/size-summary、system config/logs、models aliases/sync-state），剩余为低优先级扩展，按 §4 优先级续补。
 
 ---
 
