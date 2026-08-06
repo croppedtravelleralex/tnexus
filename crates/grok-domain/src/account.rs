@@ -574,11 +574,19 @@ mod tests {
                 last_attempt_at: Some(chrono::Utc::now()),
                 last_success_at: None,
                 cooldown_until: None,
+                updated_at: chrono::Utc::now(),
             }),
             lane: Some(WebLane::Image),
             created_at: None,
             updated_at: None,
             last_used_at: None,
+            web_tier: WebTier::default(),
+            name: String::new(),
+            email: None,
+            user_id: None,
+            team_id: None,
+            source_key: String::new(),
+            observed_model_at: None,
         };
         let json = serde_json::to_string(&a).unwrap();
         let back: Account = serde_json::from_str(&json).unwrap();
@@ -627,6 +635,9 @@ mod tests {
             recovery: Some(QuotaRecovery::default()),
             model_state: Some(ModelState::default()),
             quota: None,
+            model_quota_block: None,
+            model_capability_known: false,
+            supports_model: false,
         };
         let json = serde_json::to_string(&c).unwrap();
         let back: RoutingCandidate = serde_json::from_str(&json).unwrap();
