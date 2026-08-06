@@ -1,9 +1,13 @@
 "use client";
 
-import { KeyRound, LoaderCircle, RefreshCw } from "lucide-react";
+import { Download, KeyRound, LoaderCircle, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { ElevatedCard, PageShell } from "@/components/admin/page-shell";
+import { GrokAccountDetailDialog } from "@/components/grok/grok-account-detail-dialog";
+import { GrokAccountEditDialog } from "@/components/grok/grok-account-edit-dialog";
 import { GrokAccountsTable } from "@/components/grok/grok-accounts-table";
+import { GrokImportDialog } from "@/components/grok/grok-import-dialog";
+import { GrokSummaryCards } from "@/components/grok/grok-summary-cards";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -25,6 +29,11 @@ export default function GrokAccountsPage() {
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+
+  // 对话框状态
+  const [editTarget, setEditTarget] = useState<GrokAccountView | null>(null);
+  const [detailTarget, setDetailTarget] = useState<GrokAccountView | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
 
   const load = useCallback(
     async (pageNum: number, currentToken: string) => {
@@ -66,21 +75,43 @@ export default function GrokAccountsPage() {
     setError("");
   };
 
+  const handleReload = useCallback(() => {
+    if (token) void load(page, token);
+  }, [token, page, load]);
+
   useEffect(() => {
-    if (token) void load(1, token);
+    if (!token) return;
+    // setTimeout 0：避免 effect 内同步 setState（react-compiler 规则）。
+    const timer = setTimeout(() => void load(1, token), 0);
+    return () => clearTimeout(timer);
   }, [token, load]);
+
+  const summaryError = useCallback((message: string) => {
+    setError(message);
+  }, []);
 
   return (
     <PageShell
       title="Grok 管理"
-      subtitle="grok-admin 账号管理（G6-P1 Phase 1，只读）"
+      subtitle="grok-admin 账号管理（列表 / 编辑 / 导入 / 统计 / 详情）"
       badge="Phase 1"
       actions={
         token ? (
-          <Button variant="outline" size="sm" onClick={() => void load(page, token)} disabled={loading}>
-            {loading ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
-            刷新
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setImportOpen(true)}
+              disabled={loading}
+            >
+              <Download className="size-4" />
+              导入
+            </Button>
+            <Button variant="outline" size="sm" onClick={handleReload} disabled={loading}>
+              {loading ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+              刷新
+            </Button>
+          </div>
         ) : undefined
       }
     >
@@ -92,7 +123,7 @@ export default function GrokAccountsPage() {
           </div>
           <p className="text-sm leading-relaxed text-[var(--neo-muted)]">
             grok-admin 使用独立的 Bearer JWT（HS256），与 TNexus 会话登录是两套体系。
-            粘贴管理员 access token 后，页面会保存到本地（localStorage）并只读加载账号列表。
+            粘贴管理员 access token 后，页面会保存到本地（localStorage）并加载账号管理。
           </p>
           <p className="text-xs text-[var(--neo-muted)] opacity-70">
             TODO（G6）：统一登录体系后改为会话自动换取 token，移除手动粘贴。
@@ -116,6 +147,7 @@ export default function GrokAccountsPage() {
         </ElevatedCard>
       ) : (
         <div className="flex flex-col gap-3">
+          <GrokSummaryCards token={token} onError={summaryError} />
           <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--neo-muted)]">
             <span>
               共 {total} 个账号 · 第 {page} 页（每页 {PAGE_SIZE}）
@@ -134,10 +166,41 @@ export default function GrokAccountsPage() {
               <LoaderCircle className="size-4 animate-spin" /> 加载中…
             </div>
           ) : (
-            <GrokAccountsTable items={items} />
+            <GrokAccountsTable
+              items={items}
+              onEdit={(account) => setEditTarget(account)}
+              onDetail={(account) => setDetailTarget(account)}
+            />
           )}
         </div>
       )}
+
+      {token ? (
+        <>
+          <GrokAccountEditDialog
+            open={editTarget !== null}
+            account={editTarget}
+            token={token}
+            onOpenChange={(open) => {
+              if (!open) setEditTarget(null);
+            }}
+            onSaved={handleReload}
+          />
+          <GrokAccountDetailDialog
+            open={detailTarget !== null}
+            account={detailTarget}
+            token={token}
+            onOpenChange={(open) => {
+              if (!open) setDetailTarget(null);
+            }}
+            onEdit={(account) => {
+              setDetailTarget(null);
+              setEditTarget(account);
+            }}
+          />
+          <GrokImportDialog open={importOpen} onOpenChange={setImportOpen} />
+        </>
+      ) : null}
     </PageShell>
   );
 }

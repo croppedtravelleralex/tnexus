@@ -12,6 +12,7 @@ const NAV_ITEMS = [
   { href: "/studio/", label: "TNexus", studioHome: true },
   { href: "/accounts/", label: "号池管理" },
   { href: "/grok/accounts/", label: "Grok 管理" },
+  { href: "/grok/chat/", label: "Grok 对话" },
   { href: "/image-manager/", label: "图片管理" },
   { href: "/logs/", label: "日志管理" },
   { href: "/ops/", label: "运维" },

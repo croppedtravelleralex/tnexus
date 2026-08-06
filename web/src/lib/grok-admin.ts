@@ -38,6 +38,67 @@ export type GrokAccountPage = {
   total: number;
 };
 
+/** 额度窗口（对齐 grok-domain `QuotaWindow`，snake_case） */
+export type GrokQuotaWindow = {
+  account_id: number;
+  mode: string;
+  remaining: number;
+  total: number;
+  reset_at: string | null;
+  synced_at: string | null;
+  source: string;
+  updated_at: string;
+};
+
+/** 模型状态（对齐 grok-domain `ModelState`） */
+export type GrokModelState = {
+  account_id: number;
+  upstream_model: string;
+  status: string;
+  reason: string | null;
+  consecutive_failures: number;
+  last_attempt_at: string | null;
+  last_success_at: string | null;
+  cooldown_until: string | null;
+  updated_at: string;
+};
+
+/** 账号详情（账号 + 额度窗口 + 模型状态，对齐 `AccountDetail`） */
+export type GrokAccountDetail = GrokAccountView & {
+  quota_windows: GrokQuotaWindow[];
+  model_states: GrokModelState[];
+};
+
+/** 更新输入（对齐 grok-admin `UpdateAccountInput`） */
+export type GrokUpdateAccountInput = {
+  enabled?: boolean;
+  auth_status?: string;
+  priority?: number;
+  cooldown_until?: string | null;
+};
+
+/** 池规模汇总（对齐 grok-admin `AccountSummary`） */
+export type GrokAccountSummary = {
+  total: number;
+  available: number;
+  cooldown: number;
+  reauth_required: number;
+  disabled: number;
+  probing: number;
+  quota_exhausted: number;
+  by_provider: Record<string, GrokProviderSummary>;
+};
+
+export type GrokProviderSummary = {
+  total: number;
+  available: number;
+  cooldown: number;
+  reauth_required: number;
+  disabled: number;
+  probing: number;
+  quota_exhausted: number;
+};
+
 export function getGrokAdminToken(): string | null {
   if (typeof window === "undefined") return null;
   try {
@@ -91,4 +152,77 @@ export const grokAdminApi = {
     }
     return res.json() as Promise<GrokAccountPage>;
   },
+
+  getSummary: async (token: string): Promise<GrokAccountSummary> => {
+    return grokAdminGet<GrokAccountSummary>(token, "/admin/accounts/summary");
+  },
+
+  getDetail: async (token: string, id: number): Promise<GrokAccountDetail> => {
+    return grokAdminGet<GrokAccountDetail>(token, `/admin/accounts/${id}`);
+  },
+
+  getQuotaWindows: async (token: string, id: number): Promise<GrokQuotaWindow[]> => {
+    return grokAdminGet<GrokQuotaWindow[]>(token, `/admin/accounts/${id}/quota`);
+  },
+
+  getModelStates: async (token: string, id: number): Promise<GrokModelState[]> => {
+    return grokAdminGet<GrokModelState[]>(token, `/admin/accounts/${id}/model-states`);
+  },
+
+  updateAccount: async (
+    token: string,
+    id: number,
+    input: GrokUpdateAccountInput,
+  ): Promise<GrokAccountView> => {
+    const res = await grokAdminFetch(token, `/admin/accounts/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    return res.json() as Promise<GrokAccountView>;
+  },
+
+  /** 运维动作：billing 刷新 / quota 刷新 / token 刷新 / 重登（后端无数据不报错） */
+  refreshAccount: async (token: string, id: number, kind: "billing" | "quota" | "token" | "reauth") => {
+    const res = await grokAdminFetch(
+      token,
+      `/admin/accounts/${id}/refresh-${kind}`,
+      { method: "POST" },
+    );
+    return res.json();
+  },
+
+  deleteAccount: async (token: string, id: number) => {
+    const res = await grokAdminFetch(token, `/admin/accounts/${id}`, { method: "DELETE" });
+    return res.json();
+  },
 };
+
+async function grokAdminFetch(
+  token: string,
+  path: string,
+  init?: RequestInit,
+): Promise<Response> {
+  let res: Response;
+  try {
+    res = await fetch(`${GROK_ADMIN_BASE}${path}`, {
+      ...init,
+      headers: { Authorization: `Bearer ${token}`, ...(init?.headers ?? {}) },
+    });
+  } catch {
+    throw new Error(`无法连接 grok-admin（${GROK_ADMIN_BASE}）`);
+  }
+  if (res.status === 401) {
+    throw new Error("管理员会话无效或已过期（401）");
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`grok-admin 返回 ${res.status}: ${text || res.statusText}`);
+  }
+  return res;
+}
+
+async function grokAdminGet<T>(token: string, path: string): Promise<T> {
+  const res = await grokAdminFetch(token, path);
+  return res.json() as Promise<T>;
+}

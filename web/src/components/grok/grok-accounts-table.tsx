@@ -39,9 +39,15 @@ function providerLabel(provider: string) {
 /** Grok 账号表格（只读；对齐 grok-admin `AccountView` 字段） */
 export function GrokAccountsTable({
   items,
+  onEdit,
+  onDetail,
   className,
 }: {
   items: GrokAccountView[];
+  /** 编辑按钮回调（打开编辑对话框）。 */
+  onEdit?: (account: GrokAccountView) => void;
+  /** 行点击回调（打开详情对话框）。 */
+  onDetail?: (account: GrokAccountView) => void;
   className?: string;
 }) {
   if (items.length === 0) {
@@ -70,6 +76,7 @@ export function GrokAccountsTable({
             <th className="px-3 py-2 font-medium">冷却至</th>
             <th className="px-3 py-2 font-medium">最近错误</th>
             <th className="px-3 py-2 font-medium">更新于</th>
+            <th className="px-3 py-2 font-medium">操作</th>
           </tr>
         </thead>
         <tbody>
@@ -77,6 +84,8 @@ export function GrokAccountsTable({
             <tr
               key={a.id}
               className="border-b border-[var(--neo-border)] last:border-0 hover:bg-[var(--neo-surface-muted)]"
+              onClick={() => onDetail?.(a)}
+              style={onDetail ? { cursor: "pointer" } : undefined}
             >
               <td className="px-3 py-2 tabular-nums text-[var(--neo-muted)]">{a.id}</td>
               <td className="px-3 py-2">{providerLabel(a.provider)}</td>
@@ -102,6 +111,20 @@ export function GrokAccountsTable({
               </td>
               <td className="px-3 py-2 whitespace-nowrap text-xs text-[var(--neo-muted)]">
                 {fmtTime(a.updated_at)}
+              </td>
+              <td className="px-3 py-2">
+                {onEdit ? (
+                  <button
+                    type="button"
+                    className="rounded-md border border-[var(--neo-border)] px-2 py-1 text-xs text-[var(--neo-muted)] hover:bg-stone-100 hover:text-[var(--neo-ink)]"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onEdit(a);
+                    }}
+                  >
+                    编辑
+                  </button>
+                ) : null}
               </td>
             </tr>
           ))}
