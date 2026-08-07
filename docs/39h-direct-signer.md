@@ -103,6 +103,11 @@ Proxy 属性追踪、反混淆）均在调用处崩 `reading 'childNodes'`/navig
 - **资产落地**：crates/grok-signer/assets/grok_sign_standalone.js（模板版，__GROK_META__ 运行时注入）
 - **后续**：验证 POST 全链路需要**能正常发消息的账号**（现池被禁）；或确认 Panda 生产（wodf.de 时代）
   的账号池状态
+- **海外代理验证**（用户提供 a7zxcut@70.39.164.200，端口 30000——Panda 侧可连、大陆不可连）：
+  Panda + 海外代理 + 实时 meta + 完整签名 → GET 200 ✅ / POST 403（304/86 账号）——IP 变量排除
+- **最终判定**：POST 403 与 IP（本地/日本/英国/海外代理）、签名（页面真实/本地完整）、body
+  （Go schema/前端 schema/含 addResponseRequest）、cookie（sso 全套）均无关——**grokImage 账号池
+  被 grok 批量风控禁言**（页面 UI 发送也被前端拦截佐证）；签名链路本身已通
 
 ## 7. 当前状态与选项
 
