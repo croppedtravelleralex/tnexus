@@ -1,6 +1,29 @@
 # 39f — Grok 移植进度记录（做了的 / 未做的 / 要做的）
 
 
+## 2026-08-07 真实联调 + 纯 HTTP 攻坚（`0e0052d`/`2f646f8`/`770136c`）
+
+- **grok 前端彻底独立**（`0e0052d`）：新 grokApi client（NEXT_PUBLIC_GROK_API_BASE 缺省 /grok/v1 同源反代 +
+  NEXT_PUBLIC_GROK_API_KEY），grok 对话/OCR/生图全切——**修「grok 对话误打 gpt :8014」缺陷**（chatApi 的
+  GATEWAY_BASE 缺省 8014 的实锤）；nginx 草案补 /grok/v1/ 反代段
+- **webshare 住宅代理接入**（`0e0052d`）：GROK2API_PROXY_FILE/LIST 解析（ip:port:user:pass）+ 账号→代理
+  稳定映射（account_id % n）；**实测 grok CF 拉黑该 20 节点段（TCP 10054）**——对 grok 无效，仅作账号出口备用
+- **纯 http 图片上传 OCR**（`0e0052d`）：/rest/app-chat/upload-file → fileId → chat payload 附件替换
+- **真实数据联调**（`2f646f8` 前后，本机 → ssh 隧道 → Panda）：
+  - Panda PG 31 个 grok_* 表已建但空；真实数据在 /opt/grok2api/data/backend.db（SQLite 6.9M，706 账号）
+  - scp backend.db 本地 → grok-etl 灌入 Panda PG：**30/31 表成功**（706 账号 / 671 grok_web enabled /
+    2043 额度窗 / 4727 审计 / 4089 池快照）
+  - 凭据解密验证：config.yaml `credentialEncryptionKey`（AES-GCM）→ 真实 sso token 解出（152 字节 JWT）
+- **grok-etl 修 4 bug**（`2f646f8`）：TRUNCATE 语法（RESTART IDENTITY 必须在 CASCADE 前）、timestamptz/date
+  列显式 cast、200 行真批量（隧道快 50x）、单表 FK 失败容错续跑；migration 019 追加 remaining/total BIGINT
+  （真数据 38.5e8 超 int4）
+- **直连链路逐层打通**：号池 671 ✅ → 凭据解密 ✅ → meta 抓取（GROK_LOCAL_PROXY + 浏览器 UA 过 CF）✅ →
+  外部 signer（wodf.de）**全局已死**（CF challenge，本地/代理/Panda 三路 403）→ chat 403 anti-bot（无签名）
+- **本地签名器框架**（`770136c`）：grok-signer crate（rquickjs）+ SignerTrait 三模式
+  （GROK2API_SIGNER_MODE=remote|local|fake）+ asset 约定；**真实签名模块 1645e3 反混淆未攻克**
+  （重度混淆 + 浏览器 API 依赖）——详见 docs/39h-direct-signer.md
+- 验证：82 测试绿 + clippy 0 + fmt clean；CI 绿（含容器构建）
+
 ## 2026-08-06 全 Rust 化（无 chrome 直连，`ca5fc39`/`395439e`）
 
 - **grok-bridge**（新 crate ~1500 行）：自写 CDP 客户端 + /health /v1/sign /v1/fetch /v1/websocket + 会话池，对齐 Python bridge 协议；HttpBridgeClient 协议对齐（修 N8 真正根源）
