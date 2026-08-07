@@ -48,6 +48,8 @@ pub struct Config {
     pub direct_enabled: bool,
     /// statsig signer 服务地址（`GROK2API_SIGNER_URL`，缺省 https://grok.wodf.de/sign）。
     pub signer_url: String,
+    /// 签名器模式（`GROK2API_SIGNER_MODE=remote|local|fake`，缺省 remote）。
+    pub signer_mode: grok_provider_web::SignerMode,
     /// 凭据解密主密钥（`GROK_CREDENTIAL_KEY`，base64 32B AES-256-GCM）。
     /// 直连模式下缺失 → chat/OCR 503 不外呼（安全红线）。
     pub credential_key: Option<String>,
@@ -103,6 +105,10 @@ impl Config {
             .unwrap_or(true);
         let signer_url =
             env::var("GROK2API_SIGNER_URL").unwrap_or_else(|_| "https://grok.wodf.de/sign".into());
+        let signer_mode = env::var("GROK2API_SIGNER_MODE")
+            .unwrap_or_default()
+            .parse()
+            .map_err(|e: String| anyhow::anyhow!("GROK2API_SIGNER_MODE: {e}"))?;
         let credential_key = env::var("GROK_CREDENTIAL_KEY")
             .ok()
             .filter(|s| !s.trim().is_empty());
@@ -129,6 +135,7 @@ impl Config {
             image_enabled,
             direct_enabled,
             signer_url,
+            signer_mode,
             credential_key,
             proxy_file,
             proxy_list,
@@ -189,6 +196,7 @@ mod tests {
             image_enabled: false,
             direct_enabled: true,
             signer_url: "https://grok.wodf.de/sign".to_string(),
+            signer_mode: grok_provider_web::SignerMode::default(),
             credential_key: None,
             proxy_file: None,
             proxy_list: None,

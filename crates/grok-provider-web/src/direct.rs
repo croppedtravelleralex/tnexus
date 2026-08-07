@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 
 use crate::bridge::BridgeClient;
 use crate::proxy::{proxy_err, ProxyPool};
-use crate::statsig::StatsigSigner;
+use crate::signer::{build_signer, SignerMode, SignerTrait};
 
 /// 上游总超时（对齐 provider「connect 5s / total 60s」红线语义）。
 const TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
@@ -32,6 +32,8 @@ pub struct DirectConfig {
     pub base_url: String,
     /// statsig signer 服务地址（缺省公网 grok.wodf.de/sign）。
     pub signer_url: String,
+    /// 签名器模式（缺省 remote，外部 signer 服务）。
+    pub signer_mode: SignerMode,
     /// 直连需要 sso token；`sso` 提供按账号取 token。
     pub sso: Option<Arc<dyn SsoTokenProvider>>,
     /// 住宅代理池（webshare 等）；空池 = 直连。
@@ -46,6 +48,7 @@ impl Default for DirectConfig {
         Self {
             base_url: "https://grok.com".to_string(),
             signer_url: "https://grok.wodf.de/sign".to_string(),
+            signer_mode: SignerMode::default(),
             sso: None,
             proxy: Arc::new(ProxyPool::empty()),
             local_proxy: None,
@@ -56,7 +59,7 @@ impl Default for DirectConfig {
 /// 直连客户端。
 pub struct HttpDirectClient {
     client: reqwest::Client,
-    signer: StatsigSigner,
+    signer: Box<dyn SignerTrait>,
     cfg: DirectConfig,
 }
 
@@ -75,7 +78,7 @@ impl HttpDirectClient {
             }
         }
         let client = builder.build().expect("reqwest client");
-        let signer = StatsigSigner::new(cfg.signer_url.clone());
+        let signer = build_signer(cfg.signer_mode, &cfg.signer_url);
         Self {
             client,
             signer,
@@ -525,6 +528,7 @@ data: {"result":{"response":{"token":"答","isThinking":false,"messageTag":""}}}
         let cfg = DirectConfig {
             base_url: "https://grok.com".to_string(),
             signer_url: "https://127.0.0.1:1/sign".to_string(),
+            signer_mode: SignerMode::default(),
             sso: None,
             proxy: Arc::new(crate::proxy::ProxyPool::empty()),
             local_proxy: None,
@@ -601,6 +605,7 @@ data: [DONE]
         let cfg = DirectConfig {
             base_url: format!("http://{addr}"),
             signer_url: format!("http://{addr}/sign"),
+            signer_mode: SignerMode::default(),
             sso: None,
             proxy: Arc::new(crate::proxy::ProxyPool::empty()),
             local_proxy: None,
@@ -638,6 +643,7 @@ data: [DONE]
         let cfg = DirectConfig {
             base_url: format!("http://{addr}"),
             signer_url: format!("http://{addr}/sign"),
+            signer_mode: SignerMode::default(),
             sso: None,
             proxy: Arc::new(crate::proxy::ProxyPool::empty()),
             local_proxy: None,

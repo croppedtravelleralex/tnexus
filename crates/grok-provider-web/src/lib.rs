@@ -17,6 +17,7 @@ pub mod engine;
 pub mod expand;
 pub mod image;
 pub mod proxy;
+pub mod signer;
 pub mod statsig;
 
 pub use attachments::{prepare_file_attachments, FileAttachment};
@@ -28,6 +29,7 @@ pub use direct::{DirectConfig, HttpDirectClient};
 pub use engine::ChatEngine;
 pub use expand::expand_prompt;
 pub use image::ImageEngine;
+pub use signer::{build_signer, LocalSigner, SignerMode, SignerTrait};
 pub use statsig::{validate_signer_url, StatsigSigner};
 // 契约类型/端口在 grok-domain（跨 crate 共享），此处 re-export 保持旧调用路径。
 pub use grok_domain::{

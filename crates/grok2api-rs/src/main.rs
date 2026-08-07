@@ -138,6 +138,7 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(HttpDirectClient::new(DirectConfig {
             base_url: "https://grok.com".to_string(),
             signer_url: cfg.signer_url.clone(),
+            signer_mode: cfg.signer_mode,
             sso: None,
             proxy: proxy_pool,
             local_proxy: cfg.local_proxy.clone(),
@@ -344,6 +345,7 @@ mod tests {
             image_enabled: false,
             direct_enabled: true,
             signer_url: "https://grok.wodf.de/sign".to_string(),
+            signer_mode: grok_provider_web::SignerMode::default(),
             credential_key: None,
             proxy_file: None,
             proxy_list: None,

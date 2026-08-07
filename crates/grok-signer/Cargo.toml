@@ -1,0 +1,10 @@
+[package]
+name = "grok-signer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "本地 JS 签名器执行引擎（rquickjs + vendored quickjs）——纯 HTTP 无 chrome 的 grok statsig 签名"
+
+[dependencies]
+rquickjs = { version = "0.9", features = ["full"] }
+thiserror = { workspace = true }

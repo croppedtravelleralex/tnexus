@@ -33,6 +33,7 @@ members = [
     "crates/grok-bridge",
     "crates/grok-etl",
     "crates/grok-shadow",
+    "crates/grok-signer",
 ]
 
 [workspace.package]

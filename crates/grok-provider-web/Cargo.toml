@@ -10,6 +10,7 @@ grok-conversation = { path = "../grok-conversation" }
 grok-pool = { path = "../grok-pool" }
 grok-audit = { path = "../grok-audit" }
 grok-image-pipeline = { path = "../grok-image-pipeline" }
+grok-signer = { path = "../grok-signer" }
 
 async-trait = { workspace = true }
 chrono = { workspace = true }

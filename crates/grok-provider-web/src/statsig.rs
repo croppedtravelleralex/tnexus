@@ -58,9 +58,9 @@ impl StatsigSigner {
         }
     }
 
-    /// 为 `method + path` 签名，返回 `x-statsig-id` 值。
+    /// 为 `method + path` 签名（远程 signer，SignerTrait 委托实现）。
     /// `client` 为本次请求的出口客户端（直连模式传代理 client，meta 抓取/签名均走代理）。
-    pub async fn sign(
+    pub async fn sign_remote(
         &self,
         client: &Client,
         base_url: &str,
@@ -280,7 +280,7 @@ mod tests {
         let client = Client::new();
         let signer = StatsigSigner::new(format!("http://{addr}/sign"));
         let id = signer
-            .sign(
+            .sign_remote(
                 &client,
                 &format!("http://{addr}"),
                 &format!("http://{addr}/sign"),
@@ -293,7 +293,7 @@ mod tests {
         assert_eq!(id, "fake-statsig-id");
         // 第二次调用命中缓存：fake 首页计数仍为 1。
         let id2 = signer
-            .sign(
+            .sign_remote(
                 &client,
                 &format!("http://{addr}"),
                 &format!("http://{addr}/sign"),
@@ -313,7 +313,7 @@ mod tests {
         let client = Client::new();
         let signer = StatsigSigner::new(format!("http://{addr}/sign"));
         let err = signer
-            .sign(
+            .sign_remote(
                 &client,
                 &format!("http://{addr}"),
                 &format!("http://{addr}/sign"),

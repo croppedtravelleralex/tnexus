@@ -85,6 +85,9 @@ impl From<ProviderError> for GatewayError {
             ProviderError::NoAvailableAccount => GatewayError::NoAvailableAccount,
             ProviderError::Lease(inner) => GatewayError::Lease(inner.to_string()),
             ProviderError::Bridge(msg) => GatewayError::Upstream(format!("bridge: {msg}")),
+            ProviderError::NotConfigured(msg) => {
+                GatewayError::Upstream(format!("not configured: {msg}"))
+            }
             ProviderError::Upstream(msg) => GatewayError::Upstream(msg),
         }
     }
