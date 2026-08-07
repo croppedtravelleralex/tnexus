@@ -1,6 +1,27 @@
 # 39f — Grok 移植进度记录（做了的 / 未做的 / 要做的）
 
 
+## 2026-08-07 深夜：多路并行收官 + 签名器突破 + 全池验证（`98119e1`/`b92632a`/`cca7c52`）
+
+- **Admin 8 域全接线**（`98119e1`）：AdminDomains（models/client_keys/audits/dashboard/settings/
+  chrome_tickets/media/system）全挂 → 域端点 503→200；**POST /admin/accounts/import**（批量导入账号+
+  凭据 → grok_accounts/credentials + 审计，201 {imported,failed,errors}，路由先于 /{id} 匹配）；
+  **登录表单**（token-gate 双模式：粘贴 token / 用户名密码 → /admin/auth/login → Bearer 落 localStorage）
+- **statsig 标准路线证伪**（`98119e1` 内 statsig_grain.rs）：grok 签名器非标准 statsig SDK——
+  join('!') 输入拼接 + 定点 hex 链 + async SHA-256 + metaContent 输入的定制实现
+- **签名器模块 1645e3 执行成功**（`b92632a`）：自包含 bundle（obfuscator.io 字符串表+RC4 内嵌），
+  node vm 执行产出 **94 字符完整签名**（[rand+0x100+meta+ts+0+SHA-256+3] base64 结构）；
+  字符串表 t() 暴露法全量解密（.r-11220/F/Z 是动画烟雾弹——页面实测 count=0）；
+  **meta 每会话动态**（必须每次签名前 GET grok.com 实时抓 [name^=gr] content）
+- **签名有效性实证**：bundle 签名 + 真实 sso cookie → **GET 200**（铁证）
+- **stub 修复**（`cca7c52`）：createElement autoProxy→普通对象（修 L() 分支 m 元素 write 属性污染
+  致动态 meta 崩溃）——现在任何 meta 稳定出签名
+- **全量账号测试（决定性）**：Panda SQLite（account_credentials 706→解密 687 token）→ 海外代理
+  （70.39.164.200:30000，Panda 可连/大陆不可连）逐账号 POST → **686×403 + 1×401（token 无效）**——
+  **grokImage 全池被 grok 批量风控禁言发消息**（GET 只读全通、POST 全拒、页面 UI 发送也被前端拦截）
+- **当前阻塞**：纯 HTTP 链路技术层全通（签名✅/协议✅/号池✅），唯一缺 = **能正常发消息的账号**
+- 验证：85 测试绿 + clippy 0 + tsc/next build 过
+
 ## 2026-08-07 真实联调 + 纯 HTTP 攻坚（`0e0052d`/`2f646f8`/`770136c`）
 
 - **grok 前端彻底独立**（`0e0052d`）：新 grokApi client（NEXT_PUBLIC_GROK_API_BASE 缺省 /grok/v1 同源反代 +
