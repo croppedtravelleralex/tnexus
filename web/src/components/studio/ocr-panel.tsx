@@ -3,7 +3,7 @@
 import { useCallback, useRef, useState } from "react";
 import { Copy, FileImage, Loader2, ScanText, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { chatApi } from "@/lib/api";
+import { grokApi } from "@/lib/grok-api";
 import { estimateBase64Bytes, formatBytes } from "@/lib/chat-conversations";
 import { cn } from "@/lib/utils";
 
@@ -17,7 +17,7 @@ type Props = {
 
 /**
  * Grok OCR 面板（G7-P2）：图片选择/粘贴 → 「提取文字」→ 文本展示（loading/error 态）。
- * 后端复用既有 chat completions 带图附件链路（grok-gateway G1 OCR）。
+ * 直连 grok 网关（grokApi → :8000 /v1/chat/completions 带图附件 OCR）。
  */
 export function OcrPanel({ onClose }: Props) {
   const [dataUrl, setDataUrl] = useState<string | null>(null);
@@ -69,7 +69,7 @@ export function OcrPanel({ onClose }: Props) {
     setError("");
     setCopied(false);
     try {
-      const result = await chatApi.extractText(dataUrl);
+      const result = await grokApi.extractText(dataUrl);
       setText(result.trim() || "（空）");
     } catch (err) {
       setError(err instanceof Error ? err.message : "识别失败");

@@ -16,6 +16,7 @@ pub mod direct;
 pub mod engine;
 pub mod expand;
 pub mod image;
+pub mod proxy;
 pub mod statsig;
 
 pub use attachments::{prepare_file_attachments, FileAttachment};

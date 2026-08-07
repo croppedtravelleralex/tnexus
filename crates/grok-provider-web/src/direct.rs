@@ -13,9 +13,10 @@
 use std::sync::Arc;
 
 use grok_domain::{ProviderError, SsoTokenProvider};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::bridge::BridgeClient;
+use crate::proxy::{proxy_err, ProxyPool};
 use crate::statsig::StatsigSigner;
 
 /// 上游总超时（对齐 provider「connect 5s / total 60s」红线语义）。
@@ -33,6 +34,8 @@ pub struct DirectConfig {
     pub signer_url: String,
     /// 直连需要 sso token；`sso` 提供按账号取 token。
     pub sso: Option<Arc<dyn SsoTokenProvider>>,
+    /// 住宅代理池（webshare 等）；空池 = 直连。
+    pub proxy: Arc<ProxyPool>,
 }
 
 impl Default for DirectConfig {
@@ -41,6 +44,7 @@ impl Default for DirectConfig {
             base_url: "https://grok.com".to_string(),
             signer_url: "https://grok.wodf.de/sign".to_string(),
             sso: None,
+            proxy: Arc::new(ProxyPool::empty()),
         }
     }
 }
@@ -165,6 +169,112 @@ impl HttpDirectClient {
             .collect();
         format!("sso={sanitized}; sso-rw={sanitized}")
     }
+
+    /// 按 cookie（=账号身份）稳定取出口 client：有代理池 → 哈希映射；否则直连。
+    fn client_for(&self, sso_cookie: &str) -> &reqwest::Client {
+        self.cfg
+            .proxy
+            .client_for(sso_cookie)
+            .unwrap_or(&self.client)
+    }
+
+    /// 上传 payload 中的每张附件（对齐 Go `uploadImage`：JSON body，非 multipart），
+    /// 返回 fileMetadataId 数组。上传失败 → 整体失败（调用方冷却该账号）。
+    async fn upload_attachments(
+        &self,
+        cookie: &str,
+        client: &reqwest::Client,
+        payload: &Value,
+    ) -> Result<Vec<String>, ProviderError> {
+        let Some(list) = payload.get("fileAttachments").and_then(|v| v.as_array()) else {
+            return Ok(Vec::new());
+        };
+        let mut ids = Vec::with_capacity(list.len());
+        for att in list {
+            let file_name = att
+                .get("file_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("attachment.png");
+            let mime = att
+                .get("mime_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("image/png");
+            let content = att
+                .get("data_base64")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| ProviderError::Bridge("attachment missing data_base64".into()))?;
+            let id = self
+                .upload_one(cookie, client, file_name, mime, content)
+                .await?;
+            ids.push(id);
+        }
+        Ok(ids)
+    }
+
+    /// 单张上传（POST /rest/app-chat/upload-file → fileMetadataId/fileId）。
+    async fn upload_one(
+        &self,
+        cookie: &str,
+        client: &reqwest::Client,
+        file_name: &str,
+        mime: &str,
+        content_b64: &str,
+    ) -> Result<String, ProviderError> {
+        let path = "/rest/app-chat/upload-file";
+        let statsig_id = self.sign_path(cookie, "POST", path).await?;
+        let endpoint = format!("{}{}", self.cfg.base_url.trim_end_matches('/'), path);
+        let body = json!({
+            "fileName": file_name,
+            "fileMimeType": mime,
+            "content": content_b64,
+        });
+        let resp = client
+            .post(&endpoint)
+            .headers(self.build_headers(cookie, &statsig_id, "application/json"))
+            .json(&body)
+            .send()
+            .await
+            .map_err(proxy_err)?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(ProviderError::Upstream(format!("upload status {status}")));
+        }
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| ProviderError::Bridge(format!("upload body: {e}")))?;
+        if bytes.len() > MAX_BITSTREAM_READ_LIMIT {
+            return Err(ProviderError::Upstream("upload response over limit".into()));
+        }
+        let value: Value = serde_json::from_slice(&bytes)
+            .map_err(|_| ProviderError::Upstream("upload response invalid".into()))?;
+        let id = value
+            .get("fileMetadataId")
+            .and_then(|v| v.as_str())
+            .or_else(|| value.get("fileId").and_then(|v| v.as_str()))
+            .ok_or_else(|| ProviderError::Upstream("upload missing fileMetadataId".into()))?;
+        if id.is_empty() {
+            return Err(ProviderError::Upstream(
+                "upload missing fileMetadataId".into(),
+            ));
+        }
+        Ok(id.to_string())
+    }
+}
+
+/// payload.fileAttachments 是否是需要先上传的对象数组（含 data_base64）。
+fn has_uploadable_attachments(payload: &Value) -> bool {
+    payload
+        .get("fileAttachments")
+        .and_then(|v| v.as_array())
+        .map(|list| {
+            !list.is_empty()
+                && list
+                    .first()
+                    .map(|a| a.get("data_base64").is_some())
+                    .unwrap_or(false)
+        })
+        .unwrap_or(false)
 }
 
 /// 快速解析 SSE 文本：逐行读，`data: {json}` → `result.response.token` → 拼 text。
@@ -284,26 +394,25 @@ impl BridgeClient for HttpDirectClient {
             return Err(ProviderError::NoAvailableAccount);
         };
         let cookie = Self::build_sso_cookie(sso_token);
+        let client = self.client_for(&cookie);
+        // 纯 http 图片上传：payload.fileAttachments 若是对象数组（含 data_base64）→
+        // 逐张 POST /rest/app-chat/upload-file 拿 fileMetadataId，替换为字符串数组
+        // （对齐 Go prepareChatAttachments + buildWebChatPayload 的 fileAttachments: []string）。
+        let mut owned = payload.clone();
+        if has_uploadable_attachments(payload) {
+            let ids = self.upload_attachments(&cookie, client, payload).await?;
+            owned["fileAttachments"] = json!(ids);
+        }
         let path = "/rest/app-chat/conversations/new";
         let statsig_id = self.sign_path(&cookie, "POST", path).await?;
         let endpoint = format!("{}{}", self.cfg.base_url.trim_end_matches('/'), path);
-        let resp = self
-            .client
+        let resp = client
             .post(&endpoint)
             .headers(self.build_headers(&cookie, &statsig_id, "application/json"))
-            .json(payload)
+            .json(&owned)
             .send()
             .await
-            .map_err(|e| {
-                let tag = if e.is_timeout() {
-                    "timeout"
-                } else if e.is_connect() {
-                    "connect"
-                } else {
-                    "unknown"
-                };
-                ProviderError::Bridge(format!("direct chat {tag}: {e}"))
-            })?;
+            .map_err(proxy_err)?;
         let status = resp.status();
         if !status.is_success() {
             return Err(ProviderError::Upstream(format!("chat status {status}")));
@@ -404,6 +513,7 @@ data: {"result":{"response":{"token":"答","isThinking":false,"messageTag":""}}}
             base_url: "https://grok.com".to_string(),
             signer_url: "https://127.0.0.1:1/sign".to_string(),
             sso: None,
+            proxy: Arc::new(crate::proxy::ProxyPool::empty()),
         };
         let client = HttpDirectClient::new(cfg);
         let err = client
@@ -411,5 +521,130 @@ data: {"result":{"response":{"token":"答","isThinking":false,"messageTag":""}}}
             .await
             .unwrap_err();
         assert!(matches!(err, ProviderError::NoAvailableAccount));
+    }
+
+    // ── 全链路：图片上传 → fileAttachments 替换 → chat SSE ──────────
+
+    struct FakeGrok {
+        uploaded_ids: std::sync::Mutex<Vec<String>>,
+        chat_bodies: std::sync::Mutex<Vec<serde_json::Value>>,
+    }
+
+    async fn spawn_fake_grok() -> (
+        String,
+        std::sync::Arc<FakeGrok>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        use axum::{routing::get, Router};
+        let shared = std::sync::Arc::new(FakeGrok {
+            uploaded_ids: std::sync::Mutex::new(Vec::new()),
+            chat_bodies: std::sync::Mutex::new(Vec::new()),
+        });
+        let uploaded = std::sync::Arc::clone(&shared);
+        let bodies = std::sync::Arc::clone(&shared);
+        let app = Router::new()
+            .route("/", get(|| async { "<html>grok home</html>" }))
+            .route(
+                "/sign",
+                axum::routing::post(|_: axum::Json<serde_json::Value>| async move {
+                    axum::Json(serde_json::json!({ "x-statsig-id": "fake-id" }))
+                }),
+            )
+            .route(
+                "/rest/app-chat/upload-file",
+                axum::routing::post(|payload: axum::Json<serde_json::Value>| async move {
+                    let id = format!("file-{}", payload["fileName"].as_str().unwrap_or("x"));
+                    uploaded.uploaded_ids.lock().unwrap().push(id.clone());
+                    axum::Json(serde_json::json!({ "fileMetadataId": id }))
+                }),
+            )
+            .route(
+                "/rest/app-chat/conversations/new",
+                axum::routing::post(|payload: axum::Json<serde_json::Value>| async move {
+                    bodies.chat_bodies.lock().unwrap().push(payload.0.clone());
+                    // SSE：两段 token + DONE（裸文本，非 JSON）
+                    String::from(
+                        "data: {\"result\":{\"response\":{\"token\":\"图\",\"isThinking\":false}}}
+data: {\"result\":{\"response\":{\"token\":\"片\",\"isThinking\":false}}}
+data: [DONE]
+",
+                    )
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve");
+        });
+        (addr.to_string(), shared, handle)
+    }
+
+    #[tokio::test]
+    async fn chat_with_attachment_uploads_then_replaces_file_attachments() {
+        let (addr, fake, _guard) = spawn_fake_grok().await;
+        let cfg = DirectConfig {
+            base_url: format!("http://{addr}"),
+            signer_url: format!("http://{addr}/sign"),
+            sso: None,
+            proxy: Arc::new(crate::proxy::ProxyPool::empty()),
+        };
+        let client = HttpDirectClient::new(cfg);
+        let payload = serde_json::json!({
+            "model": "grok-chat-fast",
+            "enableImageGeneration": false,
+            "fileAttachments": [{
+                "source_url": "data:image/png;base64,aGVsbG8=",
+                "file_name": "attachment_1.png",
+                "mime_type": "image/png",
+                "data_base64": "aGVsbG8=",
+            }]
+        });
+        let text = client
+            .fetch_chat(&payload, Some("sso-token-1"))
+            .await
+            .unwrap();
+        assert_eq!(text, "图片");
+        // 上传发生了一次且 fileAttachments 已替换为 fileMetadataId 数组
+        let ids = fake.uploaded_ids.lock().unwrap();
+        assert_eq!(ids.len(), 1);
+        assert_eq!(ids[0], "file-attachment_1.png");
+        let bodies = fake.chat_bodies.lock().unwrap();
+        let sent = &bodies[0];
+        assert_eq!(sent["fileAttachments"][0], "file-attachment_1.png");
+        // 上传后的 payload 不再含 data_base64
+        assert!(sent["fileAttachments"][0].get("data_base64").is_none());
+    }
+
+    #[tokio::test]
+    async fn chat_without_attachments_skips_upload() {
+        let (addr, fake, _guard) = spawn_fake_grok().await;
+        let cfg = DirectConfig {
+            base_url: format!("http://{addr}"),
+            signer_url: format!("http://{addr}/sign"),
+            sso: None,
+            proxy: Arc::new(crate::proxy::ProxyPool::empty()),
+        };
+        let client = HttpDirectClient::new(cfg);
+        let payload = serde_json::json!({
+            "model": "grok-chat-fast",
+            "enableImageGeneration": false,
+            "fileAttachments": [],
+        });
+        let text = client
+            .fetch_chat(&payload, Some("sso-token-2"))
+            .await
+            .unwrap();
+        assert_eq!(text, "图片");
+        assert!(
+            fake.uploaded_ids.lock().unwrap().is_empty(),
+            "无附件不应上传"
+        );
+        let bodies = fake.chat_bodies.lock().unwrap();
+        assert_eq!(
+            bodies.last().unwrap()["fileAttachments"],
+            serde_json::json!([])
+        );
     }
 }

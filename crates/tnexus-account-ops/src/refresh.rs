@@ -8,6 +8,22 @@ use serde_json::{json, Map, Value};
 
 const OAUTH_CLIENT_ID: &str = "app_2SKx67EdpoN0G6j64rFvigXD";
 
+fn is_terminal_refresh_error(err: &str) -> bool {
+    let lowered = err.to_ascii_lowercase();
+    [
+        "token invalidated",
+        "refresh_token_invalidated",
+        "refresh_token_reused",
+        "session has ended",
+        "already been used",
+        "invalid access token",
+        "invalid_access_token",
+        "account_deactivated",
+    ]
+    .iter()
+    .any(|m| lowered.contains(m))
+}
+
 pub async fn refresh_access_token(
     http: &reqwest::Client,
     account: &Map<String, Value>,
@@ -83,16 +99,36 @@ pub async fn refresh_access_token(
                 let err = data
                     .get("error_description")
                     .or_else(|| data.get("error"))
+                    .or_else(|| data.get("message"))
                     .and_then(|v| v.as_str())
                     .unwrap_or(text.as_str());
-                acc.insert(
-                    "last_token_refresh_error".into(),
-                    json!(err.chars().take(300).collect::<String>()),
-                );
+                let err_s: String = err.chars().take(300).collect();
+                acc.insert("last_token_refresh_error".into(), json!(err_s));
+                if is_terminal_refresh_error(&err_s) {
+                    let invalid = acc
+                        .get("invalid_count")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0)
+                        + 1;
+                    acc.insert("invalid_count".into(), json!(invalid));
+                    acc.insert("status".into(), json!("异常"));
+                    acc.insert("panda_receive_state".into(), json!("identity_isolated"));
+                }
             }
         }
         Err(e) if force => {
-            acc.insert("last_token_refresh_error".into(), json!(e.to_string()));
+            let err_s = e.to_string();
+            acc.insert("last_token_refresh_error".into(), json!(err_s));
+            if is_terminal_refresh_error(&err_s) {
+                let invalid = acc
+                    .get("invalid_count")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0)
+                    + 1;
+                acc.insert("invalid_count".into(), json!(invalid));
+                acc.insert("status".into(), json!("异常"));
+                acc.insert("panda_receive_state".into(), json!("identity_isolated"));
+            }
         }
         Err(_) => {}
     }

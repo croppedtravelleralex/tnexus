@@ -15,11 +15,19 @@ sys.path.insert(0, "/app")
 from services.account_service import account_service
 from services.account_refresh_all_service import account_refresh_all_service
 
-tokens = account_service.list_tokens()
-print(f"accounts={len(tokens)}", flush=True)
-if not tokens:
-    raise SystemExit("no accounts in gptimage store")
-result = account_service.refresh_accounts(tokens, None, False, False)
+all_tokens = account_service.list_tokens()
+eligible = []
+skipped = 0
+for token in all_tokens:
+    account = account_service.get_account(token) or {}
+    if str(account.get("last_token_refresh_error") or "").strip():
+        skipped += 1
+        continue
+    eligible.append(token)
+print(f"accounts={len(all_tokens)} eligible={len(eligible)} skipped_refresh_error={skipped}", flush=True)
+if not eligible:
+    raise SystemExit("no eligible accounts to refresh (all have last_token_refresh_error)")
+result = account_service.refresh_accounts(eligible, None, False, False)
 print(
     f"refreshed={result.get('refreshed', 0)} errors={len(result.get('errors') or [])}",
     flush=True,

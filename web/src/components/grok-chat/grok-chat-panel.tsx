@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Bot, Eraser, Image as ImageIcon, Loader2, Send, Sparkles } from "lucide-react";
-import { chatApi, sniffImageMime } from "@/lib/api";
+import { grokApi, sniffImageMime } from "@/lib/grok-api";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -35,7 +35,7 @@ function makeMessage(role: ChatMessage["role"], content: string): ChatMessage {
   return { id: nextId++, role, content };
 }
 
-/** 流式对话面板：内存会话（无持久化），走既有 chatApi（/v1/chat/completions SSE）。 */
+/** 流式对话面板：内存会话（无持久化），走 grokApi（直连 :8000 /v1/chat/completions SSE）。 */
 export function GrokChatPanel() {
   const [model, setModel] = useState<GrokChatModel>("grok-chat-fast");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -87,7 +87,7 @@ export function GrokChatPanel() {
         role: m.role,
         content: m.content,
       }));
-      await chatApi.streamCompletion(
+      await grokApi.streamCompletion(
         { model, messages: history, stream: true },
         (delta) => appendAssistant(delta),
       );
@@ -135,7 +135,7 @@ export function GrokChatPanel() {
     setMessages((prev) => [...prev, makeMessage("user", text)]);
     setImagining(true);
     try {
-      const items = await chatApi.generateImage(text, imageCount);
+      const items = await grokApi.generateImage(text, imageCount);
       if (items.length === 0) throw new Error("生图返回空结果");
       setMessages((prev) => [
         ...prev,
@@ -201,10 +201,10 @@ export function GrokChatPanel() {
             </div>
             <p className="text-base font-medium text-[var(--neo-ink)]">开始一段 Grok 对话</p>
             <p className="max-w-md text-sm leading-relaxed text-[var(--neo-muted)]">
-              对话走 gateway <code className="rounded bg-[var(--neo-surface-muted)] px-1">/v1/chat/completions</code>
-              （SSE 流式）；生图走{" "}
-              <code className="rounded bg-[var(--neo-surface-muted)] px-1">/v1/images/generations</code>
-              （需 gateway 开启 GROK_IMAGE_ENABLED=1 且 browser-bridge 就绪）。当前为内存会话，刷新后清空。
+              对话走 <code className="rounded bg-[var(--neo-surface-muted)] px-1">/grok/v1/chat/completions</code>
+              （SSE 流式，独立 grok 网关）；生图走{" "}
+              <code className="rounded bg-[var(--neo-surface-muted)] px-1">/grok/v1/images/generations</code>
+              （需 gateway 开启 GROK_IMAGE_ENABLED=1）。当前为内存会话，刷新后清空。
             </p>
           </div>
         ) : (
@@ -322,8 +322,8 @@ export function GrokChatPanel() {
           <p className="mx-auto mt-2 max-w-3xl text-xs text-rose-600">{error}</p>
         )}
         <p className="mx-auto mt-2 max-w-3xl text-[11px] text-[var(--neo-muted)]">
-          模型下拉为非 OCR 文本通道；gateway 会归一化到上游 grok-chat。生图需 gateway 开启
-          GROK_IMAGE_ENABLED=1 且 browser-bridge 就绪，否则返回 500/503。
+          模型下拉为非 OCR 文本通道；直连 grok 网关（:8000）。生图需 gateway 开启
+          GROK_IMAGE_ENABLED=1，否则返回 500/503。
         </p>
       </div>
     </div>

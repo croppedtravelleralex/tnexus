@@ -123,12 +123,23 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
-    // 选 BridgeClient 实现：直连 vs bridge 侧车。
+    // 选 BridgeClient 实现：直连（缺省）vs bridge 侧车（GROK2API_DIRECT=0 显式回退）。
+    let proxy_pool = if let Some(list) = cfg.proxy_list.as_deref() {
+        let pool = grok_provider_web::proxy::ProxyPool::from_text(&list.replace(
+            ',', "
+",
+        ));
+        tracing::info!("内联代理加载 {} 个节点", pool.len());
+        std::sync::Arc::new(pool)
+    } else {
+        grok_provider_web::proxy::proxy_pool_from_file(cfg.proxy_file.as_deref())
+    };
     let bridge: Arc<dyn BridgeClient> = if cfg.direct_enabled {
         Arc::new(HttpDirectClient::new(DirectConfig {
             base_url: "https://grok.com".to_string(),
             signer_url: cfg.signer_url.clone(),
             sso: None,
+            proxy: proxy_pool,
         }))
     } else {
         Arc::new(HttpBridgeClient::new())
@@ -330,9 +341,11 @@ mod tests {
             admin_username: "admin".to_string(),
             admin_password: Some("admin123456".to_string()),
             image_enabled: false,
-            direct_enabled: false,
+            direct_enabled: true,
             signer_url: "https://grok.wodf.de/sign".to_string(),
             credential_key: None,
+            proxy_file: None,
+            proxy_list: None,
         }
     }
 

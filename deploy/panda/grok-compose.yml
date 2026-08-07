@@ -29,8 +29,14 @@ services:
       GROK_ADMIN_SECRET: ${GROK_ADMIN_SECRET:?required}
       GROK_ADMIN_USERNAME: ${GROK_ADMIN_USERNAME:-admin}
       GROK_ADMIN_PASSWORD: ${GROK_ADMIN_PASSWORD:?required}
-      # 浏览器桥（token 刷新 / 取票）
+      # 浏览器桥（已禁止）：直连模式不依赖；保留仅作 GROK2API_DIRECT=0 回退提示
       GROK2API_BROWSER_BRIDGE_URL: ${GROK2API_BROWSER_BRIDGE_URL:-http://127.0.0.1:8192}
+      # 纯 http 直连（缺省开）：sso cookie + statsig 签名；住宅代理（webshare 格式文件）
+      GROK2API_DIRECT: ${GROK2API_DIRECT:-1}
+      GROK2API_SIGNER_URL: ${GROK2API_SIGNER_URL:-https://grok.wodf.de/sign}
+      GROK2API_PROXY_FILE: ${GROK2API_PROXY_FILE:-}
+      # 凭据解密主密钥（base64 32B AES-256-GCM；直连必填，缺失 → chat/OCR 503）
+      GROK_CREDENTIAL_KEY: ${GROK_CREDENTIAL_KEY:-}
       # Build / Console 上游：token 必填才启用对应端点（未配置 → 503，绝不外呼）；
       # base_url 留空 = 直连真实 grok.com（生产默认）。
       GROK2API_BUILD_TOKEN: ${GROK2API_BUILD_TOKEN:-}
@@ -48,18 +54,7 @@ services:
       retries: 3
       start_period: 10s
 
-  # ── 浏览器桥（token 刷新 / 取票，grok2api-rs 依赖）──
-  # 镜像来自 Go 侧存储仓（非本仓 CI 产物）。构建就绪前用 --profile bridge 排除，
-  # chat 会因 bridge 不可达返回上游错误；生图需同时设 GROK_IMAGE_ENABLED=1。
-  browser-bridge:
-    profiles: ["bridge"]
-    image: ghcr.io/${GHCR_OWNER:-croppedtravelleralex}/grok-browser-bridge:${GROK_TAG:-latest}
-    network_mode: host
-    restart: unless-stopped
-    environment:
-      LOG_LEVEL: ${GROK_BRIDGE_LOG:-INFO}
-    healthcheck:
-      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8192/health"]
-      interval: 60s
-      timeout: 5s
-      retries: 3
+  # ── browser-bridge 已禁止（2026-08-06 用户决策）──
+  # 纯 http 直连（GROK2API_DIRECT=1，缺省开）：chat/OCR 直连 grok.com
+  # （sso cookie + statsig 签名 + 可选住宅代理），不再依赖浏览器桥。
+  # 如需回退旧链路：显式 GROK2API_DIRECT=0（不推荐，bridge 镜像已弃用）。

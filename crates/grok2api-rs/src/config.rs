@@ -43,13 +43,18 @@ pub struct Config {
     /// 与 provider「未配置不外呼」红线一致）；未开启时 `/v1/images/generations` 500。
     pub image_enabled: bool,
     /// 无 chrome 直连开关（`GROK2API_DIRECT=1`）：chat/OCR 不走 browser-bridge，
-    /// 直连 grok.com（sso cookie + statsig 签名）。缺省关（bridge 模式）。
+    /// 直连 grok.com（sso cookie + statsig 签名）。**缺省开**（纯 http 为唯一路径）；
+    /// 显式 `GROK2API_DIRECT=0` 才回退 bridge 模式。
     pub direct_enabled: bool,
     /// statsig signer 服务地址（`GROK2API_SIGNER_URL`，缺省 https://grok.wodf.de/sign）。
     pub signer_url: String,
     /// 凭据解密主密钥（`GROK_CREDENTIAL_KEY`，base64 32B AES-256-GCM）。
     /// 直连模式下缺失 → chat/OCR 503 不外呼（安全红线）。
     pub credential_key: Option<String>,
+    /// 住宅代理列表文件（`GROK2API_PROXY_FILE`）；空 = 直连。
+    pub proxy_file: Option<String>,
+    /// 内联代理列表（`GROK2API_PROXY_LIST`，逗号分隔 webshare 格式条目）。
+    pub proxy_list: Option<String>,
 }
 
 impl Config {
@@ -93,10 +98,16 @@ impl Config {
 
         let direct_enabled = env::var("GROK2API_DIRECT")
             .map(|v| v.trim() == "1")
-            .unwrap_or(false);
+            .unwrap_or(true);
         let signer_url =
             env::var("GROK2API_SIGNER_URL").unwrap_or_else(|_| "https://grok.wodf.de/sign".into());
         let credential_key = env::var("GROK_CREDENTIAL_KEY")
+            .ok()
+            .filter(|s| !s.trim().is_empty());
+        let proxy_file = env::var("GROK2API_PROXY_FILE")
+            .ok()
+            .filter(|s| !s.trim().is_empty());
+        let proxy_list = env::var("GROK2API_PROXY_LIST")
             .ok()
             .filter(|s| !s.trim().is_empty());
 
@@ -116,6 +127,8 @@ impl Config {
             direct_enabled,
             signer_url,
             credential_key,
+            proxy_file,
+            proxy_list,
         };
         config.validate()?;
         Ok(config)
@@ -170,9 +183,11 @@ mod tests {
             admin_username: "admin".to_string(),
             admin_password: Some("admin123456".to_string()),
             image_enabled: false,
-            direct_enabled: false,
+            direct_enabled: true,
             signer_url: "https://grok.wodf.de/sign".to_string(),
             credential_key: None,
+            proxy_file: None,
+            proxy_list: None,
         }
     }
 
@@ -204,5 +219,22 @@ mod tests {
     fn invalid_redis_scheme_rejected() {
         let c = config_with("0.0.0.0:8000", None, Some("mysql://x"));
         assert!(c.validate().is_err());
+    }
+    #[test]
+    fn direct_enabled_defaults_on_via_env() {
+        // 缺省（未设 GROK2API_DIRECT）→ 直连开（纯 http 为唯一路径）。
+        std::env::remove_var("GROK2API_DIRECT");
+        std::env::set_var("GROK_DATABASE_URL", "postgres://u:p@h:1/d");
+        std::env::remove_var("GROK2API_PROXY_FILE");
+        std::env::remove_var("GROK2API_PROXY_LIST");
+        let c = Config::from_env().expect("config");
+        assert!(c.direct_enabled, "GROK2API_DIRECT 缺省必须为 true");
+        assert!(c.proxy_file.is_none());
+        // 显式 "0" → 关（回退 bridge）。
+        std::env::set_var("GROK2API_DIRECT", "0");
+        let c2 = Config::from_env().expect("config");
+        assert!(!c2.direct_enabled);
+        std::env::remove_var("GROK2API_DIRECT");
+        std::env::remove_var("GROK_DATABASE_URL");
     }
 }
