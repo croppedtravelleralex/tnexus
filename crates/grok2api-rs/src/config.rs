@@ -55,6 +55,8 @@ pub struct Config {
     pub proxy_file: Option<String>,
     /// 内联代理列表（`GROK2API_PROXY_LIST`，逗号分隔 webshare 格式条目）。
     pub proxy_list: Option<String>,
+    /// 本地出口代理（`GROK_LOCAL_PROXY`，如 http://127.0.0.1:7897；meta/签名/直连走它）。
+    pub local_proxy: Option<String>,
 }
 
 impl Config {
@@ -110,6 +112,7 @@ impl Config {
         let proxy_list = env::var("GROK2API_PROXY_LIST")
             .ok()
             .filter(|s| !s.trim().is_empty());
+        let local_proxy = env::var("GROK_LOCAL_PROXY").ok();
 
         let config = Self {
             server_addr,
@@ -129,6 +132,7 @@ impl Config {
             credential_key,
             proxy_file,
             proxy_list,
+            local_proxy,
         };
         config.validate()?;
         Ok(config)
@@ -188,6 +192,7 @@ mod tests {
             credential_key: None,
             proxy_file: None,
             proxy_list: None,
+            local_proxy: None,
         }
     }
 

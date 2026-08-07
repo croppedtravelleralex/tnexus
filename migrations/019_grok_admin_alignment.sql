@@ -38,3 +38,12 @@ END $$;
 ALTER TABLE grok_quota_recovery
     ADD CONSTRAINT grok_quota_recovery_status_check
         CHECK (status IN ('active', 'exhausted', 'probing'));
+
+-- ETL 真数据显示 Go 侧 remaining/total 可达 38.5e8（超出 int4）：
+-- 对齐 Go 数据形态，扩为 BIGINT（幂等）。
+DO $$
+BEGIN
+    ALTER TABLE grok_quota_windows ALTER COLUMN remaining TYPE BIGINT;
+    ALTER TABLE grok_quota_windows ALTER COLUMN total TYPE BIGINT;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;

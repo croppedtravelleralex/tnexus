@@ -36,6 +36,9 @@ pub struct DirectConfig {
     pub sso: Option<Arc<dyn SsoTokenProvider>>,
     /// 住宅代理池（webshare 等）；空池 = 直连。
     pub proxy: Arc<ProxyPool>,
+    /// 本地出口代理（GROK_LOCAL_PROXY，如 Clash 127.0.0.1:7897）：
+    /// meta 抓取/签名/直连请求走它（公网直连常被墙或 CF 拦）。
+    pub local_proxy: Option<String>,
 }
 
 impl Default for DirectConfig {
@@ -45,6 +48,7 @@ impl Default for DirectConfig {
             signer_url: "https://grok.wodf.de/sign".to_string(),
             sso: None,
             proxy: Arc::new(ProxyPool::empty()),
+            local_proxy: None,
         }
     }
 }
@@ -59,13 +63,19 @@ pub struct HttpDirectClient {
 impl HttpDirectClient {
     /// 构造直连客户端。
     pub fn new(cfg: DirectConfig) -> Self {
-        let client = reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
             .timeout(TOTAL_TIMEOUT)
-            .danger_accept_invalid_certs(false)
-            .build()
-            .expect("reqwest client");
-        let signer = StatsigSigner::new(client.clone(), cfg.signer_url.clone());
+            .danger_accept_invalid_certs(false);
+        // 本地出口代理（GROK_LOCAL_PROXY）：meta/签名/直连走它（公网直连常被墙/CF 拦）。
+        if let Some(local_proxy) = cfg.local_proxy.as_deref() {
+            if !local_proxy.trim().is_empty() {
+                builder = builder
+                    .proxy(reqwest::Proxy::all(local_proxy).expect("invalid GROK_LOCAL_PROXY"));
+            }
+        }
+        let client = builder.build().expect("reqwest client");
+        let signer = StatsigSigner::new(cfg.signer_url.clone());
         Self {
             client,
             signer,
@@ -142,8 +152,11 @@ impl HttpDirectClient {
         method: &str,
         path: &str,
     ) -> Result<String, ProviderError> {
+        // meta 抓取 / 签名走本地直连 client（浏览器 UA 可过 CF；代理 IP 段被 grok CF 重置）。
+        // 仅真正上游 API 请求才用住宅代理（账号出口隔离）。
         self.signer
             .sign(
+                &self.client,
                 &self.cfg.base_url,
                 &self.cfg.signer_url,
                 sso_cookie,
@@ -514,6 +527,7 @@ data: {"result":{"response":{"token":"答","isThinking":false,"messageTag":""}}}
             signer_url: "https://127.0.0.1:1/sign".to_string(),
             sso: None,
             proxy: Arc::new(crate::proxy::ProxyPool::empty()),
+            local_proxy: None,
         };
         let client = HttpDirectClient::new(cfg);
         let err = client
@@ -589,6 +603,7 @@ data: [DONE]
             signer_url: format!("http://{addr}/sign"),
             sso: None,
             proxy: Arc::new(crate::proxy::ProxyPool::empty()),
+            local_proxy: None,
         };
         let client = HttpDirectClient::new(cfg);
         let payload = serde_json::json!({
@@ -625,6 +640,7 @@ data: [DONE]
             signer_url: format!("http://{addr}/sign"),
             sso: None,
             proxy: Arc::new(crate::proxy::ProxyPool::empty()),
+            local_proxy: None,
         };
         let client = HttpDirectClient::new(cfg);
         let payload = serde_json::json!({

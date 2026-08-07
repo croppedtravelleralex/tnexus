@@ -173,6 +173,8 @@ struct TablePlan {
     target: String,
     /// 列交集（KEEP_RAW 优先 + 源序），有序。
     columns: Vec<String>,
+    /// 目标列 → PG data_type（占位符 cast 用）。
+    col_types: std::collections::HashMap<String, String>,
     src_exists: bool,
     dst_exists: bool,
 }
@@ -343,10 +345,25 @@ async fn truncate_present(
     if present.is_empty() {
         return Ok(0);
     }
-    let sql = format!("TRUNCATE {} CASCADE RESTART IDENTITY", present.join(", "));
+    // PG 语法：RESTART IDENTITY 必须在 CASCADE 之前（TRUNCATE ... RESTART IDENTITY CASCADE）。
+    let sql = format!("TRUNCATE {} RESTART IDENTITY CASCADE", present.join(", "));
     sqlx::query(&sql).execute(&mut *conn).await?;
     println!("[truncate] {} grok target table(s) reset", present.len());
     Ok(present.len())
+}
+
+/// 按 PG data_type 决定占位符 cast（timestamp/date 列收 ISO 文本时强转）。
+fn cast_dt_type(data_type: &str) -> String {
+    let t = data_type.trim();
+    if t.eq_ignore_ascii_case("timestamp with time zone") {
+        "::timestamptz".to_string()
+    } else if t.starts_with("timestamp") {
+        "::timestamp".to_string()
+    } else if t.eq_ignore_ascii_case("date") {
+        "::date".to_string()
+    } else {
+        String::new()
+    }
 }
 
 /// 批量插入（200 行/批，对齐 execute_values page_size=200 的语义边界）。
@@ -355,6 +372,7 @@ async fn insert_batch(
     schema: &str,
     target: &str,
     cols: &[String],
+    col_types: &std::collections::HashMap<String, String>,
     rows: &[Vec<Option<Coerced>>],
 ) -> Result<(), sqlx::Error> {
     let col_list = cols
@@ -362,42 +380,55 @@ async fn insert_batch(
         .map(|c| format!(r#""{c}""#))
         .collect::<Vec<_>>()
         .join(", ");
-    let placeholders = (1..=cols.len())
-        .map(|i| format!("${i}"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let sql = format!(r#"INSERT INTO "{schema}"."{target}" ({col_list}) VALUES ({placeholders})"#);
-
+    // 真批量：200 行/次 execute（VALUES 多行），避免逐行 round-trip（隧道场景慢约 50 倍）。
+    let mut values: Vec<String> = Vec::with_capacity(rows.len());
+    let mut all_args = PgArguments::default();
+    let mut offset = 0i32;
     for row in rows {
-        let mut args = PgArguments::default();
+        let ph: Vec<String> = (1..=cols.len())
+            .map(|j| {
+                let idx = offset + j as i32;
+                let cast = cols
+                    .get(j - 1)
+                    .and_then(|c| col_types.get(c.as_str()))
+                    .map(|t| cast_dt_type(t))
+                    .unwrap_or("".to_string());
+                format!("${idx}{cast}")
+            })
+            .collect();
+        values.push(format!("({})", ph.join(", ")));
         for v in row.iter() {
             match v {
                 Some(Coerced::Bool(b)) => {
-                    let _ = args.add(*b);
+                    let _ = all_args.add(*b);
                 }
                 Some(Coerced::Int(i64v)) => {
-                    let _ = args.add(*i64v);
+                    let _ = all_args.add(*i64v);
                 }
                 Some(Coerced::Float(f)) => {
-                    let _ = args.add(*f);
+                    let _ = all_args.add(*f);
                 }
                 Some(Coerced::Text(s)) => {
-                    let _ = args.add(s.clone());
+                    let _ = all_args.add(s.clone());
                 }
                 Some(Coerced::Json(s)) => {
-                    let _ = args.add(s.clone());
+                    let _ = all_args.add(s.clone());
                 }
                 Some(Coerced::Bytes(b)) => {
-                    let _ = args.add(b.clone());
+                    let _ = all_args.add(b.clone());
                 }
                 None => {
-                    // 目标列类型由 PG 推断；sqlx 对未类型化 null 用 Unknown。
-                    let _ = args.add::<Option<String>>(None);
+                    let _ = all_args.add::<Option<String>>(None);
                 }
             }
         }
-        sqlx::query_with(&sql, args).execute(&mut *conn).await?;
+        offset += cols.len() as i32;
     }
+    let sql = format!(
+        r#"INSERT INTO "{schema}"."{target}" ({col_list}) VALUES {}"#,
+        values.join(", ")
+    );
+    sqlx::query_with(&sql, all_args).execute(&mut *conn).await?;
     Ok(())
 }
 
@@ -467,7 +498,14 @@ async fn run_copy(
                 batch.push(out);
                 rows_total += 1;
                 if batch.len() >= PAGE_SIZE {
-                    insert_batch(conn, schema, &plan.target, &cols, &batch).await?;
+                    if let Err(e) =
+                        insert_batch(conn, schema, &plan.target, &cols, &plan.col_types, &batch)
+                            .await
+                    {
+                        eprintln!("[warn] copy failed {} -> {}: {e}", plan.source, plan.target);
+                        batch.clear();
+                        break;
+                    }
                     batch.clear();
                 }
                 if let Some(l) = limit {
@@ -478,7 +516,11 @@ async fn run_copy(
             }
         }
         if !batch.is_empty() {
-            insert_batch(conn, schema, &plan.target, &cols, &batch).await?;
+            if let Err(e) =
+                insert_batch(conn, schema, &plan.target, &cols, &plan.col_types, &batch).await
+            {
+                eprintln!("[warn] copy failed {} -> {}: {e}", plan.source, plan.target);
+            }
         }
         copied.insert(plan.target.clone(), rows_total);
         println!(
@@ -654,7 +696,9 @@ async fn main() -> ExitCode {
     if pg_ok {
         let mut pg = conn.take().expect("pg connection");
         let targets: Vec<&str> = plans.iter().map(|p| p.target.as_str()).collect();
-        let _ = truncate_present(&mut pg, &args.schema, &targets, &existing).await;
+        if let Err(e) = truncate_present(&mut pg, &args.schema, &targets, &existing).await {
+            eprintln!("[warn] truncate failed: {e}");
+        }
         copied = match run_copy(&mut pg, &args.schema, &plans, &existing, args.limit, &con).await {
             Ok(c) => c,
             Err(e) => {
@@ -746,6 +790,7 @@ fn build_plans(
             source: (*go_name).to_string(),
             target: (*pg_name).to_string(),
             columns: Vec::new(),
+            col_types: std::collections::HashMap::new(),
             src_exists: src_tables.contains(*go_name) && !SKIP_SQLITE.contains(go_name),
             dst_exists: dst_types.contains_key(*pg_name),
         };
@@ -755,6 +800,7 @@ fn build_plans(
                 .map(|m| m.keys().cloned().collect())
                 .unwrap_or_default();
             p.columns = plan_columns(&sqlite_columns(con, go_name), &dst_cols);
+            p.col_types = dst_types.get(*pg_name).cloned().unwrap_or_default();
         }
         plans.push(p);
     }

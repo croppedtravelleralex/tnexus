@@ -7,6 +7,9 @@
 //! signer URL 安全校验对齐 Go `internal/pkg/signerurl/policy.go`（HTTPS:443 或内网 HTTP）。
 
 use std::collections::HashMap;
+
+/// 浏览器 UA（CF 拦截判定：无 UA / 通用 UA 会被重置连接）。
+pub const BROWSER_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -39,26 +42,27 @@ impl MetaCache {
     }
 }
 
-/// 签名器：独立 client + 缓存（可注入，便于测试）。
+/// 签名器：缓存 + 默认签名地址（可注入，便于测试）。
+/// 请求客户端由调用方每次传入（直连模式传代理 client）。
 pub struct StatsigSigner {
-    client: Client,
     cache: MetaCache,
     default_signer_url: String,
 }
 
 impl StatsigSigner {
     /// 构造。`signer_url` 为空时使用默认公网签名服务。
-    pub fn new(client: Client, default_signer_url: String) -> Self {
+    pub fn new(default_signer_url: String) -> Self {
         Self {
-            client,
             cache: MetaCache::default(),
             default_signer_url,
         }
     }
 
     /// 为 `method + path` 签名，返回 `x-statsig-id` 值。
+    /// `client` 为本次请求的出口客户端（直连模式传代理 client，meta 抓取/签名均走代理）。
     pub async fn sign(
         &self,
+        client: &Client,
         base_url: &str,
         signer_url: &str,
         sso_cookie: &str,
@@ -80,12 +84,12 @@ impl StatsigSigner {
         let meta = match self.cache.get(&cache_key) {
             Some(v) => v,
             None => {
-                let fresh = fetch_meta_content(&self.client, base_url, sso_cookie).await?;
+                let fresh = fetch_meta_content(client, base_url, sso_cookie).await?;
                 self.cache.store(&cache_key, fresh.clone());
                 fresh
             }
         };
-        request_signature(&self.client, signer, method, path, &meta).await
+        request_signature(client, signer, method, path, &meta).await
     }
 }
 
@@ -96,6 +100,14 @@ async fn fetch_meta_content(
     sso_cookie: &str,
 ) -> Result<String, ProviderError> {
     let mut request = client.get(base_url);
+    // 浏览器 UA + Accept：无 UA 会被 Cloudflare 直接 TCP 重置（实测 10054）。
+    request = request
+        .header("User-Agent", BROWSER_UA)
+        .header(
+            "Accept",
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        )
+        .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8");
     if !sso_cookie.is_empty() {
         request = request.header("Cookie", sso_cookie);
     }
@@ -266,9 +278,10 @@ mod tests {
         // 用本地 axum 服务模拟 signer + 首页。
         let (addr, _guard) = spawn_fake_upstream().await;
         let client = Client::new();
-        let signer = StatsigSigner::new(client, format!("http://{addr}/sign"));
+        let signer = StatsigSigner::new(format!("http://{addr}/sign"));
         let id = signer
             .sign(
+                &client,
                 &format!("http://{addr}"),
                 &format!("http://{addr}/sign"),
                 "",
@@ -281,6 +294,7 @@ mod tests {
         // 第二次调用命中缓存：fake 首页计数仍为 1。
         let id2 = signer
             .sign(
+                &client,
                 &format!("http://{addr}"),
                 &format!("http://{addr}/sign"),
                 "",
@@ -297,9 +311,10 @@ mod tests {
     async fn sign_rejects_oversized_response() {
         let (addr, _guard) = spawn_big_signer().await;
         let client = Client::new();
-        let signer = StatsigSigner::new(client, format!("http://{addr}/sign"));
+        let signer = StatsigSigner::new(format!("http://{addr}/sign"));
         let err = signer
             .sign(
+                &client,
                 &format!("http://{addr}"),
                 &format!("http://{addr}/sign"),
                 "",

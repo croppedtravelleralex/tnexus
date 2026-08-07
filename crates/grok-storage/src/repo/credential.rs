@@ -16,8 +16,8 @@ use crate::StorageError;
 /// 凭据只读 repository（G0）。
 #[async_trait]
 pub trait CredentialRepository {
-    /// 返回账号访问令牌密文（原样字节，AES-GCM 密文，不解密）。
-    async fn get(&self, account_id: i64) -> Result<Vec<u8>, StorageError>;
+    /// 返回账号访问令牌密文（TEXT 列：base64 AES-GCM 文本，不解密）。
+    async fn get(&self, account_id: i64) -> Result<String, StorageError>;
 
     /// 存在性 + refresh 到期判断（只读，供刷新调度判断）。
     /// 返回 (access_ciphertext, Option<refresh_ciphertext>, Option<refresh_due_at>)。
@@ -26,8 +26,8 @@ pub trait CredentialRepository {
         account_id: i64,
     ) -> Result<
         Option<(
-            Vec<u8>,
-            Option<Vec<u8>>,
+            String,
+            Option<String>,
             Option<chrono::DateTime<chrono::Utc>>,
         )>,
         StorageError,
@@ -47,7 +47,7 @@ impl PgCredentialRepository {
 
 #[async_trait]
 impl CredentialRepository for PgCredentialRepository {
-    async fn get(&self, account_id: i64) -> Result<Vec<u8>, StorageError> {
+    async fn get(&self, account_id: i64) -> Result<String, StorageError> {
         let row =
             sqlx::query("SELECT encrypted_primary FROM grok_credentials WHERE account_id = $1")
                 .bind(account_id)
@@ -56,7 +56,7 @@ impl CredentialRepository for PgCredentialRepository {
         let Some(row) = row else {
             return Err(StorageError::NotFound(format!("credential {account_id}")));
         };
-        row.try_get::<Vec<u8>, _>("encrypted_primary")
+        row.try_get::<String, _>("encrypted_primary")
             .map_err(StorageError::from)
     }
 
@@ -65,8 +65,8 @@ impl CredentialRepository for PgCredentialRepository {
         account_id: i64,
     ) -> Result<
         Option<(
-            Vec<u8>,
-            Option<Vec<u8>>,
+            String,
+            Option<String>,
             Option<chrono::DateTime<chrono::Utc>>,
         )>,
         StorageError,
@@ -81,8 +81,8 @@ impl CredentialRepository for PgCredentialRepository {
         let Some(row) = row else {
             return Ok(None);
         };
-        let primary: Vec<u8> = row.try_get("encrypted_primary")?;
-        let refresh: Option<Vec<u8>> = row.try_get("encrypted_refresh")?;
+        let primary: String = row.try_get("encrypted_primary")?;
+        let refresh: Option<String> = row.try_get("encrypted_refresh")?;
         let due: Option<chrono::DateTime<chrono::Utc>> = row.try_get("refresh_due_at")?;
         Ok(Some((primary, refresh, due)))
     }
@@ -159,6 +159,7 @@ impl SsoTokenProvider for PgSsoTokenProvider {
             .get(account_id)
             .await
             .map_err(|e| ProviderError::Upstream(format!("credential: {e}")))?;
-        decrypt_primary(&ciphertext, &self.key).map_err(|e| ProviderError::Upstream(e.to_string()))
+        decrypt_primary(ciphertext.as_bytes(), &self.key)
+            .map_err(|e| ProviderError::Upstream(e.to_string()))
     }
 }

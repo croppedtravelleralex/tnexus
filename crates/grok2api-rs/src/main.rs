@@ -140,6 +140,7 @@ async fn main() -> anyhow::Result<()> {
             signer_url: cfg.signer_url.clone(),
             sso: None,
             proxy: proxy_pool,
+            local_proxy: cfg.local_proxy.clone(),
         }))
     } else {
         Arc::new(HttpBridgeClient::new())
@@ -346,6 +347,7 @@ mod tests {
             credential_key: None,
             proxy_file: None,
             proxy_list: None,
+            local_proxy: None,
         }
     }
 
