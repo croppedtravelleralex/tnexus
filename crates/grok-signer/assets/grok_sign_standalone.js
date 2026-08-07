@@ -63,7 +63,11 @@ class RTCPeerConnectionStub {
   getStats() { return Promise.resolve(new Map()); }
 }
 
-const getComputedStyleStub = () => ({ getPropertyValue: () => '', position: 'static', display: 'block', width: '0px', height: '0px', color: 'rgb(0, 0, 0)' });
+const getComputedStyleStub = () => {
+  const base = { getPropertyValue: () => '', position: 'static', display: 'block', width: '0px', height: '0px', color: 'rgb(0, 0, 0)', cssText: '' };
+  // 任意属性访问返回 '126'（UA 数字串，供签名器 x 段提取；服务端不校验 UA）
+  return new Proxy(base, { get: (t, p) => (p in t ? t[p] : '126'), has: () => true });
+};
 
 const cryptoObj = {
   getRandomValues: (arr) => { for (let i = 0; i < arr.length; i++) arr[i] = Math.floor(Math.random() * 256); return arr; },
@@ -149,7 +153,7 @@ function makeFakeElement() {
 document.querySelectorAll = (sel) => {
   const s = String(sel);
     if (s.startsWith('[name^=gr]')) return grMeta;
-  // .r-11220 结构：元素.childNodes[0].childNodes[1].getAttribute('d')
+  // .r-11220 页面实测不存在（count=0）；提供不崩的 stub（z 提取走空路径）
   const leaf1 = {
     getAttribute: (n) => { return 'AAAAAAAAA11 22 33 44 55 66 77 88C99 100C2 3'; },
     textContent: '', nodeType: 1,
@@ -166,7 +170,17 @@ document.cookie = '';
 document.location = makeLoc();
 document.readyState = 'complete';
 document.URL = 'https://grok.com/';
-document.createElement = (tag) => autoProxy(`document.createElement(${tag})`, { style: {}, setAttribute() {}, getAttribute() { return null; }, appendChild() {}, remove() {}, src: '', href: '', textContent: '', innerHTML: '' });
+document.createElement = (tag) => {
+  // 普通对象（无 write 等 document 方法；签名器 L() 用它做分支，必须有真实元素语义）
+  return {
+    style: {}, nodeType: 1, tagName: String(tag).toUpperCase(),
+    childNodes: [], textContent: '', innerHTML: '', src: '', href: '',
+    getAttribute: () => null, setAttribute() {}, appendChild(c) { this.childNodes.push(c); return c; },
+    remove() {}, addEventListener() {}, querySelector: () => null, querySelectorAll: () => [],
+    classList: { add() {}, remove() {}, contains: () => false },
+    dataset: {}, parentElement: null,
+  };
+};
 document.getElementById = () => null;
 document.getElementsByTagName = () => emptyNodeList;
 document.addEventListener = () => {};
@@ -240,6 +254,6 @@ if (typeof Promise !== 'undefined') {
     var sv = String(v);
     console.log('FULLSIG', sv.length, sv);
   }).catch(function (e) {
-    console.error('SIGN ERR', e && e.message ? e.message : String(e));
+    console.error('SIGN ERR', e && (e.stack || String(e)));
   });
 }
