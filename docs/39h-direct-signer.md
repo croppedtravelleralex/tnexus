@@ -88,6 +88,22 @@ Proxy 属性追踪、反混淆）均在调用处崩 `reading 'childNodes'`/navig
 **结论**：meta 抓取/签名请求走 `GROK_LOCAL_PROXY`（本地出口）；上游 API 请求走 webshare 池（账号出口隔离）——
 但 webshare 现网被 grok 拉黑，**当前有效拓扑是全部走 7897**（单出口，多账号风控风险需关注）。
 
+## 7b. 攻坚突破（2026-08-07 晚）
+
+- **签名器模块 1645e3 成功执行并产出合法签名**（node vm）：自包含（obfuscator.io 字符串表 + RC4 内嵌），
+  只需标准 window API（TextEncoder/Uint8Array/Date/Uint32Array/crypto.subtle/RTCPeerConnection/getComputedStyle）
+- **算法解密**（字符串表 t() 暴露法）：签名 = `[rand(4) + 0x100 + meta(44) + ts(4) + 0 + SHA-256(16) + 3]` 类
+  结构 base64 → **~94 字符**；`.r-11220`/`F`/`Z` 是动画烟雾弹（页面实测 count=0）
+- **meta 每会话动态**（实测 3 次 3 个值）：`GET https://grok.com/` 实时抓 `[name^=gr]` content 注入——必须
+  每次签名前抓取
+- **签名有效性实证**：bundle 签名 + 真实 sso cookie → GET 200 ✅
+- **POST 403 定位于账号池级风控**：真实浏览器页面自身 POST 也 403（headless+非 headless）、
+  前端 UI 拦截发送（无请求无 WS 帧）、多账号（304/86-92）/多 IP（英/日/本地）/多 body（Go schema/前端
+  schema/modeId 变体）/全套 cookie（cf_clearance/device）——POST 全 403；GET 全 200
+- **资产落地**：crates/grok-signer/assets/grok_sign_standalone.js（模板版，__GROK_META__ 运行时注入）
+- **后续**：验证 POST 全链路需要**能正常发消息的账号**（现池被禁）；或确认 Panda 生产（wodf.de 时代）
+  的账号池状态
+
 ## 7. 当前状态与选项
 
 - **可跑链路**：号池（Panda PG 671 账号）→ 凭据解密 → meta 抓取 →（签名 ✗）→ chat。
