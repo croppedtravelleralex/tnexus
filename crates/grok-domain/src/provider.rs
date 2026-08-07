@@ -94,6 +94,10 @@ pub enum ProviderError {
     #[error("browser-bridge error: {0}")]
     Bridge(String),
 
+    /// 依赖未就绪（如本地签名 bundle 缺失）：应映射 503 且不外呼。
+    #[error("not configured: {0}")]
+    NotConfigured(String),
+
     /// 上游 chat 返回非成功或不可解析。
     #[error("upstream chat error: {0}")]
     Upstream(String),

@@ -289,7 +289,8 @@ pub(crate) async fn build_bundle(
         }
     }
     AdminHttpBundle {
-        router: AdminRouter::new(router_auth, grok_admin::AccountAdminService::new(store)),
+        router: AdminRouter::new(router_auth, grok_admin::AccountAdminService::new(store))
+            .with_domains(crate::admin_domains::build_admin_domains()),
         auth: login_auth,
     }
 }
@@ -413,4 +414,126 @@ async fn admin_handle(
         StatusCode::from_u16(resp.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
         Json(resp.body),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 内存组装（bootstrap admin）→ 直接调 router.handle（与 axum 层同语义）。
+    async fn bundle_with_admin() -> (AdminRouter, String) {
+        let bundle = build_admin_bundle(
+            "admin",
+            Some("password123"),
+            "01234567890123456789012345678901",
+        )
+        .await;
+        let auth = bundle.auth.clone();
+        let (_, tokens) = auth
+            .login("admin", "password123", "127.0.0.1")
+            .await
+            .expect("login");
+        (bundle.router, tokens.access_token)
+    }
+
+    #[tokio::test]
+    async fn domains_wired_no_longer_503() {
+        let (router, token) = bundle_with_admin().await;
+        for path in [
+            "/admin/models",
+            "/admin/client-keys",
+            "/admin/request-audits",
+            "/admin/dashboard",
+            "/admin/settings",
+            "/admin/chrome-tickets",
+            "/admin/media/images",
+            "/admin/system/config",
+        ] {
+            let resp = router
+                .handle("GET", path, Some(&format!("Bearer {token}")), None)
+                .await;
+            assert_eq!(
+                resp.status, 200,
+                "{path} 应已接线（200），实际 {} {}",
+                resp.status, resp.body
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn models_domain_read_write_roundtrip() {
+        let (router, token) = bundle_with_admin().await;
+        let auth = |bearer: &str| Some(format!("Bearer {bearer}"));
+        let created = router
+            .handle(
+                "POST",
+                "/admin/models",
+                auth(&token).as_deref(),
+                Some(r#"{"provider":"grok_web","upstream_model":"grok-4","aliases":["grok-4"]}"#),
+            )
+            .await;
+        assert_eq!(created.status, 201, "{}", created.body);
+        let id = created.body["id"].as_i64().expect("id");
+        let listed = router
+            .handle("GET", "/admin/models", auth(&token).as_deref(), None)
+            .await;
+        assert_eq!(listed.status, 200, "{}", listed.body);
+        assert!(
+            listed.body["items"]
+                .as_array()
+                .is_some_and(|v| v.iter().any(|r| r["id"] == serde_json::json!(id))),
+            "列表应含新建模型: {}",
+            listed.body
+        );
+    }
+
+    #[tokio::test]
+    async fn import_accepts_wrapped_format() {
+        let (router, token) = bundle_with_admin().await;
+        let body = r#"{"format":"jsonl","items":[
+            {"identity_key":"u1@x.com","provider":"grok_web","name":"u1","credential":"c1"},
+            {"identity_key":"b1","provider":"grok_build"}
+        ]}"#;
+        let resp = router
+            .handle(
+                "POST",
+                "/admin/accounts/import",
+                Some(&format!("Bearer {token}")),
+                Some(body),
+            )
+            .await;
+        // 内存 store 的 import 当前返回空结果（存储写入在 PgAdminStore）；此处验证路由 + 契约形状。
+        assert_eq!(resp.status, 201, "{}", resp.body);
+        assert!(resp.body.get("imported").is_some(), "{}", resp.body);
+        assert!(resp.body.get("failed").is_some(), "{}", resp.body);
+    }
+
+    #[tokio::test]
+    async fn import_accepts_bare_array() {
+        let (router, token) = bundle_with_admin().await;
+        let body = r#"[{"identity_key":"u2@x.com","provider":"grok_web"}]"#;
+        let resp = router
+            .handle(
+                "POST",
+                "/admin/accounts/import",
+                Some(&format!("Bearer {token}")),
+                Some(body),
+            )
+            .await;
+        assert_eq!(resp.status, 201, "{}", resp.body);
+    }
+
+    #[tokio::test]
+    async fn import_rejects_garbage() {
+        let (router, token) = bundle_with_admin().await;
+        let resp = router
+            .handle(
+                "POST",
+                "/admin/accounts/import",
+                Some(&format!("Bearer {token}")),
+                Some(r#"{"format":"jsonl"}"#),
+            )
+            .await;
+        assert_eq!(resp.status, 400, "{}", resp.body);
+    }
 }

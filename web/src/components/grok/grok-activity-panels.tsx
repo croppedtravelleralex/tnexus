@@ -32,7 +32,7 @@ function fmtLatency(ms: number): string {
 }
 
 /** 活动流水面板：审计列表 + 成功率/平均延迟/按模型分布条形（数据走 /admin/request-audits）。 */
-export function GrokActivityPanels({ token }: { token: string }) {
+export function GrokActivityPanels({ token, reloadKey = 0 }: { token: string; reloadKey?: number }) {
   const [audits, setAudits] = useState<GrokAuditEntry[]>([]);
   const [summary, setSummary] = useState<GrokAuditSummary | null>(null);
   const [loading, setLoading] = useState(true);
@@ -56,7 +56,7 @@ export function GrokActivityPanels({ token }: { token: string }) {
     return () => {
       active = false;
     };
-  }, [token]);
+  }, [token, reloadKey]);
 
   const distribution = useMemo(() => {
     const byModel = new Map<string, { total: number; ok: number; latencies: number[] }>();

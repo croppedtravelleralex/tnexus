@@ -423,10 +423,33 @@ impl AdminRouter {
     }
 
     async fn accounts_import(&self, body: Option<&str>) -> AdminHttpResponse {
-        // body = JSON 数组（每项一条账号）；逐条校验由 service 委托 store 完成。
+        // 兼容两种请求体：裸数组（Go 形状）与包裹对象 {format, items}（前端新契约）。
         let inputs: Vec<crate::accounts::ImportAccountInput> = match parse_json(body) {
             Some(inputs) => inputs,
-            None => return AdminHttpResponse::bad_request("invalidRequest", "请求参数无效"),
+            None => {
+                match body.and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok()) {
+                    Some(json) => match json.get("items") {
+                        Some(items) => match serde_json::from_value(items.clone()) {
+                            Ok(inputs) => inputs,
+                            Err(_) => {
+                                return AdminHttpResponse::bad_request(
+                                    "invalidRequest",
+                                    "items 不是合法账号数组",
+                                )
+                            }
+                        },
+                        None => {
+                            return AdminHttpResponse::bad_request(
+                                "invalidRequest",
+                                "请求体应为账号数组或 {format, items}",
+                            )
+                        }
+                    },
+                    None => {
+                        return AdminHttpResponse::bad_request("invalidRequest", "请求参数无效")
+                    }
+                }
+            }
         };
         match self.accounts.import(&inputs).await {
             Ok(result) => AdminHttpResponse::created(json!(result)),

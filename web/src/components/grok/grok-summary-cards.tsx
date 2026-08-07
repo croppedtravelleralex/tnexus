@@ -8,6 +8,8 @@ import { grokAdminApi, type GrokAccountSummary } from "@/lib/grok-admin";
 type Props = {
   token: string;
   onError?: (message: string) => void;
+  /** 自增后强制重新拉取（页面「刷新」按钮用） */
+  reloadKey?: number;
 };
 
 const CARD_META: Array<{
@@ -28,7 +30,7 @@ const CARD_META: Array<{
 ];
 
 /** 池规模统计卡片（GET /admin/accounts/summary）。 */
-export function GrokSummaryCards({ token, onError }: Props) {
+export function GrokSummaryCards({ token, onError, reloadKey = 0 }: Props) {
   const [summary, setSummary] = useState<GrokAccountSummary | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -48,7 +50,7 @@ export function GrokSummaryCards({ token, onError }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [token, onError]);
+  }, [token, onError, reloadKey]);
 
   if (loading && !summary) {
     return (

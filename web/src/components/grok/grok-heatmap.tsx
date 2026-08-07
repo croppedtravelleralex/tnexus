@@ -31,7 +31,7 @@ function cellStyle(count: number, max: number) {
  * 后端无按账号时间序列端点（数据源 TODO：/admin/analytics/accounts-timeseries），
  * 条目不足 7 天时显示已有数据 + 空态说明。
  */
-export function GrokAccountHeatmap({ token }: { token: string }) {
+export function GrokAccountHeatmap({ token, reloadKey = 0 }: { token: string; reloadKey?: number }) {
   const [audits, setAudits] = useState<GrokAuditEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -51,7 +51,7 @@ export function GrokAccountHeatmap({ token }: { token: string }) {
     return () => {
       active = false;
     };
-  }, [token]);
+  }, [token, reloadKey]);
 
   const { rows, labels, max, total } = useMemo(() => {
     const today = new Date();

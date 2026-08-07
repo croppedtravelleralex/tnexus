@@ -504,6 +504,22 @@ impl AdminStore for PgAdminStore {
             .map_err(admin_err)?;
             if row.is_some() {
                 result.imported += 1;
+                // 可选凭据：写入 grok_credentials（账号 id 由 RETURNING 取得）。
+                if let Some(credential) = &input.credential {
+                    if !credential.trim().is_empty() {
+                        let account_id: i64 =
+                            row.map(|r| r.try_get("id").unwrap_or(0)).unwrap_or(0);
+                        let _ = sqlx::query(
+                            "INSERT INTO grok_credentials (account_id, auth_type, encrypted_primary) \
+                             VALUES ($1,'sso',$2) \
+                             ON CONFLICT (account_id) DO UPDATE SET encrypted_primary = EXCLUDED.encrypted_primary, updated_at = now()",
+                        )
+                        .bind(account_id)
+                        .bind(credential)
+                        .execute(&self.pool)
+                        .await;
+                    }
+                }
             } else {
                 result.failed += 1;
                 result.errors.push(ImportError {

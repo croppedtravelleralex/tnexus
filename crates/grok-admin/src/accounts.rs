@@ -100,6 +100,9 @@ pub struct ImportAccountInput {
     pub priority: Option<i32>,
     #[serde(default)]
     pub max_concurrent: Option<i32>,
+    /// 可选：加密凭据（写入 grok_credentials.encrypted_primary）。
+    #[serde(default)]
+    pub credential: Option<String>,
 }
 
 /// 单条导入失败（对齐 Go 逐条错误 `{index, reason}`）。

@@ -13,6 +13,14 @@ export const GROK_ADMIN_BASE =
 
 export const GROK_ADMIN_TOKEN_KEY = "tnexus_grok_admin_token";
 
+/** 管理员会话失效（401）专用错误：页面据此清 token 回登录态。 */
+export class GrokAdminAuthError extends Error {
+  constructor(message = "管理员会话无效或已过期（401）") {
+    super(message);
+    this.name = "GrokAdminAuthError";
+  }
+}
+
 /** 账号列表视图（对齐 grok-admin `AccountView`，snake_case） */
 export type GrokAccountView = {
   id: number;
@@ -212,6 +220,42 @@ export type GrokUpdateAccountInput = {
   cooldown_until?: string | null;
 };
 
+/** 导入单条输入（对齐 grok-admin `ImportAccountInput`；identity_key/provider 必填） */
+export type GrokImportAccountInput = {
+  identity_key: string;
+  provider: string;
+  name?: string;
+  priority?: number;
+  max_concurrent?: number;
+};
+
+/** 单条导入失败（对齐 `ImportError`） */
+export type GrokImportError = {
+  index: number;
+  reason: string;
+};
+
+/** 导入结果（对齐 `ImportResult`） */
+export type GrokImportResult = {
+  imported: number;
+  failed: number;
+  errors: GrokImportError[];
+};
+
+/** 登录令牌（对齐 /admin/auth/login 响应 tokens） */
+export type GrokAuthTokens = {
+  access_token: string;
+  access_token_expires_at: string;
+  refresh_token: string;
+  refresh_token_expires_at: string;
+};
+
+/** 登录响应（对齐 /admin/auth/login 响应） */
+export type GrokLoginResponse = {
+  admin: { id: number; username: string };
+  tokens: GrokAuthTokens;
+};
+
 /** 池规模汇总（对齐 grok-admin `AccountSummary`） */
 export type GrokAccountSummary = {
   total: number;
@@ -280,7 +324,7 @@ export const grokAdminApi = {
       throw new Error(`无法连接 grok-admin（${GROK_ADMIN_BASE}）`);
     }
     if (res.status === 401) {
-      throw new Error("管理员会话无效或已过期（401）");
+      throw new GrokAdminAuthError();
     }
     if (!res.ok) {
       throw new Error(`grok-admin 返回 ${res.status}: ${res.statusText}`);
@@ -330,6 +374,41 @@ export const grokAdminApi = {
   deleteAccount: async (token: string, id: number) => {
     const res = await grokAdminFetch(token, `/admin/accounts/${id}`, { method: "DELETE" });
     return res.json();
+  },
+
+  /** 批量导入（POST 原始 JSON 数组；对齐 /admin/accounts/import 契约） */
+  importAccounts: async (
+    token: string,
+    items: GrokImportAccountInput[],
+  ): Promise<GrokImportResult> => {
+    const res = await grokAdminFetch(token, "/admin/accounts/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(items),
+    });
+    return res.json() as Promise<GrokImportResult>;
+  },
+
+  /** 管理员登录（无 token；POST /admin/auth/login） */
+  login: async (username: string, password: string): Promise<GrokLoginResponse> => {
+    let res: Response;
+    try {
+      res = await fetch(`${GROK_ADMIN_BASE}/admin/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password }),
+      });
+    } catch {
+      throw new Error(`无法连接 grok-admin（${GROK_ADMIN_BASE}）`);
+    }
+    if (res.status === 401) {
+      throw new Error("用户名或密码错误（401）");
+    }
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`登录失败（${res.status}）：${text || res.statusText}`);
+    }
+    return res.json() as Promise<GrokLoginResponse>;
   },
 
   /** 审计流水（分页，按时间倒序；对齐 grok-admin `request-audits`） */
@@ -501,7 +580,7 @@ async function grokAdminFetch(
     throw new Error(`无法连接 grok-admin（${GROK_ADMIN_BASE}）`);
   }
   if (res.status === 401) {
-    throw new Error("管理员会话无效或已过期（401）");
+    throw new GrokAdminAuthError();
   }
   if (!res.ok) {
     const text = await res.text().catch(() => "");

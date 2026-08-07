@@ -5,6 +5,10 @@
 //!
 //! bundle 输出约定：被执行的 JS 将结果写入 `globalThis.__signOut`（字符串），
 //! 本 crate 执行后读取该全局属性返回。
+//!
+//! 另见 [`statsig_grain`]：1645e3 模块算法骨架的参数化参考实现（实验性）。
+
+pub mod statsig_grain;
 
 use rquickjs::{Context, Runtime};
 use std::sync::mpsc;

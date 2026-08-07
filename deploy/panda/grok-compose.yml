@@ -1,52 +1,29 @@
-# Grok sidecar stack — see docs/39-grok2api-rust-migration.md §8
+# Grok sidecar stack (draft) — see docs/39-grok2api-rust-migration.md §8
 # ============================================================
-# 禁止在 Panda 构建镜像。发布链路：本地/CI 构建 → GHCR → 仅 grok-deploy.sh（pull + up）。
+# 草案：合并到 main 前需人工 review（G6-P2）。禁止在 Panda 构建镜像。
+# 发布链路：本地/CI 构建 → GHCR → Panda 仅 grok-deploy.sh（pull + up）。
 #
 # 网络模型：与 deploy/panda/docker-compose.yml 一致用 network_mode: host，
-# 直接复用主 stack 的 postgres(:5433) / redis(:6380) / browser-bridge(:8192)。
+# 直接复用主 stack 的 postgres(:5432) / redis(:6379) / browser-bridge(:8192)。
 # 所有凭据一律 ${VAR} 引用（来自 /opt/tnexus/.env），不写死。
-#
-# 端口约定：
-#   grok2api-rs :8000（nginx G7-P1 分流：/v1/responses|messages|chat/completions → :8000）
-#   grok-admin 已内嵌于 grok2api-rs，独立监听 :8091（GROK_ADMIN_LISTEN，默认仅 127.0.0.1）
 
 services:
-  # ── Grok 统一入口（:8000；/v1/* 全路由已挂载，含 chat/responses/messages/admin）──
+  # ── Grok 统一入口（:8000，N5 注记：尚未挂载 /v1/* 路由，先只跑 healthz/readyz）──
   grok2api-rs:
     image: ghcr.io/${GHCR_OWNER:-croppedtravelleralex}/grok2api-rs:${GROK_TAG:-latest}
     network_mode: host
     restart: unless-stopped
     environment:
-      # 服务监听（固定 :8000）
+      # 端口约定：grok2api-rs :8000（nginx G7-P1 分流目标）
       GROK2API_ADDR: 0.0.0.0:8000
-      # PG / Redis 复用主 stack（host 网络 127.0.0.1:5433 / :6380）
+      # PG 与 Redis 均复用主 stack（host 网络 127.0.0.1:5432 / :6379）
       GROK_DATABASE_URL: ${GROK_DATABASE_URL:?required}
-      GROK_REDIS_URL: ${GROK_REDIS_URL:-redis://127.0.0.1:6380}
-      # 安全红线：/v1 写操作鉴权密钥（必填）
-      GROK_GATEWAY_AUTH_KEY: ${GROK_GATEWAY_AUTH_KEY:?required}
-      # 管理台（内嵌 :8091）：密钥 + 管理员凭据（必填；未配置则 login 恒 401）
-      GROK_ADMIN_LISTEN: ${GROK_ADMIN_LISTEN:-127.0.0.1:8091}
-      GROK_ADMIN_SECRET: ${GROK_ADMIN_SECRET:?required}
-      GROK_ADMIN_USERNAME: ${GROK_ADMIN_USERNAME:-admin}
-      GROK_ADMIN_PASSWORD: ${GROK_ADMIN_PASSWORD:?required}
-      # 浏览器桥（已禁止）：直连模式不依赖；保留仅作 GROK2API_DIRECT=0 回退提示
-      GROK2API_BROWSER_BRIDGE_URL: ${GROK2API_BROWSER_BRIDGE_URL:-http://127.0.0.1:8192}
-      # 纯 http 直连（缺省开）：sso cookie + statsig 签名；住宅代理（webshare 格式文件）
-      GROK2API_DIRECT: ${GROK2API_DIRECT:-1}
-      GROK2API_SIGNER_URL: ${GROK2API_SIGNER_URL:-https://grok.wodf.de/sign}
-      GROK2API_PROXY_FILE: ${GROK2API_PROXY_FILE:-}
-      # 凭据解密主密钥（base64 32B AES-256-GCM；直连必填，缺失 → chat/OCR 503）
-      GROK_CREDENTIAL_KEY: ${GROK_CREDENTIAL_KEY:-}
-      # Build / Console 上游：token 必填才启用对应端点（未配置 → 503，绝不外呼）；
-      # base_url 留空 = 直连真实 grok.com（生产默认）。
-      GROK2API_BUILD_TOKEN: ${GROK2API_BUILD_TOKEN:-}
-      GROK2API_CONSOLE_TOKEN: ${GROK2API_CONSOLE_TOKEN:-}
-      GROK2API_BUILD_BASE_URL: ${GROK2API_BUILD_BASE_URL:-}
-      GROK2API_CONSOLE_BASE_URL: ${GROK2API_CONSOLE_BASE_URL:-}
-      # 上游总超时（ms）
-      GROK2API_UPSTREAM_TIMEOUT_MS: ${GROK2API_UPSTREAM_TIMEOUT_MS:-60000}
-      # 日志
+      GROK_REDIS_URL: ${GROK_REDIS_URL:-redis://127.0.0.1:6379}
+      GROK2API_BROWSER_BRIDGE_URL: http://127.0.0.1:8192
+      # 日志 / 追踪（可选）
       RUST_LOG: ${GROK_LOG:-info}
+      # 上游票池 / 签名（若自托管 signer）
+      # GROK_SIGNER_URL: ${GROK_SIGNER_URL:-}
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://127.0.0.1:8000/readyz"]
       interval: 30s
@@ -54,7 +31,32 @@ services:
       retries: 3
       start_period: 10s
 
-  # ── browser-bridge 已禁止（2026-08-06 用户决策）──
-  # 纯 http 直连（GROK2API_DIRECT=1，缺省开）：chat/OCR 直连 grok.com
-  # （sso cookie + statsig 签名 + 可选住宅代理），不再依赖浏览器桥。
-  # 如需回退旧链路：显式 GROK2API_DIRECT=0（不推荐，bridge 镜像已弃用）。
+  # ── 浏览器桥（token 刷新 / 取票，grok2api-rs 依赖）──
+  browser-bridge:
+    image: ghcr.io/${GHCR_OWNER:-croppedtravelleralex}/grok-browser-bridge:${GROK_TAG:-latest}
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      LOG_LEVEL: ${GROK_BRIDGE_LOG:-INFO}
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8192/health"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+
+  # ── Grok Admin（可选；需要 Dockerfile.grok-admin + GHCR job 落地后启用）──
+  # 端口约定：grok-admin :8091（nginx 分流 /admin/grok* → :8091）
+  grok-admin:
+    image: ghcr.io/${GHCR_OWNER:-croppedtravelleralex}/grok-admin:${GROK_TAG:-latest}
+    network_mode: host
+    restart: unless-stopped
+    profiles: ["admin"]
+    environment:
+      GROK_ADMIN_ADDR: 0.0.0.0:8091
+      GROK_ADMIN_JWT_SECRET: ${GROK_ADMIN_JWT_SECRET:?required when admin profile enabled}
+      GROK_DATABASE_URL: ${GROK_DATABASE_URL:?required}
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8091/healthz"]
+      interval: 60s
+      timeout: 5s
+      retries: 3

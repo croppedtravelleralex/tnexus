@@ -22,6 +22,7 @@
 //! 只有 `readyz` 才探 DB（响应已脱敏，不回传 DSN/内部错误）。
 
 mod admin;
+mod admin_domains;
 mod config;
 mod http;
 mod pg_admin;

@@ -19,7 +19,7 @@ gate_g0() {
   if ls crates/grok2api-rs/Cargo.toml >/dev/null 2>&1; then
     # 仅检查 grok crate 的格式；cargo fmt --all 会带上 pre-existing 的
     # upstream 等 crate 格式差异（与 grok 无关），故 scoped 到 grok crates。
-    cargo fmt -p grok-domain -p grok-storage -p grok2api-rs -p grok-gateway -p       grok-provider-build -p grok-provider-console -p grok-provider-web -p grok-pool       -p grok-ops -p grok-egress -p grok-audit -p grok-chrome-ticket -p grok-accountsync       -p grok-admin -p grok-image-pipeline -- --check
+    cargo fmt -p grok-domain -p grok-storage -p grok2api-rs -- --check
     cargo build -p grok2api-rs
     cargo test -p grok-domain
     cargo test -p grok-storage

@@ -1,8 +1,8 @@
 "use client";
 
-import { Download, KeyRound, LoaderCircle, RefreshCw } from "lucide-react";
+import { Download, LoaderCircle, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { ElevatedCard, PageShell } from "@/components/admin/page-shell";
+import { PageShell } from "@/components/admin/page-shell";
 import { GrokAccountDetailDialog } from "@/components/grok/grok-account-detail-dialog";
 import { GrokAccountEditDialog } from "@/components/grok/grok-account-edit-dialog";
 import { GrokAccountsTable } from "@/components/grok/grok-accounts-table";
@@ -10,11 +10,12 @@ import { GrokActivityPanels } from "@/components/grok/grok-activity-panels";
 import { GrokAccountHeatmap } from "@/components/grok/grok-heatmap";
 import { GrokImportDialog } from "@/components/grok/grok-import-dialog";
 import { GrokSummaryCards } from "@/components/grok/grok-summary-cards";
+import { GrokTokenGateBody } from "@/components/grok/grok-token-gate";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import {
   clearGrokAdminToken,
   getGrokAdminToken,
+  GrokAdminAuthError,
   grokAdminApi,
   setGrokAdminToken,
   type GrokAccountPage,
@@ -28,12 +29,13 @@ const QUOTA_FETCH_LIMIT = 20;
 
 export default function GrokAccountsPage() {
   const [token, setToken] = useState<string | null>(() => getGrokAdminToken());
-  const [tokenInput, setTokenInput] = useState("");
   const [items, setItems] = useState<GrokAccountView[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  // 自增触发统计卡片/活跃面板/热力图重新拉取（「刷新」按钮）。
+  const [reloadKey, setReloadKey] = useState(0);
   // 额度列：账号 → 额度窗口（当前页前 N 个并发拉取，容错；缺失显示「未知」）
   const [quotaByAccount, setQuotaByAccount] = useState<Record<number, GrokQuotaWindow | null>>({});
 
@@ -67,6 +69,15 @@ export default function GrokAccountsPage() {
           return next;
         });
       } catch (err) {
+        // 401：会话失效 → 清 token 回登录门禁。
+        if (err instanceof GrokAdminAuthError) {
+          clearGrokAdminToken();
+          setToken(null);
+          setItems([]);
+          setTotal(0);
+          setError("管理员会话已过期，请重新登录");
+          return;
+        }
         setError(err instanceof Error ? err.message : String(err));
         setItems([]);
         setTotal(0);
@@ -77,25 +88,9 @@ export default function GrokAccountsPage() {
     [],
   );
 
-  const saveToken = () => {
-    const value = tokenInput.trim();
-    if (!value) return;
-    setGrokAdminToken(value);
-    setToken(value);
-    setTokenInput("");
-    void load(1, value);
-  };
-
-  const clearToken = () => {
-    clearGrokAdminToken();
-    setToken(null);
-    setItems([]);
-    setTotal(0);
-    setError("");
-  };
-
   const handleReload = useCallback(() => {
     if (token) void load(page, token);
+    setReloadKey((k) => k + 1);
   }, [token, page, load]);
 
   useEffect(() => {
@@ -104,10 +99,6 @@ export default function GrokAccountsPage() {
     const timer = setTimeout(() => void load(1, token), 0);
     return () => clearTimeout(timer);
   }, [token, load]);
-
-  const summaryError = useCallback((message: string) => {
-    setError(message);
-  }, []);
 
   return (
     <PageShell
@@ -135,38 +126,16 @@ export default function GrokAccountsPage() {
       }
     >
       {!token ? (
-        <ElevatedCard className="flex max-w-xl flex-col gap-3 p-6">
-          <div className="flex items-center gap-2 text-sm font-medium text-[var(--neo-ink)]">
-            <KeyRound className="size-4 text-[var(--neo-muted)]" />
-            需要 grok-admin 访问令牌
-          </div>
-          <p className="text-sm leading-relaxed text-[var(--neo-muted)]">
-            grok-admin 使用独立的 Bearer JWT（HS256），与 TNexus 会话登录是两套体系。
-            粘贴管理员 access token 后，页面会保存到本地（localStorage）并加载账号管理。
-          </p>
-          <p className="text-xs text-[var(--neo-muted)] opacity-70">
-            TODO（G6）：统一登录体系后改为会话自动换取 token，移除手动粘贴。
-          </p>
-          <div className="flex gap-2">
-            <Input
-              type="password"
-              placeholder="粘贴 grok-admin Bearer token"
-              value={tokenInput}
-              onChange={(e) => setTokenInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") saveToken();
-              }}
-              className="flex-1"
-            />
-            <Button size="sm" onClick={saveToken} disabled={!tokenInput.trim()}>
-              保存并加载
-            </Button>
-          </div>
-          {error ? <p className="text-sm text-rose-600">{error}</p> : null}
-        </ElevatedCard>
+        <GrokTokenGateBody
+          onToken={(value) => {
+            setGrokAdminToken(value);
+            setToken(value);
+            void load(1, value);
+          }}
+        />
       ) : (
         <div className="flex flex-col gap-3">
-          <GrokSummaryCards token={token} onError={summaryError} />
+          <GrokSummaryCards token={token} onError={setError} reloadKey={reloadKey} />
           <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--neo-muted)]">
             <span>
               共 {total} 个账号 · 第 {page} 页（每页 {PAGE_SIZE}）
@@ -174,7 +143,13 @@ export default function GrokAccountsPage() {
             <button
               type="button"
               className="text-[var(--neo-muted)] underline-offset-2 hover:underline"
-              onClick={clearToken}
+              onClick={() => {
+                clearGrokAdminToken();
+                setToken(null);
+                setItems([]);
+                setTotal(0);
+                setError("");
+              }}
             >
               清除令牌
             </button>
@@ -195,8 +170,8 @@ export default function GrokAccountsPage() {
           <div className="mt-2 text-[10px] text-[var(--neo-muted)]">
             额度列仅对当前页前 {QUOTA_FETCH_LIMIT} 个账号拉取（列表接口不带额度；后端批量额度端点 TODO）
           </div>
-          <GrokActivityPanels token={token} />
-          <GrokAccountHeatmap token={token} />
+          <GrokActivityPanels token={token} reloadKey={reloadKey} />
+          <GrokAccountHeatmap token={token} reloadKey={reloadKey} />
         </div>
       )}
 
@@ -223,7 +198,12 @@ export default function GrokAccountsPage() {
               setEditTarget(account);
             }}
           />
-          <GrokImportDialog open={importOpen} onOpenChange={setImportOpen} />
+          <GrokImportDialog
+            open={importOpen}
+            onOpenChange={setImportOpen}
+            token={token}
+            onImported={handleReload}
+          />
         </>
       ) : null}
     </PageShell>
