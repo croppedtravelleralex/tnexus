@@ -7,6 +7,7 @@
 1. **[plan.md](plan.md)** — 合并施工总控与详细待办
 2. **[docs/39f-grok-progress.md](docs/39f-grok-progress.md)** — **grok2api 完整 Rust 移植进 TNexus**（G2–G7 完成并合 main；Admin 8 域接线/账号导入/登录已交付；**签名器已打通**——纯 HTTP 链路技术层全通，唯一阻塞：账号池被 grok 批量风控禁言）
    - **[docs/39h-direct-signer.md](docs/39h-direct-signer.md)** — 纯 HTTP 无 chrome 签名器专项（协议/资产/硬墙/三模式/全量测试结论）
+   - **[docs/39i-roadmap.md](docs/39i-roadmap.md)** — Roadmap（5 路侦察汇总：状态五维/近期中期远期/改进方向/最终目标/风险）
 3. **[docs/38-tnexus-production-cutover.md](docs/38-tnexus-production-cutover.md)** — **1:1 替代 gptimage 生产切流路线图**
 3. **[docs/36-image-delivery-bandwidth-strategy.md](docs/36-image-delivery-bandwidth-strategy.md)** — AVIF/WebP 显示、R2/Edge 302、带宽分层
 4. **[docs/37-gptimage-tnexus-comparison.md](docs/37-gptimage-tnexus-comparison.md)** — 与 Python `:8012` 横向对比
