@@ -26,6 +26,9 @@ pub struct AppConfig {
     pub presign_ttl_secs: u64,
     pub gateway_base: String,
     pub gateway_internal_token: Option<String>,
+    pub grok_admin_base: String,
+    pub grok_admin_username: Option<String>,
+    pub grok_admin_password: Option<String>,
 }
 
 impl AppConfig {
@@ -88,6 +91,10 @@ impl AppConfig {
             gateway_internal_token: env::var("GATEWAY_AUTH_KEY")
                 .ok()
                 .or_else(|| env::var("GATEWAY_INTERNAL_TOKEN").ok()),
+            grok_admin_base: env::var("GROK_ADMIN_BASE")
+                .unwrap_or_else(|_| "http://127.0.0.1:8091".into()),
+            grok_admin_username: env::var("GROK_ADMIN_USERNAME").ok(),
+            grok_admin_password: env::var("GROK_ADMIN_PASSWORD").ok(),
         })
     }
 }

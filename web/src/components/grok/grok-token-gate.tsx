@@ -6,22 +6,24 @@ import { ElevatedCard } from "@/components/admin/page-shell";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
 import {
+  GROK_ADMIN_PROXY_TOKEN,
+  GROK_ADMIN_VIA_TNEXUS,
   clearGrokAdminToken,
   getGrokAdminToken,
   grokAdminApi,
   setGrokAdminToken,
 } from "@/lib/grok-admin";
 /**
- * grok-admin 访问令牌门：无 token 时渲染 [`GrokTokenGateBody`]（粘贴 Bearer JWT 或
- * 用户名/密码登录），有 token 时调用 `children(token)`。grok-admin 使用独立 Bearer
- * JWT（HS256），与 TNexus 会话登录是两套体系（G6 统一登录前）。
+ * grok-admin 访问门：TNexus 代理模式下直接放行；否则需粘贴/登录 grok-admin JWT。
  */
 export function GrokTokenGate({
   children,
 }: {
   children: (token: string) => React.ReactNode;
 }) {
-  const [token, setToken] = useState<string | null>(() => getGrokAdminToken());
+  const [token, setToken] = useState<string | null>(() =>
+    GROK_ADMIN_VIA_TNEXUS ? GROK_ADMIN_PROXY_TOKEN : getGrokAdminToken(),
+  );
   const clearToken = useCallback(() => {
     clearGrokAdminToken();
     setToken(null);
@@ -40,6 +42,7 @@ export function GrokTokenGate({
 
   return (
     <div className="flex flex-col gap-3">
+      {!GROK_ADMIN_VIA_TNEXUS ? (
       <div className="flex justify-end text-xs text-[var(--neo-muted)]">
         <button
           type="button"
@@ -49,6 +52,7 @@ export function GrokTokenGate({
           清除令牌
         </button>
       </div>
+      ) : null}
       {children(token)}
     </div>
   );

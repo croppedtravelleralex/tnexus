@@ -13,6 +13,8 @@ import { GrokSummaryCards } from "@/components/grok/grok-summary-cards";
 import { GrokTokenGateBody } from "@/components/grok/grok-token-gate";
 import { Button } from "@/components/ui/button";
 import {
+  GROK_ADMIN_PROXY_TOKEN,
+  GROK_ADMIN_VIA_TNEXUS,
   clearGrokAdminToken,
   getGrokAdminToken,
   GrokAdminAuthError,
@@ -28,7 +30,9 @@ const PAGE_SIZE = 50;
 const QUOTA_FETCH_LIMIT = 20;
 
 export default function GrokAccountsPage() {
-  const [token, setToken] = useState<string | null>(() => getGrokAdminToken());
+  const [token, setToken] = useState<string | null>(() =>
+    GROK_ADMIN_VIA_TNEXUS ? GROK_ADMIN_PROXY_TOKEN : getGrokAdminToken(),
+  );
   const [items, setItems] = useState<GrokAccountView[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);

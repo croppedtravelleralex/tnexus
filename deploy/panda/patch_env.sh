@@ -42,4 +42,23 @@ if grep -q '^IMAGE_PARALLEL_CONCURRENCY=8' "$ENV" 2>/dev/null; then
 fi
 ensure_kv IMAGE_STORE_PATH /data/images
 
+# Grok 子系统（grok2api-rs sidecar + tnexus-api 管理代理）
+if ! grep -q '^GROK_DATABASE_URL=' "$ENV" 2>/dev/null && grep -q '^DATABASE_URL=' "$ENV" 2>/dev/null; then
+  db="$(grep '^DATABASE_URL=' "$ENV" | cut -d= -f2-)"
+  ensure_kv GROK_DATABASE_URL "$db"
+fi
+ensure_kv GROK2API_BASE http://127.0.0.1:8000
+ensure_kv GROK_ADMIN_BASE http://127.0.0.1:8091
+ensure_kv GROK_REDIS_URL redis://127.0.0.1:6380
+ensure_kv GROK2API_DIRECT 1
+if ! grep -q '^GROK_GATEWAY_AUTH_KEY=' "$ENV" 2>/dev/null; then
+  ensure_kv GROK_GATEWAY_AUTH_KEY "$(openssl rand -hex 32)"
+fi
+if ! grep -q '^GROK_ADMIN_PASSWORD=' "$ENV" 2>/dev/null; then
+  ensure_kv GROK_ADMIN_PASSWORD "$(openssl rand -hex 16)"
+fi
+if ! grep -q '^GROK_ADMIN_SECRET=' "$ENV" 2>/dev/null; then
+  ensure_kv GROK_ADMIN_SECRET "$(openssl rand -hex 32)"
+fi
+
 echo "env patched (ACCOUNT_OPS_TOKEN set if new)"

@@ -1,6 +1,7 @@
 mod account_ops;
 mod accounts_store;
 mod config;
+mod grok_admin_client;
 mod jobs;
 mod local_nurture;
 mod middleware;
@@ -73,6 +74,7 @@ fn build_router(state: Arc<AppState>) -> Router {
             routes::proxy::webshare_routes(),
         )
         .nest("/api/proxy", routes::proxy::routes())
+        .nest("/api/grok", routes::grok_admin::routes())
         .with_state(state.clone());
 
     let cors = build_cors(&state.config.cors_origins);

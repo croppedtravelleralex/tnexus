@@ -1,6 +1,7 @@
 use crate::account_ops;
 use crate::accounts_store::AccountsStore;
 use crate::config::AppConfig;
+use crate::grok_admin_client::GrokAdminClient;
 use crate::local_nurture::{LocalNurtureStore, OutlookRecoveryStore};
 use crate::quota_prime_job::QuotaPrimeJob;
 use crate::refresh_all::RefreshAllStore;
@@ -26,6 +27,7 @@ pub struct AppState {
     pub quota_prime: QuotaPrimeJob,
     pub nurture_store: LocalNurtureStore,
     pub outlook_recovery: OutlookRecoveryStore,
+    pub grok_admin: Option<GrokAdminClient>,
 }
 
 impl AppState {
@@ -57,6 +59,7 @@ impl AppState {
             .build()?;
 
         let accounts = AccountsStore::from_env_with_pool(Some(pool.clone())).unwrap_or_default();
+        let grok_admin = GrokAdminClient::from_config(&config, http.clone());
 
         Ok(Self {
             config,
@@ -73,6 +76,7 @@ impl AppState {
             quota_prime: QuotaPrimeJob::new(),
             nurture_store: LocalNurtureStore::new(),
             outlook_recovery: OutlookRecoveryStore::new(),
+            grok_admin,
         })
     }
 }

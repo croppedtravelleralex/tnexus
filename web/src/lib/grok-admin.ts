@@ -1,15 +1,22 @@
 // Grok 管理 API 客户端（grok-admin crate，G4-P2）。
 //
-// 注意：grok-admin 使用独立的 Bearer JWT（HS256），与 TNexus 会话登录（cookie）
-// 是两套体系。这里约定 token 存 localStorage `tnexus_grok_admin_token`；
-// 页面在无 token 时做只读降级提示。
-// TODO：统一登录体系后（G6），此处改为复用会话自动换取 grok-admin token。
+// 默认经 TNexus `/api/grok` 代理：复用 TNexus 管理员 cookie，无需单独 grok-admin JWT。
+// 直连模式：设 NEXT_PUBLIC_GROK_ADMIN_BASE=http://host:8091 并自行持 token。
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:9000";
 
-/** grok-admin HTTP 挂载点；默认与 tnexus-api 同源，可用 NEXT_PUBLIC_GROK_ADMIN_BASE 覆盖 */
-export const GROK_ADMIN_BASE =
-  process.env.NEXT_PUBLIC_GROK_ADMIN_BASE ?? API_BASE;
+/** 经 TNexus 代理（推荐） */
+export const GROK_ADMIN_VIA_TNEXUS =
+  process.env.NEXT_PUBLIC_GROK_ADMIN_VIA_TNEXUS !== "0" &&
+  !process.env.NEXT_PUBLIC_GROK_ADMIN_BASE;
+
+/** grok-admin HTTP 挂载点 */
+export const GROK_ADMIN_BASE = GROK_ADMIN_VIA_TNEXUS
+  ? `${API_BASE.replace(/\/$/, "")}/api/grok`
+  : (process.env.NEXT_PUBLIC_GROK_ADMIN_BASE ?? API_BASE);
+
+/** TNexus 代理模式下 API 忽略 token 参数 */
+export const GROK_ADMIN_PROXY_TOKEN = "__tnexus_proxy__";
 
 export const GROK_ADMIN_TOKEN_KEY = "tnexus_grok_admin_token";
 
@@ -318,7 +325,10 @@ export const grokAdminApi = {
     let res: Response;
     try {
       res = await fetch(`${GROK_ADMIN_BASE}/admin/accounts${query ? `?${query}` : ""}`, {
-        headers: { Authorization: `Bearer ${token}` },
+        headers: GROK_ADMIN_VIA_TNEXUS || token === GROK_ADMIN_PROXY_TOKEN
+          ? undefined
+          : { Authorization: `Bearer ${token}` },
+        credentials: GROK_ADMIN_VIA_TNEXUS || token === GROK_ADMIN_PROXY_TOKEN ? "include" : undefined,
       });
     } catch {
       throw new Error(`无法连接 grok-admin（${GROK_ADMIN_BASE}）`);
@@ -570,16 +580,25 @@ async function grokAdminFetch(
   path: string,
   init?: RequestInit,
 ): Promise<Response> {
+  const headers: Record<string, string> = { ...(init?.headers as Record<string, string> | undefined) };
+  const useProxy = GROK_ADMIN_VIA_TNEXUS || token === GROK_ADMIN_PROXY_TOKEN;
+  if (!useProxy && token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
   let res: Response;
   try {
     res = await fetch(`${GROK_ADMIN_BASE}${path}`, {
       ...init,
-      headers: { Authorization: `Bearer ${token}`, ...(init?.headers ?? {}) },
+      credentials: useProxy ? "include" : init?.credentials,
+      headers,
     });
   } catch {
     throw new Error(`无法连接 grok-admin（${GROK_ADMIN_BASE}）`);
   }
   if (res.status === 401) {
+    if (useProxy) {
+      throw new GrokAdminAuthError("TNexus 管理员会话无效或 Grok 代理未配置（401）");
+    }
     throw new GrokAdminAuthError();
   }
   if (!res.ok) {
