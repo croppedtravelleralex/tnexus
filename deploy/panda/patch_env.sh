@@ -51,6 +51,10 @@ ensure_kv GROK2API_BASE http://127.0.0.1:8000
 ensure_kv GROK_ADMIN_BASE http://127.0.0.1:8091
 ensure_kv GROK_REDIS_URL redis://127.0.0.1:6380
 ensure_kv GROK2API_DIRECT 1
+ensure_kv GROK2API_SIGNER_MODE native
+ensure_kv GROK_PURE_HTTP_KEYS_DIR /opt/tnexus/pure_http_keys
+mkdir -p /opt/tnexus/pure_http_keys
+# GROK_STATSIG_FINGERPRINT：本机 `python scripts/extract_statsig_fingerprint_local.py` 提取后写入 .env
 if ! grep -q '^GROK_GATEWAY_AUTH_KEY=' "$ENV" 2>/dev/null; then
   ensure_kv GROK_GATEWAY_AUTH_KEY "$(openssl rand -hex 32)"
 fi

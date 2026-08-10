@@ -68,6 +68,15 @@ impl ProxyPool {
         self.clients.get(idx)
     }
 
+    /// 按 sso/cookie 稳定取代理 URL（WS CONNECT 用）。
+    pub fn proxy_url_for(&self, sso_token: &str) -> Option<&str> {
+        if self.endpoints.is_empty() {
+            return None;
+        }
+        let idx = fnv1a(sso_token) as usize % self.endpoints.len();
+        self.endpoints.get(idx).map(|e| e.url.as_str())
+    }
+
     /// 供测试/日志：代理地址清单（脱敏：隐藏密码段）。
     pub fn describe(&self) -> Vec<String> {
         self.endpoints.iter().map(|e| mask_proxy(&e.url)).collect()
@@ -80,6 +89,10 @@ fn parse_proxy_line(line: &str) -> Option<String> {
     if line.is_empty() || line.starts_with('#') {
         return None;
     }
+    let line = line
+        .strip_prefix("http://")
+        .or_else(|| line.strip_prefix("https://"))
+        .unwrap_or(line);
     let parts: Vec<&str> = line.split(':').collect();
     match parts.len() {
         // user:pass@host:port 或 host:port（2 段：先看有无 @）

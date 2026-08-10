@@ -66,6 +66,39 @@ fn default_n() -> usize {
     1
 }
 
+/// OpenAI `size`（如 `1792x1024`）或 `16:9` → grok `aspect_ratio`。
+pub fn size_to_aspect_ratio(size: &str) -> String {
+    let size = size.trim();
+    if size.is_empty() || size == "1024x1024" || size.eq_ignore_ascii_case("1:1") {
+        return "1:1".to_string();
+    }
+    if size.contains(':') && !size.contains('x') {
+        return size.to_string();
+    }
+    if let Some((w, h)) = size.split_once('x') {
+        if let (Ok(w), Ok(h)) = (w.trim().parse::<u32>(), h.trim().parse::<u32>()) {
+            if w > 0 && h > 0 {
+                return simplify_ratio(w, h);
+            }
+        }
+    }
+    "1:1".to_string()
+}
+
+fn gcd(mut a: u32, mut b: u32) -> u32 {
+    while b != 0 {
+        let t = b;
+        b = a % b;
+        a = t;
+    }
+    a
+}
+
+fn simplify_ratio(w: u32, h: u32) -> String {
+    let g = gcd(w, h).max(1);
+    format!("{}:{}", w / g, h / g)
+}
+
 /// `POST /v1/images/generations`（G2）。走 `ImageEngine.imagine`。
 pub async fn image_generations(
     State(state): State<Arc<AppState>>,
@@ -87,6 +120,7 @@ pub async fn image_generations(
     } else {
         "url".to_string()
     };
+    let aspect_ratio = size_to_aspect_ratio(&req.size);
     let imagine_req = ImagineRequest {
         prompt: req.prompt.clone(),
         n: req.n,
@@ -94,6 +128,7 @@ pub async fn image_generations(
         lite: false,
         enhance: false,
         request_id: new_request_id(),
+        aspect_ratio,
     };
     let result = image_engine.imagine(&imagine_req).await?;
 

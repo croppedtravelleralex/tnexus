@@ -1,0 +1,22 @@
+[package]
+name = "grok-pure-http"
+version.workspace = true
+edition.workspace = true
+description = "Grok 纯 HTTP 探针 CLI（session 签名 + upload + 多轮 chat/OCR gate）"
+
+[[bin]]
+name = "grok-pure-http"
+path = "src/main.rs"
+
+[dependencies]
+grok-provider-web = { path = "../grok-provider-web" }
+grok-domain = { path = "../grok-domain" }
+
+anyhow = { workspace = true }
+base64 = { workspace = true }
+clap = { version = "4", features = ["derive", "env"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

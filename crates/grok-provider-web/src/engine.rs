@@ -117,7 +117,10 @@ impl ChatEngine {
             Some(provider) => Some(provider.sso_token(account_id).await?),
             None => None,
         };
-        let result = self.bridge.fetch_chat(&payload, sso_token.as_deref()).await;
+        let result = self
+            .bridge
+            .fetch_chat(&payload, sso_token.as_deref(), Some(account_id))
+            .await;
 
         match result {
             Ok(text) => {
@@ -218,10 +221,10 @@ mod tests {
         );
         let text = e.chat(&req()).await.unwrap();
         assert_eq!(text, "图中文字是「你好」");
-        // OCR golden：bridge 收到的 payload 禁生图 + fast 模型。
+        // OCR golden：bridge 收到的 payload 禁生图 + fast mode。
         let got = concrete.last_chat_payload.lock().await;
         let payload = got.as_ref().unwrap();
-        assert_eq!(payload["model"], crate::chat::UPSTREAM_OCR_MODEL);
+        assert_eq!(payload["modeId"], "fast");
         assert_eq!(payload["enableImageGeneration"], false);
         assert_eq!(payload["enableImageStreaming"], false);
     }

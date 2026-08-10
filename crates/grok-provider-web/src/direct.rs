@@ -16,6 +16,7 @@ use grok_domain::{ProviderError, SsoTokenProvider};
 use serde_json::{json, Value};
 
 use crate::bridge::BridgeClient;
+use crate::statsig::BROWSER_UA;
 use crate::proxy::{proxy_err, ProxyPool};
 use crate::signer::{build_signer, SignerMode, SignerTrait};
 
@@ -41,6 +42,10 @@ pub struct DirectConfig {
     /// 本地出口代理（GROK_LOCAL_PROXY，如 Clash 127.0.0.1:7897）：
     /// meta 抓取/签名/直连请求走它（公网直连常被墙或 CF 拦）。
     pub local_proxy: Option<String>,
+    /// Playwright 提取的 session 签名材料；有则优先于 signer_mode（Python statsig 路径）。
+    pub session: Option<crate::signer::SessionKeys>,
+    /// 按账号 id 加载 `pure_http_keys`（`GROK_PURE_HTTP_KEYS_DIR`）。
+    pub session_store: Option<Arc<crate::session_store::SessionKeyStore>>,
 }
 
 impl Default for DirectConfig {
@@ -52,6 +57,8 @@ impl Default for DirectConfig {
             sso: None,
             proxy: Arc::new(ProxyPool::empty()),
             local_proxy: None,
+            session: None,
+            session_store: None,
         }
     }
 }
@@ -60,7 +67,7 @@ impl Default for DirectConfig {
 pub struct HttpDirectClient {
     client: reqwest::Client,
     signer: Box<dyn SignerTrait>,
-    cfg: DirectConfig,
+    pub(crate) cfg: DirectConfig,
 }
 
 impl HttpDirectClient {
@@ -78,7 +85,11 @@ impl HttpDirectClient {
             }
         }
         let client = builder.build().expect("reqwest client");
-        let signer = build_signer(cfg.signer_mode, &cfg.signer_url);
+        let signer: Box<dyn SignerTrait> = if let Some(session) = cfg.session.clone() {
+            Box::new(crate::signer::SessionSigner::new(session))
+        } else {
+            build_signer(cfg.signer_mode, &cfg.signer_url)
+        };
         Self {
             client,
             signer,
@@ -134,7 +145,10 @@ impl HttpDirectClient {
             HeaderName::from_static("sec-fetch-site"),
             HeaderValue::from_static("same-origin"),
         );
-        map.insert(USER_AGENT, HeaderValue::from_static("Mozilla/5.0"));
+        map.insert(USER_AGENT, HeaderValue::from_static(BROWSER_UA));
+        if let Ok(req_id) = HeaderValue::from_str(&uuid::Uuid::new_v4().to_string()) {
+            map.insert(HeaderName::from_static("x-xai-request-id"), req_id);
+        }
         if !sso_cookie.is_empty() {
             if let Ok(cookie_value) = HeaderValue::from_str(sso_cookie) {
                 map.insert(COOKIE, cookie_value);
@@ -148,18 +162,63 @@ impl HttpDirectClient {
         map
     }
 
+    /// 解析账号 session keys：全局 cfg.session 或按 id 从 store 加载。
+    pub(crate) fn session_for(&self, account_id: Option<i64>) -> Option<crate::signer::SessionKeys> {
+        if let Some(id) = account_id {
+            if let Some(store) = &self.cfg.session_store {
+                if let Some(keys) = store.get(id) {
+                    return Some((*keys).clone());
+                }
+            }
+        }
+        self.cfg.session.clone()
+    }
+
+    /// cookie：有 cf_clearance 的 session cookie 优先，否则 sso 拼接。
+    pub(crate) fn resolve_cookie(
+        sso_token: &str,
+        session: Option<&crate::signer::SessionKeys>,
+    ) -> String {
+        if let Some(sk) = session {
+            if let Some(ref full) = sk.cookie {
+                if full.contains("cf_clearance=") {
+                    return full.clone();
+                }
+            }
+        }
+        Self::build_sso_cookie(sso_token)
+    }
+
     /// 对目标 path 签名（method + path → x-statsig-id）。
     async fn sign_path(
         &self,
         sso_cookie: &str,
         method: &str,
         path: &str,
+        session: Option<&crate::signer::SessionKeys>,
     ) -> Result<String, ProviderError> {
-        // meta 抓取 / 签名走本地直连 client（浏览器 UA 可过 CF；代理 IP 段被 grok CF 重置）。
-        // 仅真正上游 API 请求才用住宅代理（账号出口隔离）。
+        if let Some(sk) = session.filter(|s| !s.fingerprint.is_empty()) {
+            return crate::signer::SessionSigner::new(sk.clone())
+                .sign(
+                    &self.client,
+                    &self.cfg.base_url,
+                    &self.cfg.signer_url,
+                    sso_cookie,
+                    method,
+                    path,
+                )
+                .await;
+        }
+        // remote signer 需先抓 grok.com 首页 meta；Panda 机房 IP 常被 CF 403，
+        // 有住宅代理时 meta/签名也走账号出口（与上游 API 一致）。
+        let sign_client = self
+            .cfg
+            .proxy
+            .client_for(sso_cookie)
+            .unwrap_or(&self.client);
         self.signer
             .sign(
-                &self.client,
+                sign_client,
                 &self.cfg.base_url,
                 &self.cfg.signer_url,
                 sso_cookie,
@@ -174,7 +233,7 @@ impl HttpDirectClient {
     }
 
     /// 从 cookie 头构造（sso=<t> 原始 token 直接拼接）。
-    fn build_sso_cookie(token: &str) -> String {
+    pub(crate) fn build_sso_cookie(token: &str) -> String {
         let token = token.trim();
         let token = token.strip_prefix("sso=").map(str::trim).unwrap_or(token);
         let token = token.split(';').next().unwrap_or("").trim();
@@ -187,7 +246,7 @@ impl HttpDirectClient {
     }
 
     /// 按 cookie（=账号身份）稳定取出口 client：有代理池 → 哈希映射；否则直连。
-    fn client_for(&self, sso_cookie: &str) -> &reqwest::Client {
+    pub(crate) fn client_for(&self, sso_cookie: &str) -> &reqwest::Client {
         self.cfg
             .proxy
             .client_for(sso_cookie)
@@ -201,6 +260,7 @@ impl HttpDirectClient {
         cookie: &str,
         client: &reqwest::Client,
         payload: &Value,
+        session: Option<&crate::signer::SessionKeys>,
     ) -> Result<Vec<String>, ProviderError> {
         let Some(list) = payload.get("fileAttachments").and_then(|v| v.as_array()) else {
             return Ok(Vec::new());
@@ -220,7 +280,7 @@ impl HttpDirectClient {
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| ProviderError::Bridge("attachment missing data_base64".into()))?;
             let id = self
-                .upload_one(cookie, client, file_name, mime, content)
+                .upload_one(cookie, client, file_name, mime, content, session)
                 .await?;
             ids.push(id);
         }
@@ -235,9 +295,10 @@ impl HttpDirectClient {
         file_name: &str,
         mime: &str,
         content_b64: &str,
+        session: Option<&crate::signer::SessionKeys>,
     ) -> Result<String, ProviderError> {
         let path = "/rest/app-chat/upload-file";
-        let statsig_id = self.sign_path(cookie, "POST", path).await?;
+        let statsig_id = self.sign_path(cookie, "POST", path, session).await?;
         let endpoint = format!("{}{}", self.cfg.base_url.trim_end_matches('/'), path);
         let body = json!({
             "fileName": file_name,
@@ -276,6 +337,141 @@ impl HttpDirectClient {
         }
         Ok(id.to_string())
     }
+
+    /// POST 指定 chat 路径，返回 SSE 解析结果（含 conversation/response id）。
+    pub async fn fetch_chat_turn(
+        &self,
+        path: &str,
+        payload: &Value,
+        sso_token: Option<&str>,
+        account_id: Option<i64>,
+    ) -> Result<SseChatParse, ProviderError> {
+        let Some(sso_token) = sso_token else {
+            return Err(ProviderError::NoAvailableAccount);
+        };
+        let session = self.session_for(account_id);
+        let cookie = Self::resolve_cookie(sso_token, session.as_ref());
+        let client = self.client_for(&cookie);
+        let mut owned = payload.clone();
+        if has_uploadable_attachments(payload) {
+            let ids = self
+                .upload_attachments(&cookie, client, payload, session.as_ref())
+                .await?;
+            owned["fileAttachments"] = json!(ids);
+        }
+        let statsig_id = self
+            .sign_path(&cookie, "POST", path, session.as_ref())
+            .await?;
+        let endpoint = format!("{}{}", self.cfg.base_url.trim_end_matches('/'), path);
+        let resp = client
+            .post(&endpoint)
+            .headers(self.build_headers(&cookie, &statsig_id, "application/json"))
+            .json(&owned)
+            .send()
+            .await
+            .map_err(proxy_err)?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(ProviderError::Upstream(format!("chat status {status}")));
+        }
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| ProviderError::Bridge(format!("chat body: {e}")))?;
+        if bytes.len() > MAX_BITSTREAM_READ_LIMIT {
+            return Err(ProviderError::Upstream("chat stream over limit".into()));
+        }
+        parse_sse_chat(&bytes)
+    }
+
+    /// POST chat 路径并返回原始响应体（lite 生图从 SSE 提取 imageUrl）。
+    pub(crate) async fn fetch_chat_raw_body(
+        &self,
+        path: &str,
+        payload: &Value,
+        sso_token: Option<&str>,
+        account_id: Option<i64>,
+    ) -> Result<Vec<u8>, ProviderError> {
+        let Some(sso_token) = sso_token else {
+            return Err(ProviderError::NoAvailableAccount);
+        };
+        let session = self.session_for(account_id);
+        let cookie = Self::resolve_cookie(sso_token, session.as_ref());
+        let client = self.client_for(&cookie);
+        let mut owned = payload.clone();
+        if has_uploadable_attachments(payload) {
+            let ids = self
+                .upload_attachments(&cookie, client, payload, session.as_ref())
+                .await?;
+            owned["fileAttachments"] = json!(ids);
+        }
+        let statsig_id = self
+            .sign_path(&cookie, "POST", path, session.as_ref())
+            .await?;
+        let endpoint = format!("{}{}", self.cfg.base_url.trim_end_matches('/'), path);
+        let resp = client
+            .post(&endpoint)
+            .headers(self.build_headers(&cookie, &statsig_id, "application/json"))
+            .json(&owned)
+            .send()
+            .await
+            .map_err(proxy_err)?;
+        let status = resp.status();
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(ProviderError::Upstream(
+                "invalid session (sso token expired or revoked)".into(),
+            ));
+        }
+        if !status.is_success() {
+            return Err(ProviderError::Upstream(format!("chat status {status}")));
+        }
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| ProviderError::Bridge(format!("chat body: {e}")))?;
+        if bytes.len() > MAX_BITSTREAM_READ_LIMIT {
+            return Err(ProviderError::Upstream("chat stream over limit".into()));
+        }
+        Ok(bytes.to_vec())
+    }
+
+    /// 多轮 followup：POST `/rest/app-chat/conversations/{id}/responses`。
+    pub async fn fetch_chat_followup(
+        &self,
+        conversation_id: &str,
+        parent_response_id: &str,
+        payload: &Value,
+        sso_token: Option<&str>,
+        account_id: Option<i64>,
+    ) -> Result<SseChatParse, ProviderError> {
+        let mut owned = payload.clone();
+        owned["responseId"] = json!(parent_response_id);
+        let path = format!("/rest/app-chat/conversations/{conversation_id}/responses");
+        self.fetch_chat_turn(&path, &owned, sso_token, account_id)
+            .await
+    }
+
+    /// 单张上传（供探针/gate 直接调用）。
+    pub async fn upload_file_b64(
+        &self,
+        file_name: &str,
+        mime: &str,
+        content_b64: &str,
+        sso_token: &str,
+    ) -> Result<String, ProviderError> {
+        let session = self.cfg.session.clone();
+        let cookie = Self::resolve_cookie(sso_token, session.as_ref());
+        let client = self.client_for(&cookie);
+        self.upload_one(
+            &cookie,
+            client,
+            file_name,
+            mime,
+            content_b64,
+            session.as_ref(),
+        )
+        .await
+    }
 }
 
 /// payload.fileAttachments 是否是需要先上传的对象数组（含 data_base64）。
@@ -293,58 +489,93 @@ fn has_uploadable_attachments(payload: &Value) -> bool {
         .unwrap_or(false)
 }
 
-/// 快速解析 SSE 文本：逐行读，`data: {json}` → `result.response.token` → 拼 text。
-/// 若整个 body 不是 SSE（如返回 OpenAI 风格 JSON），熔断：尝试 `choices[0].message.content`。
-fn parse_sse_text(body: &[u8]) -> Result<String, ProviderError> {
+/// SSE 解析结果（含多轮 followup 所需的 id）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SseChatParse {
+    pub text: String,
+    pub conversation_id: Option<String>,
+    pub response_id: Option<String>,
+    pub parent_response_id: Option<String>,
+}
+
+/// 解析 grok chat SSE：兼容 `data:` 前缀与裸 JSON 行；嵌套/扁平 `result` 结构。
+pub fn parse_sse_chat(body: &[u8]) -> Result<SseChatParse, ProviderError> {
     let text = String::from_utf8_lossy(body);
-    let mut out = String::new();
-    let mut saw_data = false;
+    let mut out = SseChatParse::default();
+    let mut saw_line = false;
+    let mut text_parts: Vec<String> = Vec::new();
+
     for line in text.lines() {
-        let line = line.trim();
+        let mut line = line.trim();
+        if line.is_empty() || line == "[DONE]" {
+            continue;
+        }
         if let Some(data) = line.strip_prefix("data:") {
-            saw_data = true;
-            let data = data.trim();
-            if data == "[DONE]" {
-                continue;
+            line = data.trim();
+        }
+        saw_line = true;
+        let Ok(root) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if let Some(err) = root.get("error") {
+            let msg = err
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("upstream error");
+            return Err(ProviderError::Upstream(msg.to_string()));
+        }
+        let Some(res) = root.get("result").and_then(|v| v.as_object()) else {
+            continue;
+        };
+        if let Some(conv) = res.get("conversation").and_then(|v| v.as_object()) {
+            if let Some(id) = conv.get("conversationId").and_then(|v| v.as_str()) {
+                out.conversation_id = Some(id.to_string());
             }
-            if let Ok(root) = serde_json::from_str::<Value>(data) {
-                if let Some(err) = root.get("error") {
-                    let msg = err
-                        .get("message")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("upstream error");
-                    return Err(ProviderError::Upstream(msg.to_string()));
+        }
+        let blocks: Vec<&serde_json::Map<String, Value>> = res
+            .get("response")
+            .and_then(|v| v.as_object())
+            .map(|m| vec![m])
+            .unwrap_or_else(|| vec![res]);
+        for block in blocks {
+            if let Some(id) = block.get("responseId").and_then(|v| v.as_str()) {
+                out.response_id = Some(id.to_string());
+            }
+            if let Some(mr) = block.get("modelResponse").and_then(|v| v.as_object()) {
+                if let Some(id) = mr.get("responseId").and_then(|v| v.as_str()) {
+                    out.response_id = Some(id.to_string());
                 }
-                if let Some(token) = root
-                    .get("result")
-                    .and_then(|r| r.get("response"))
-                    .and_then(|r| r.get("token"))
-                    .and_then(|t| t.as_str())
-                {
-                    let thinking = root
-                        .get("result")
-                        .and_then(|r| r.get("response"))
-                        .and_then(|r| r.get("isThinking"))
-                        .and_then(|t| t.as_bool())
-                        .unwrap_or(false);
-                    let tag = root
-                        .get("result")
-                        .and_then(|r| r.get("response"))
-                        .and_then(|r| r.get("messageTag"))
-                        .and_then(|t| t.as_str())
-                        .unwrap_or("");
-                    // 对齐 Go：thinking token 不计入正文；正文 token 需非 thinking。
-                    if !thinking {
-                        out.push_str(token);
-                    } else {
-                        let _ = tag;
+                if let Some(msg) = mr.get("message").and_then(|v| v.as_str()) {
+                    text_parts = vec![msg.to_string()];
+                }
+                if let Some(pid) = mr.get("parentResponseId").and_then(|v| v.as_str()) {
+                    out.parent_response_id = Some(pid.to_string());
+                }
+            }
+            if let Some(ur) = block.get("userResponse").and_then(|v| v.as_object()) {
+                if let Some(pid) = ur.get("responseId").and_then(|v| v.as_str()) {
+                    out.parent_response_id = Some(pid.to_string());
+                }
+            }
+            let thinking = block
+                .get("isThinking")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let tag = block
+                .get("messageTag")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if let Some(tok) = block.get("token").and_then(|v| v.as_str()) {
+                if !thinking && matches!(tag, "final" | "response_start" | "") && !tok.is_empty() {
+                    if text_parts.is_empty() || text_parts.last().map(|s| s.as_str()) != Some(tok) {
+                        text_parts.push(tok.to_string());
                     }
                 }
             }
         }
     }
-    if !saw_data {
-        // 非 SSE：尝试 OpenAI 错误体
+
+    if !saw_line {
         if let Ok(root) = serde_json::from_str::<Value>(&text) {
             if let Some(msg) = root
                 .get("error")
@@ -360,14 +591,23 @@ fn parse_sse_text(body: &[u8]) -> Result<String, ProviderError> {
                 .and_then(|m| m.get("content"))
                 .and_then(|v| v.as_str())
             {
-                return Ok(content.to_string());
+                out.text = content.to_string();
+                return Ok(out);
             }
         }
     }
-    if out.is_empty() && !saw_data {
+
+    out.text = text_parts.join("");
+    if out.text.is_empty() && !saw_line {
         return Err(ProviderError::Upstream("empty chat response".into()));
     }
     Ok(out)
+}
+
+/// 快速解析 SSE 文本（仅正文，兼容旧调用方）。
+#[allow(dead_code)]
+fn parse_sse_text(body: &[u8]) -> Result<String, ProviderError> {
+    parse_sse_chat(body).map(|p| p.text)
 }
 
 #[async_trait::async_trait]
@@ -404,67 +644,45 @@ impl BridgeClient for HttpDirectClient {
         &self,
         payload: &Value,
         sso_token: Option<&str>,
+        account_id: Option<i64>,
     ) -> Result<String, ProviderError> {
-        let Some(sso_token) = sso_token else {
-            // 安全红线：直连无 token 一律 503 不外呼。
-            return Err(ProviderError::NoAvailableAccount);
-        };
-        let cookie = Self::build_sso_cookie(sso_token);
-        let client = self.client_for(&cookie);
-        // 纯 http 图片上传：payload.fileAttachments 若是对象数组（含 data_base64）→
-        // 逐张 POST /rest/app-chat/upload-file 拿 fileMetadataId，替换为字符串数组
-        // （对齐 Go prepareChatAttachments + buildWebChatPayload 的 fileAttachments: []string）。
-        let mut owned = payload.clone();
-        if has_uploadable_attachments(payload) {
-            let ids = self.upload_attachments(&cookie, client, payload).await?;
-            owned["fileAttachments"] = json!(ids);
-        }
-        let path = "/rest/app-chat/conversations/new";
-        let statsig_id = self.sign_path(&cookie, "POST", path).await?;
-        let endpoint = format!("{}{}", self.cfg.base_url.trim_end_matches('/'), path);
-        let resp = client
-            .post(&endpoint)
-            .headers(self.build_headers(&cookie, &statsig_id, "application/json"))
-            .json(&owned)
-            .send()
-            .await
-            .map_err(proxy_err)?;
-        let status = resp.status();
-        if !status.is_success() {
-            return Err(ProviderError::Upstream(format!("chat status {status}")));
-        }
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| ProviderError::Bridge(format!("chat body: {e}")))?;
-        if bytes.len() > MAX_BITSTREAM_READ_LIMIT {
-            return Err(ProviderError::Upstream("chat stream over limit".into()));
-        }
-        parse_sse_text(&bytes)
+        self.fetch_chat_turn(
+            "/rest/app-chat/conversations/new",
+            payload,
+            sso_token,
+            account_id,
+        )
+        .await
+        .map(|p| p.text)
     }
 
     async fn fetch_imagine(
         &self,
         payload: &Value,
         sso_token: Option<&str>,
+        account_id: Option<i64>,
     ) -> Result<Value, ProviderError> {
-        // 简化：直连路径对生图先用 chat 端点「new conversation」（对齐 Go openChat 首步），
-        // 图片结果依赖 WS 帧；WS 二进制帧格式与上游耦合，需真实上游联调验证。
-        // 此处回退到 fetch_chat 文本 SSE（同 endpoint），提取文本供调用方判断，
-        // WS 收帧在 `direct_imagine_ws`（TODO：真实上游联调后启用）。
-        self.fetch_chat(payload, sso_token).await.map(|text| {
-            serde_json::json!({
-                "object": "list",
-                "created": chrono::Utc::now().timestamp(),
-                "data": [ { "text": text } ],
-            })
-        })
+        self.imagine_upstream(payload, sso_token, account_id).await
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_sse_followup_flat_result() {
+        let body = r#"
+{"result":{"userResponse":{"responseId":"u1","message":"hi"}}}
+{"result":{"token":"P","isThinking":false,"messageTag":"final","responseId":"r1"}}
+{"result":{"token":"ONG","isThinking":false,"messageTag":"final","responseId":"r1"}}
+{"result":{"modelResponse":{"responseId":"r1","message":"PONG","parentResponseId":"u1"}}}
+"#;
+        let out = parse_sse_chat(body.as_bytes()).unwrap();
+        assert_eq!(out.text, "PONG");
+        assert_eq!(out.response_id.as_deref(), Some("r1"));
+        assert_eq!(out.parent_response_id.as_deref(), Some("u1"));
+    }
 
     #[test]
     fn parse_sse_extracts_tokens() {
@@ -516,7 +734,7 @@ data: {"result":{"response":{"token":"答","isThinking":false,"messageTag":""}}}
     async fn fetch_chat_without_token_is_503_semantics() {
         let client = HttpDirectClient::new(DirectConfig::default());
         let err = client
-            .fetch_chat(&serde_json::json!({"model":"x"}), None)
+            .fetch_chat(&serde_json::json!({"model":"x"}), None, None)
             .await
             .unwrap_err();
         assert!(matches!(err, ProviderError::NoAvailableAccount));
@@ -532,10 +750,12 @@ data: {"result":{"response":{"token":"答","isThinking":false,"messageTag":""}}}
             sso: None,
             proxy: Arc::new(crate::proxy::ProxyPool::empty()),
             local_proxy: None,
+            session: None,
+            session_store: None,
         };
         let client = HttpDirectClient::new(cfg);
         let err = client
-            .fetch_chat(&serde_json::json!({"model":"x"}), None)
+            .fetch_chat(&serde_json::json!({"model":"x"}), None, None)
             .await
             .unwrap_err();
         assert!(matches!(err, ProviderError::NoAvailableAccount));
@@ -609,6 +829,8 @@ data: [DONE]
             sso: None,
             proxy: Arc::new(crate::proxy::ProxyPool::empty()),
             local_proxy: None,
+            session: None,
+            session_store: None,
         };
         let client = HttpDirectClient::new(cfg);
         let payload = serde_json::json!({
@@ -622,7 +844,7 @@ data: [DONE]
             }]
         });
         let text = client
-            .fetch_chat(&payload, Some("sso-token-1"))
+            .fetch_chat(&payload, Some("sso-token-1"), None)
             .await
             .unwrap();
         assert_eq!(text, "图片");
@@ -647,6 +869,8 @@ data: [DONE]
             sso: None,
             proxy: Arc::new(crate::proxy::ProxyPool::empty()),
             local_proxy: None,
+            session: None,
+            session_store: None,
         };
         let client = HttpDirectClient::new(cfg);
         let payload = serde_json::json!({
@@ -655,7 +879,7 @@ data: [DONE]
             "fileAttachments": [],
         });
         let text = client
-            .fetch_chat(&payload, Some("sso-token-2"))
+            .fetch_chat(&payload, Some("sso-token-2"), None)
             .await
             .unwrap();
         assert_eq!(text, "图片");

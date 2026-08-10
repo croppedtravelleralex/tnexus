@@ -1,17 +1,21 @@
 {
-  "model": "grok-chat-fast",
-  "messages": [
-    {
-      "role": "system",
-      "content": "提取图中全部可见文字，保持版面顺序；无文字则回复「无文字内容」。"
-    },
-    {
-      "role": "user",
-      "content": "[user]\n提取图中文字"
-    }
-  ],
+  "collectionIds": [],
+  "disabledConnectorIds": [],
+  "deviceEnvInfo": {
+    "darkModeEnabled": false,
+    "devicePixelRatio": 2,
+    "screenHeight": 1328,
+    "screenWidth": 2056,
+    "viewportHeight": 1083,
+    "viewportWidth": 2056
+  },
+  "disableMemory": true,
+  "disableSearch": false,
+  "disableSelfHarmShortCircuit": false,
+  "disableTextFollowUps": false,
   "enableImageGeneration": false,
   "enableImageStreaming": false,
+  "enableSideBySide": true,
   "fileAttachments": [
     {
       "source_url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
@@ -19,5 +23,17 @@
       "mime_type": "image/png",
       "data_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
     }
-  ]
+  ],
+  "forceConcise": false,
+  "forceSideBySide": false,
+  "imageAttachments": [],
+  "imageGenerationCount": 0,
+  "isAsyncChat": false,
+  "message": "提取图中全部可见文字，保持版面顺序；无文字则回复「无文字内容」。\n\n[user]\n提取图中文字",
+  "modeId": "fast",
+  "responseMetadata": {},
+  "returnImageBytes": false,
+  "returnRawGrokInXaiRequest": false,
+  "sendFinalMetadata": true,
+  "temporary": true
 }

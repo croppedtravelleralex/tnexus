@@ -51,10 +51,12 @@ pub trait BridgeClient: Send + Sync {
     ) -> Result<Vec<u8>, ProviderError>;
 
     /// 发送 chat 请求到 bridge，返回上游 SSE 汇总后的文本。
+    /// `account_id`：直连模式用于加载 `pure_http_keys`（bridge 模式忽略）。
     async fn fetch_chat(
         &self,
         payload: &Value,
         sso_token: Option<&str>,
+        account_id: Option<i64>,
     ) -> Result<String, ProviderError>;
 
     /// 发送生图（imagine）请求到 bridge，返回上游 JSON（含 data[].url / b64_json）。
@@ -62,6 +64,7 @@ pub trait BridgeClient: Send + Sync {
         &self,
         payload: &Value,
         sso_token: Option<&str>,
+        account_id: Option<i64>,
     ) -> Result<Value, ProviderError>;
 }
 
@@ -226,6 +229,7 @@ impl BridgeClient for HttpBridgeClient {
         &self,
         payload: &Value,
         _sso_token: Option<&str>,
+        _account_id: Option<i64>,
     ) -> Result<String, ProviderError> {
         let body = serde_json::to_vec(payload)
             .map_err(|e| ProviderError::Bridge(format!("serialize chat payload: {e}")))?;
@@ -248,6 +252,7 @@ impl BridgeClient for HttpBridgeClient {
         &self,
         payload: &Value,
         _sso_token: Option<&str>,
+        _account_id: Option<i64>,
     ) -> Result<Value, ProviderError> {
         let body = serde_json::to_vec(payload)
             .map_err(|e| ProviderError::Bridge(format!("serialize imagine payload: {e}")))?;
@@ -333,6 +338,7 @@ impl BridgeClient for MockBridgeClient {
         &self,
         payload: &Value,
         _sso_token: Option<&str>,
+        _account_id: Option<i64>,
     ) -> Result<String, ProviderError> {
         *self.last_chat_payload.lock().await = Some(payload.clone());
         Ok(self.chat_text.clone())
@@ -342,6 +348,7 @@ impl BridgeClient for MockBridgeClient {
         &self,
         payload: &Value,
         _sso_token: Option<&str>,
+        _account_id: Option<i64>,
     ) -> Result<Value, ProviderError> {
         *self.last_imagine_payload.lock().await = Some(payload.clone());
         Ok(self.imagine_response.clone())
@@ -379,7 +386,7 @@ mod tests {
         let mut m = MockBridgeClient::new();
         m.chat_text = "ok".to_string();
         let p = serde_json::json!({"model": "grok-chat-fast"});
-        let out = m.fetch_chat(&p, None).await.unwrap();
+        let out = m.fetch_chat(&p, None, None).await.unwrap();
         assert_eq!(out, "ok");
         let got = m.last_chat_payload.lock().await;
         assert_eq!(got.as_ref().unwrap()["model"], "grok-chat-fast");

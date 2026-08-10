@@ -8,12 +8,15 @@
 
 use std::collections::HashMap;
 
+use base64::Engine;
 /// 浏览器 UA（CF 拦截判定：无 UA / 通用 UA 会被重置连接）。
 pub const BROWSER_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use grok_domain::ProviderError;
+use grok_signer::statsig_obfiowerehiring;
+use regex::Regex;
 use reqwest::Client;
 use serde_json::json;
 
@@ -94,7 +97,7 @@ impl StatsigSigner {
 }
 
 /// 抓取 grok.com 首页 HTML 作为签名 metaContent（带 cookie；失败即报错，不缓存）。
-async fn fetch_meta_content(
+pub(crate) async fn fetch_meta_content(
     client: &Client,
     base_url: &str,
     sso_cookie: &str,
@@ -170,6 +173,100 @@ async fn request_signature(
         .filter(|v| !v.is_empty() && v.len() <= 512)
         .ok_or_else(|| ProviderError::Bridge("sign response invalid".into()))?;
     Ok(statsig_id.to_string())
+}
+
+/// 从 grok 首页 HTML 提取 `<meta name="gr...">` 的 content（对齐 Python `extract_meta_from_html`）。
+pub fn extract_meta_from_html(html: &str) -> Option<String> {
+    static RE1: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    static RE2: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let re1 = RE1.get_or_init(|| {
+        Regex::new(r#"name=["'](gr[^"']*)["'][^>]+content=["']([^"']+)["']"#).expect("re1")
+    });
+    let re2 = RE2.get_or_init(|| {
+        Regex::new(r#"content=["']([^"']+)["'][^>]+name=["'](gr[^"']*)["']"#).expect("re2")
+    });
+    if let Some(caps) = re1.captures(html) {
+        return caps.get(2).map(|m| m.as_str().to_string());
+    }
+    re2.captures(html)
+        .and_then(|caps| caps.get(1).map(|m| m.as_str().to_string()))
+}
+
+/// meta HTML 内容 → 48 字节 meta48（对齐 Python session extract）。
+pub fn meta_content_to_meta48(meta: &str) -> Result<[u8; 48], ProviderError> {
+    let raw = if meta.len() > 60 {
+        base64::engine::general_purpose::STANDARD
+            .decode(format!(
+                "{}{}",
+                meta,
+                "=".repeat((4 - meta.len() % 4) % 4)
+            ))
+            .map_err(|e| ProviderError::Bridge(format!("meta b64 decode: {e}")))?
+    } else {
+        meta.as_bytes().to_vec()
+    };
+    let mut meta48 = [0u8; 48];
+    let n = raw.len().min(48);
+    meta48[..n].copy_from_slice(&raw[..n]);
+    Ok(meta48)
+}
+
+/// Rust 原生 statsig 签名器：抓 meta → meta48 → `generate_statsig`（无 QuickJS / 外网 signer）。
+pub struct NativeSigner {
+    cache: MetaCache,
+    fingerprint: String,
+}
+
+impl NativeSigner {
+    pub fn new() -> Self {
+        let fingerprint = std::env::var("GROK_STATSIG_FINGERPRINT")
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if fingerprint.is_empty() {
+            tracing::warn!(
+                "GROK_STATSIG_FINGERPRINT 未设置：native statsig 签名可能无效，上游 POST 易 403"
+            );
+        }
+        Self {
+            cache: MetaCache::default(),
+            fingerprint,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::signer::SignerTrait for NativeSigner {
+    async fn sign(
+        &self,
+        client: &Client,
+        base_url: &str,
+        _signer_url: &str,
+        sso_cookie: &str,
+        method: &str,
+        path: &str,
+    ) -> Result<String, ProviderError> {
+        let cache_key = format!("{}\u{0}native\u{0}meta", base_url.trim_end_matches('/'));
+        let meta_html = match self.cache.get(&cache_key) {
+            Some(v) => v,
+            None => {
+                let fresh = fetch_meta_content(client, base_url, sso_cookie).await?;
+                self.cache.store(&cache_key, fresh.clone());
+                fresh
+            }
+        };
+        let meta_tag = extract_meta_from_html(&meta_html).unwrap_or(meta_html);
+        let meta48 = meta_content_to_meta48(&meta_tag)?;
+        let trailer = [0x03];
+        statsig_obfiowerehiring::generate_statsig(
+            method,
+            path,
+            &meta48,
+            &self.fingerprint,
+            &trailer,
+        )
+        .map_err(|e| ProviderError::Bridge(format!("native statsig: {e}")))
+    }
 }
 
 /// signer URL 安全校验（对齐 Go `signerurl.Validate` 核心规则）。
@@ -251,6 +348,39 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn extract_meta_from_html_finds_gr_tag() {
+        let html = r#"<meta name="gr-site-verification" content="YWJjZGVmZ2hpams=">"#;
+        let meta = extract_meta_from_html(html).expect("meta");
+        assert_eq!(meta, "YWJjZGVmZ2hpams=");
+    }
+
+    #[test]
+    fn meta_content_to_meta48_pads_short() {
+        let meta48 = meta_content_to_meta48("short").expect("meta48");
+        assert_eq!(&meta48[..5], b"short");
+        assert_eq!(meta48[5], 0);
+    }
+
+    #[tokio::test]
+    async fn native_signer_uses_fake_home() {
+        let (addr, _guard) = spawn_fake_upstream().await;
+        let client = Client::new();
+        let signer = NativeSigner::new();
+        let id = crate::signer::SignerTrait::sign(
+            &signer,
+            &client,
+            &format!("http://{addr}"),
+            "",
+            "",
+            "POST",
+            "/rest/app-chat/conversations/new",
+        )
+        .await
+        .expect("native sign");
+        assert!(!id.is_empty(), "got empty statsig id");
+    }
+
+    #[test]
     fn validate_accepts_public_https_443() {
         assert!(validate_signer_url("https://grok.wodf.de/sign").is_ok());
         assert!(validate_signer_url("https://signer.example.com:443/sign").is_ok());
@@ -275,6 +405,7 @@ mod tests {
 
     #[tokio::test]
     async fn sign_parses_statsig_id_from_fake_signer() {
+        HOME_HITS.store(0, std::sync::atomic::Ordering::SeqCst);
         // 用本地 axum 服务模拟 signer + 首页。
         let (addr, _guard) = spawn_fake_upstream().await;
         let client = Client::new();
@@ -339,7 +470,7 @@ mod tests {
                 "/",
                 get(|| async {
                     HOME_HITS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    "<html><head><meta charset=utf-8></head><body>grok fake home</body></html>"
+                    "<html><head><meta name=\"gr-site-verification\" content=\"shortmeta\"></head><body>grok fake home</body></html>"
                 }),
             )
             .route(

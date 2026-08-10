@@ -41,13 +41,14 @@ use grok_egress::{InMemoryLeaseManager, LeaseManager, RedisLeaseManager};
 use grok_gateway::{default_protocol_backends, AppState};
 use grok_pool::{SharedPool, SimplifiedPool};
 use grok_provider_web::{
-    BridgeClient, ChatEngine, DirectConfig, HttpBridgeClient, HttpDirectClient,
+    BridgeClient, ChatEngine, DirectConfig, HttpBridgeClient, HttpDirectClient, SessionKeyStore,
 };
 use grok_storage::repo::account::PgAccountRepository;
 use grok_storage::{parse_credential_key, PgSsoTokenProvider};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     dotenvy::dotenv().ok();
     tracing_subscriber::registry()
         .with(
@@ -136,6 +137,22 @@ async fn main() -> anyhow::Result<()> {
         grok_provider_web::proxy::proxy_pool_from_file(cfg.proxy_file.as_deref())
     };
     let bridge: Arc<dyn BridgeClient> = if cfg.direct_enabled {
+        let session_store = cfg
+            .pure_http_keys_dir
+            .as_deref()
+            .map(std::path::PathBuf::from)
+            .and_then(|dir| {
+                if dir.is_dir() {
+                    tracing::info!(
+                        "GROK_PURE_HTTP_KEYS_DIR={}：按账号加载 session keys",
+                        dir.display()
+                    );
+                    Some(Arc::new(SessionKeyStore::new(dir)))
+                } else {
+                    SessionKeyStore::from_env().map(Arc::new)
+                }
+            })
+            .or_else(|| SessionKeyStore::from_env().map(Arc::new));
         Arc::new(HttpDirectClient::new(DirectConfig {
             base_url: "https://grok.com".to_string(),
             signer_url: cfg.signer_url.clone(),
@@ -143,6 +160,8 @@ async fn main() -> anyhow::Result<()> {
             sso: None,
             proxy: proxy_pool,
             local_proxy: cfg.local_proxy.clone(),
+            session: None,
+            session_store,
         }))
     } else {
         Arc::new(HttpBridgeClient::new())
@@ -351,6 +370,7 @@ mod tests {
             proxy_file: None,
             proxy_list: None,
             local_proxy: None,
+            pure_http_keys_dir: None,
         }
     }
 

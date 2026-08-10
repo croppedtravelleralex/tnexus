@@ -154,11 +154,17 @@ impl ImageEngine {
         }
 
         // 5) 组上游 payload + bridge 生图。
+        let aspect_ratio = if req.aspect_ratio.trim().is_empty() {
+            "1:1"
+        } else {
+            req.aspect_ratio.as_str()
+        };
         let payload = serde_json::json!({
             "model": model,
             "prompt": final_prompt,
             "n": req.n.max(1),
             "response_format": if req.response_format == "b64_json" { "b64_json" } else { "url" },
+            "aspect_ratio": aspect_ratio,
         });
         let sso_token = match &self.sso {
             Some(provider) => Some(provider.sso_token(account_id).await?),
@@ -166,7 +172,7 @@ impl ImageEngine {
         };
         let upstream = match self
             .bridge
-            .fetch_imagine(&payload, sso_token.as_deref())
+            .fetch_imagine(&payload, sso_token.as_deref(), Some(account_id))
             .await
         {
             Ok(v) => v,
@@ -323,6 +329,7 @@ mod tests {
             lite: false,
             enhance: false,
             request_id: "req-img-1".to_string(),
+            aspect_ratio: "1:1".to_string(),
         }
     }
 

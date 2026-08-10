@@ -9,6 +9,7 @@
 //! 另见 [`statsig_grain`]：1645e3 模块算法骨架的参数化参考实现（实验性）。
 
 pub mod statsig_grain;
+pub mod statsig_obfiowerehiring;
 
 use rquickjs::{Context, Runtime};
 use std::sync::mpsc;
@@ -30,9 +31,25 @@ pub enum SignError {
 }
 
 /// 独立签名 bundle 资产路径：`crates/grok-signer/assets/grok_sign_standalone.js`。
-/// 运行时装（std::fs），文件缺失不导致编译失败。
+/// 运行时装：编译期路径 → 容器默认路径 → `GROK_SIGNER_ASSET` 覆盖。
 pub fn asset_path() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    if let Ok(p) = std::env::var("GROK_SIGNER_ASSET") {
+        let p = p.trim();
+        if !p.is_empty() {
+            return std::path::PathBuf::from(p);
+        }
+    }
+    for candidate in [
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("assets")
+            .join("grok_sign_standalone.js"),
+        std::path::PathBuf::from("/opt/grok-signer/grok_sign_standalone.js"),
+    ] {
+        if candidate.is_file() {
+            return candidate;
+        }
+    }
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("assets")
         .join("grok_sign_standalone.js")
 }

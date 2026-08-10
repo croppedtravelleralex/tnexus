@@ -16,7 +16,9 @@ pub mod direct;
 pub mod engine;
 pub mod expand;
 pub mod image;
+pub mod imagine;
 pub mod proxy;
+pub mod session_store;
 pub mod signer;
 pub mod statsig;
 
@@ -25,12 +27,13 @@ pub use bridge::{default_bridge_url, BridgeClient, HttpBridgeClient, MockBridgeC
 pub use chat::{
     build_web_chat_payload, public_models, ALIAS_OCR, DEFAULT_OCR_SYSTEM_PROMPT, UPSTREAM_OCR_MODEL,
 };
-pub use direct::{DirectConfig, HttpDirectClient};
+pub use direct::{DirectConfig, HttpDirectClient, SseChatParse};
 pub use engine::ChatEngine;
 pub use expand::expand_prompt;
 pub use image::ImageEngine;
-pub use signer::{build_signer, LocalSigner, SignerMode, SignerTrait};
-pub use statsig::{validate_signer_url, StatsigSigner};
+pub use session_store::SessionKeyStore;
+pub use signer::{build_signer, LocalSigner, SessionKeys, SessionSigner, SignerMode, SignerTrait};
+pub use statsig::{extract_meta_from_html, validate_signer_url, NativeSigner, StatsigSigner};
 // 契约类型/端口在 grok-domain（跨 crate 共享），此处 re-export 保持旧调用路径。
 pub use grok_domain::{
     ChatBackend, ChatRequest, ImageBackend, ImagineRequest, ImagineResult, ProviderError,

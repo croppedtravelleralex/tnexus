@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # TNexus Grok gateway (grok2api-rs) — pull on Panda :8000, do not build on Panda.
 # Modeled on Dockerfile.gateway. Crate lands in G0-P6 (docs/39e §G0).
-FROM rust:1.94-bookworm AS builder
+FROM rust:1-bookworm AS builder
 WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends libclang-dev clang cmake pkg-config \
@@ -13,6 +13,9 @@ RUN cargo build --release -p grok2api-rs
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/grok2api-rs /usr/local/bin/grok2api-rs
+COPY crates/grok-signer/assets/grok_sign_standalone.js /opt/grok-signer/grok_sign_standalone.js
 ENV GROK2API_ADDR=0.0.0.0:8000
+ENV GROK2API_SIGNER_MODE=local
+ENV GROK_SIGNER_ASSET=/opt/grok-signer/grok_sign_standalone.js
 EXPOSE 8000
 ENTRYPOINT ["/usr/local/bin/grok2api-rs"]

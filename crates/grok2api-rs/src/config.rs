@@ -48,7 +48,7 @@ pub struct Config {
     pub direct_enabled: bool,
     /// statsig signer 服务地址（`GROK2API_SIGNER_URL`，缺省 https://grok.wodf.de/sign）。
     pub signer_url: String,
-    /// 签名器模式（`GROK2API_SIGNER_MODE=remote|local|fake`，缺省 remote）。
+    /// 签名器模式（`GROK2API_SIGNER_MODE=native|remote|local|fake`，缺省 native）。
     pub signer_mode: grok_provider_web::SignerMode,
     /// 凭据解密主密钥（`GROK_CREDENTIAL_KEY`，base64 32B AES-256-GCM）。
     /// 直连模式下缺失 → chat/OCR 503 不外呼（安全红线）。
@@ -59,6 +59,8 @@ pub struct Config {
     pub proxy_list: Option<String>,
     /// 本地出口代理（`GROK_LOCAL_PROXY`，如 http://127.0.0.1:7897；meta/签名/直连走它）。
     pub local_proxy: Option<String>,
+    /// Playwright session keys 目录（`GROK_PURE_HTTP_KEYS_DIR`，`account_{id}.json`）。
+    pub pure_http_keys_dir: Option<String>,
 }
 
 impl Config {
@@ -117,8 +119,16 @@ impl Config {
             .filter(|s| !s.trim().is_empty());
         let proxy_list = env::var("GROK2API_PROXY_LIST")
             .ok()
-            .filter(|s| !s.trim().is_empty());
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| {
+                env::var("GROK_UPSTREAM_PROXY")
+                    .ok()
+                    .filter(|s| !s.trim().is_empty())
+            });
         let local_proxy = env::var("GROK_LOCAL_PROXY").ok();
+        let pure_http_keys_dir = env::var("GROK_PURE_HTTP_KEYS_DIR")
+            .ok()
+            .filter(|s| !s.trim().is_empty());
 
         let config = Self {
             server_addr,
@@ -140,6 +150,7 @@ impl Config {
             proxy_file,
             proxy_list,
             local_proxy,
+            pure_http_keys_dir,
         };
         config.validate()?;
         Ok(config)
@@ -201,6 +212,7 @@ mod tests {
             proxy_file: None,
             proxy_list: None,
             local_proxy: None,
+            pure_http_keys_dir: None,
         }
     }
 

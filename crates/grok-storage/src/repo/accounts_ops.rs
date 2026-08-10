@@ -71,7 +71,7 @@ pub trait AccountOps {
 }
 
 const ROUTING_COLS: &str = "id, identity_key, provider, enabled, auth_status, priority, \
-     observed_model, max_concurrent, minimum_remaining, failure_count, cooldown_until, \
+     observed_model, max_concurrent, minimum_remaining::bigint AS minimum_remaining, failure_count, cooldown_until, \
      last_error, last_used_at, observed_model_at, name, email, user_id, team_id, source_key, \
      created_at, updated_at, web_tier";
 

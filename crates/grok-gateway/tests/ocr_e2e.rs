@@ -216,7 +216,7 @@ async fn golden_payload_locked() {
     let golden: Value = serde_json::from_str(GOLDEN_PAYLOAD).unwrap();
     assert_eq!(payload, golden, "upstream payload diverged from golden");
     // 显式断言关键字段（避免整 golden 掩盖差异）。
-    assert_eq!(payload["model"], UPSTREAM_OCR_MODEL);
+    assert_eq!(payload["modeId"], "fast");
     assert_eq!(payload["enableImageGeneration"], false);
     assert_eq!(payload["enableImageStreaming"], false);
     assert_eq!(payload["fileAttachments"].as_array().unwrap().len(), 1);

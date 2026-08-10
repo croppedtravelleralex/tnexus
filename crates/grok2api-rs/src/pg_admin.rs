@@ -86,7 +86,7 @@ fn admin_err(e: impl std::fmt::Display) -> AdminError {
 
 const ACCOUNT_COLS: &str = "id, identity_key, provider, enabled, auth_status, priority, \
      observed_model, name, email, user_id, team_id, source_key, observed_model_at, \
-     max_concurrent, minimum_remaining, failure_count, cooldown_until, last_error, \
+     max_concurrent, minimum_remaining::bigint AS minimum_remaining, failure_count, cooldown_until, last_error, \
      last_used_at, created_at, updated_at";
 
 fn map_account_row(row: &sqlx::postgres::PgRow) -> AdminResult<Account> {

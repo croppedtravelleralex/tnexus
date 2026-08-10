@@ -34,6 +34,7 @@ members = [
     "crates/grok-etl",
     "crates/grok-shadow",
     "crates/grok-signer",
+    "crates/grok-pure-http",
 ]
 
 [workspace.package]

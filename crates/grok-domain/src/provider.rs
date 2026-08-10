@@ -51,6 +51,8 @@ pub struct ImagineRequest {
     pub enhance: bool,
     /// 审计请求 ID。
     pub request_id: String,
+    /// 画幅比例（如 `1:1`、`16:9`）；空则默认 `1:1`。
+    pub aspect_ratio: String,
 }
 
 impl Default for ImagineRequest {
@@ -62,6 +64,7 @@ impl Default for ImagineRequest {
             lite: false,
             enhance: false,
             request_id: String::new(),
+            aspect_ratio: "1:1".to_string(),
         }
     }
 }
