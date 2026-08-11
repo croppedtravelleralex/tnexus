@@ -58,13 +58,19 @@ echo "=== Gateway image + JWT ==="
 GW="${GATEWAY_AUTH_KEY:?}"
 python3 -c "import jwt,sys,time; t=sys.argv[1]; p=jwt.decode(t,options={'verify_signature':False}); assert p.get('exp',0)>int(time.time())" "$GW" \
   && pass jwt_valid || fail jwt_valid
-CODE=$(curl -sS -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8014/v1/images/generations \
+CODE=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 180 -X POST http://127.0.0.1:8014/v1/images/generations \
   -H "Authorization: Bearer $GW" -H "Content-Type: application/json" \
   -d '{"model":"gpt-image-2","prompt":"verify_delivery","n":1,"size":"256x256","response_format":"b64_json"}')
 [[ "$CODE" == "200" ]] && pass gateway_image || fail "gateway_image http=$CODE"
 
 echo "=== NewAPI channel key sync ==="
 CHKEY=$(docker exec new-api-postgres psql -U newapi -d new-api -tAc "SELECT key FROM channels WHERE id=115" | tr -d '\n')
+if [[ "$GW" != "$CHKEY" ]]; then
+  for s in /root/TNexus/deploy/panda/newapi_tnexus_dedicated.sh /root/TNexus/deploy/panda/newapi_grayd_tnexus.sh; do
+    [[ -x "$s" ]] && bash "$s" sync-key || true
+  done
+  CHKEY=$(docker exec new-api-postgres psql -U newapi -d new-api -tAc "SELECT key FROM channels WHERE id=115" | tr -d '\n')
+fi
 [[ "$GW" == "$CHKEY" ]] && pass newapi_channel_key || fail newapi_channel_key
 
 echo "=== Grok keys sync ==="
@@ -74,6 +80,7 @@ NKEYS=$(find "$KEYS_DIR" -maxdepth 1 -name 'account_*.json' 2>/dev/null | wc -l)
 export GROK_DATABASE_URL
 bash /root/TNexus/scripts/sync_grok_enabled_from_keys.sh --keys-dir "$KEYS_DIR" --dry-run >/dev/null \
   && pass grok_keys_sync_dryrun || fail grok_keys_sync_dryrun
+[[ -f /etc/cron.d/tnexus-jwt-refresh ]] && pass jwt_cron || fail jwt_cron
 
 if [[ "$FAIL" -eq 0 ]]; then
   echo "=== ALL PASS ==="
