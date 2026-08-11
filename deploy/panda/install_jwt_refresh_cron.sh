@@ -12,7 +12,7 @@ if [[ "$(id -u)" -ne 0 ]]; then
   exit 1
 fi
 
-if [[ ! -x "${SCRIPT_DIR}/refresh_upstream_jwt.sh" ]]; then
+if [[ ! -f "${SCRIPT_DIR}/refresh_upstream_jwt.sh" ]]; then
   echo "missing ${SCRIPT_DIR}/refresh_upstream_jwt.sh" >&2
   exit 1
 fi

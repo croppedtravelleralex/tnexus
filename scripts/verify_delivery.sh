@@ -67,11 +67,13 @@ echo "=== NewAPI channel key sync ==="
 CHKEY=$(docker exec new-api-postgres psql -U newapi -d new-api -tAc "SELECT key FROM channels WHERE id=115" | tr -d '\n')
 if [[ "$GW" != "$CHKEY" ]]; then
   for s in /root/TNexus/deploy/panda/newapi_tnexus_dedicated.sh /root/TNexus/deploy/panda/newapi_grayd_tnexus.sh; do
-    [[ -x "$s" ]] && bash "$s" sync-key || true
+    [[ -f "$s" ]] && bash "$s" sync-key || true
   done
-  CHKEY=$(docker exec new-api-postgres psql -U newapi -d new-api -tAc "SELECT key FROM channels WHERE id=115" | tr -d '\n')
+  CHKEY=$(docker exec new-api-postgres psql -U newapi -d new-api -tAc "SELECT key FROM channels WHERE id=115" | tr -d '\n\r')
 fi
-[[ "$GW" == "$CHKEY" ]] && pass newapi_channel_key || fail newapi_channel_key
+GW_TRIM=$(printf '%s' "$GW" | tr -d '\n\r')
+CH_TRIM=$(printf '%s' "$CHKEY" | tr -d '\n\r')
+[[ "$GW_TRIM" == "$CH_TRIM" ]] && pass newapi_channel_key || fail newapi_channel_key
 
 echo "=== Grok keys sync ==="
 KEYS_DIR="${GROK_PURE_HTTP_KEYS_DIR:-/opt/tnexus/pure_http_keys}"
