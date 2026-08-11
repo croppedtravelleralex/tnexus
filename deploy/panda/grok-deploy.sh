@@ -72,6 +72,14 @@ deploy() {
   fi
 
   up_and_probe
+
+  # 部署后按 pure_http_keys 同步 grok_web enabled（有 key 启用，无 key 禁用）。
+  if [[ -x "$TNEXUS_ROOT/scripts/sync_grok_enabled_from_keys.sh" ]] \
+    && [[ -n "${GROK_DATABASE_URL:-}" ]]; then
+    bash "$TNEXUS_ROOT/scripts/sync_grok_enabled_from_keys.sh" \
+      --keys-dir "${GROK_PURE_HTTP_KEYS_DIR:-/opt/tnexus/pure_http_keys}" \
+      --apply || echo "WARN: grok keys sync failed (non-fatal)" >&2
+  fi
 }
 
 rollback() {

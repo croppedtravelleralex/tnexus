@@ -1,0 +1,11 @@
+# 本地预编译产物打包（context = dist/docker/，见 scripts/build_push_ghcr.sh）
+FROM rust:1-bookworm
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY tnexus-api /usr/local/bin/tnexus-api
+COPY tnexus-worker /usr/local/bin/tnexus-worker
+COPY web-out /app/web/out
+COPY migrations /app/migrations
+ENV GATEWAY_STATIC_DIR=/app/web/out
+EXPOSE 9000
+CMD ["tnexus-api"]

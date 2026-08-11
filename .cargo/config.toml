@@ -1,0 +1,10 @@
+# 默认 crates-io；离线构建依赖 ~/.cargo 已有 index + cache
+[net]
+retry = 5
+
+# 国内镜像（bookworm docker 编译加速）
+[source.crates-io]
+replace-with = "ustc"
+
+[source.ustc]
+registry = "sparse+https://mirrors.ustc.edu.cn/crates.io-index/"

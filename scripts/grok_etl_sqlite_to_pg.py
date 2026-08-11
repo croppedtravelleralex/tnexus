@@ -82,6 +82,9 @@ _KEEP_RAW = {"identity_key", "encrypted_primary", "encrypted_refresh",
 # SQLite system tables / GORM metadata never copied.
 _SKIP_SQLITE = {"sqlite_sequence", "sqlite_master"}
 
+# grok2api-rs 启动时用 GROK_ADMIN_* 自举管理员，ETL 跳过避免列映射问题。
+_SKIP_ETL_TARGETS = {"grok_admins", "grok_admin_sessions"}
+
 
 @dataclass
 class TablePlan:
@@ -175,7 +178,7 @@ def truncate_present(pg, schema: str, targets: list[str], existing: dict[str, di
     if not present:
         return
     cur = pg.cursor()
-    cur.execute(f"TRUNCATE {', '.join(present)} CASCADE RESTART IDENTITY")
+    cur.execute(f"TRUNCATE {', '.join(present)} RESTART IDENTITY CASCADE")
     pg.commit()
     cur.close()
     print(f"[truncate] {len(present)} grok target table(s) reset")
@@ -201,7 +204,8 @@ def build_plans(con, pg, schema) -> list[TablePlan]:
 
 
 def _iter_source(con, table, cols, limit):
-    cur = con.execute(f'SELECT "{", ".join(cols)}" FROM "{table}"')
+    col_sql = ", ".join(f'"{c}"' for c in cols)
+    cur = con.execute(f'SELECT {col_sql} FROM "{table}"')
     n = 0
     try:
         for row in cur:
@@ -257,9 +261,14 @@ def run_copy(pg, schema: str, plans: list[TablePlan],
         rows = 0
         with pg.cursor() as cur:
             gen = (make_row(r) for r in _iter_source(con, plan.source, cols, limit))
-            for batch in _batched(gen, 200):
-                extras.execute_values(cur, insert_sql, batch, page_size=200)
-                rows += len(batch)
+            try:
+                for batch in _batched(gen, 200):
+                    extras.execute_values(cur, insert_sql, batch, page_size=200)
+                    rows += len(batch)
+            except Exception as exc:  # noqa: BLE001
+                pg.rollback()
+                print(f"[warn]   {plan.source} -> {plan.target}: copy failed ({exc})", file=sys.stderr)
+                continue
         pg.commit()
         copied[plan.target] = rows
         print(f"[copy]    {plan.source} -> {plan.target}: {rows} rows ({len(cols)} cols)")
@@ -381,15 +390,16 @@ def main(argv=None) -> int:
             print(f"[warn] PG connect failed: {exc}", file=sys.stderr)
 
     plans = build_plans(con, pg, args.schema)
-    copyable = [p for p in plans if p.src_exists and p.dst_exists]
+    active = [p for p in plans if p.target not in _SKIP_ETL_TARGETS]
+    copyable = [p for p in active if p.src_exists and p.dst_exists]
     print(f"\n[plan] {len(copyable)}/{len(TABLE_MAP)} table families copyable "
-          f"({sum(len(p.columns) for p in plans)} intersecting columns)")
+          f"({sum(len(p.columns) for p in active)} intersecting columns)")
 
     copied: dict[str, int] = {}
     if pg_ok:
         existing = pg_column_types(pg, args.schema)
-        truncate_present(pg, args.schema, [p.target for p in plans], existing)
-        copied = run_copy(pg, args.schema, plans, existing, args.limit, con)
+        truncate_present(pg, args.schema, [p.target for p in active], existing)
+        copied = run_copy(pg, args.schema, active, existing, args.limit, con)
         pg.commit()
 
     # --- validation -----------------------------------------------------------

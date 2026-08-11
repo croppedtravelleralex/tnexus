@@ -9,7 +9,7 @@ ACCOUNTS_DB="${ACCOUNTS_DB:-/root/gptimage/data/accounts.db}"
 ENV_FILE="${ENV_FILE:-/opt/tnexus/.env}"
 
 echo "==> refresh tokens in gptimage (sqlite)"
-docker exec "$GPTIMAGE_CONTAINER" python3 - <<'PY'
+docker exec "$GPTIMAGE_CONTAINER" /app/.venv/bin/python - <<'PY'
 import sys
 sys.path.insert(0, "/app")
 from services.account_service import account_service
