@@ -28,6 +28,9 @@ use grok_domain::{Account, QuotaWindow};
 use serde::Deserialize;
 use serde_json::json;
 
+use crate::grok_nurture_ops::GrokNurtureService;
+use crate::web_quota::WebQuotaService;
+
 /// 内存认证存储（管理员 + 会话）。
 #[derive(Default)]
 pub struct InMemoryAuthStore {
@@ -228,10 +231,19 @@ impl AdminStore for InMemoryAdminStore {
     }
 }
 
+/// 管理台扩展路由（养号 / 批量额度刷新），不走 grok-admin AdminRouter。
+#[derive(Clone, Default)]
+pub struct AdminExtras {
+    pub nurture: Option<Arc<GrokNurtureService>>,
+    pub quota: Option<Arc<WebQuotaService>>,
+}
+
 /// 管理台 HTTP 挂载包：受 guard 保护的 [`AdminRouter`] + 登录/刷新所需的 auth service。
 pub struct AdminHttpBundle {
     router: AdminRouter,
     auth: Arc<AdminAuthService>,
+    nurture: Option<Arc<GrokNurtureService>>,
+    quota: Option<Arc<WebQuotaService>>,
 }
 
 /// 构造 admin bundle：内存认证存储 + 幂等 bootstrap 管理员。
@@ -242,12 +254,13 @@ pub async fn build_admin_bundle(
     username: &str,
     password: Option<&str>,
     secret: &str,
+    extras: AdminExtras,
 ) -> AdminHttpBundle {
     let auth_store = Arc::new(InMemoryAuthStore::default());
     let repo = Arc::new(InMemoryAdminRepo(auth_store.clone()));
     let sessions = Arc::new(InMemorySessionRepo(auth_store));
     let store: Arc<dyn AdminStore> = Arc::new(InMemoryAdminStore::default());
-    build_bundle(repo, sessions, store, username, password, secret).await
+    build_bundle(repo, sessions, store, username, password, secret, extras).await
 }
 
 /// 共享组装：鉴权 service（guard 与 login/refresh 各一份但共享同一底层存储）+
@@ -259,6 +272,7 @@ pub(crate) async fn build_bundle(
     username: &str,
     password: Option<&str>,
     secret: &str,
+    extras: AdminExtras,
 ) -> AdminHttpBundle {
     let ttl = (chrono::Duration::hours(1), chrono::Duration::days(7));
     // guard 与 login/refresh 各持一个 AdminAuthService，但共享同一底层存储
@@ -292,6 +306,8 @@ pub(crate) async fn build_bundle(
         router: AdminRouter::new(router_auth, grok_admin::AccountAdminService::new(store))
             .with_domains(crate::admin_domains::build_admin_domains()),
         auth: login_auth,
+        nurture: extras.nurture,
+        quota: extras.quota,
     }
 }
 
@@ -299,6 +315,8 @@ pub(crate) async fn build_bundle(
 struct AdminState {
     router: Arc<AdminRouter>,
     auth: Arc<AdminAuthService>,
+    nurture: Option<Arc<GrokNurtureService>>,
+    quota: Option<Arc<WebQuotaService>>,
 }
 
 /// 构建 `/admin/*` 路由（axum）：login/refresh 绕过 guard + 泛型受保护 handler。
@@ -306,6 +324,8 @@ pub fn admin_app(bundle: AdminHttpBundle) -> Router {
     let state = AdminState {
         router: Arc::new(bundle.router),
         auth: bundle.auth,
+        nurture: bundle.nurture,
+        quota: bundle.quota,
     };
     Router::new()
         .route("/admin/auth/login", axum::routing::post(admin_login))
@@ -401,6 +421,38 @@ async fn admin_handle(
     } else {
         Some(String::from_utf8_lossy(&body).to_string())
     };
+
+    if let Some(nurture) = &state.nurture {
+        if let Some((status, body)) = nurture
+            .handle(method.as_str(), &full_path, body_text.as_deref())
+            .await
+        {
+            return (
+                StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                Json(body),
+            );
+        }
+    }
+
+    if method == Method::POST && full_path == "/admin/accounts/web/refresh-quotas" {
+        if let Some(quota) = &state.quota {
+            let limit = body_text
+                .as_deref()
+                .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+                .and_then(|v| v.get("limit").and_then(|l| l.as_i64()))
+                .unwrap_or(64);
+            let (ok, fail) = quota.refresh_enabled_batch(limit).await;
+            return (
+                StatusCode::OK,
+                Json(json!({ "ok": ok, "fail": fail })),
+            );
+        }
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "quotaNotWired", "message": "额度刷新未接线（需 GROK2API_DIRECT）" })),
+        );
+    }
+
     let resp = state
         .router
         .handle(
@@ -426,6 +478,7 @@ mod tests {
             "admin",
             Some("password123"),
             "01234567890123456789012345678901",
+            AdminExtras::default(),
         )
         .await;
         let auth = bundle.auth.clone();

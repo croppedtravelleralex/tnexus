@@ -33,6 +33,7 @@ grok-provider-web = { path = "../grok-provider-web" }
 grok-image-pipeline = { path = "../grok-image-pipeline" }
 grok-admin = { path = "../grok-admin" }
 rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
+reqwest = { workspace = true }
 
 [dev-dependencies]
 http-body-util = { workspace = true }

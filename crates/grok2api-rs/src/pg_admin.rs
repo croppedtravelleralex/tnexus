@@ -28,8 +28,6 @@ use grok_domain::{
 use sqlx::postgres::PgPool;
 use sqlx::Row;
 
-use crate::admin::{build_bundle, AdminHttpBundle};
-
 // ── 字符串 ↔ 枚举 最小映射（grok-storage 的为 pub(crate)，无法跨 crate 复用）──
 
 fn auth_status_to_db_str(status: AuthStatus) -> &'static str {
@@ -121,11 +119,20 @@ fn map_account_row(row: &sqlx::postgres::PgRow) -> AdminResult<Account> {
 /// PG 账号数据面（`AdminStore`）。
 pub struct PgAdminStore {
     pool: PgPool,
+    quota: Option<Arc<crate::web_quota::WebQuotaService>>,
 }
 
 impl PgAdminStore {
     pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            quota: None,
+        }
+    }
+
+    pub fn with_quota_service(mut self, quota: Arc<crate::web_quota::WebQuotaService>) -> Self {
+        self.quota = Some(quota);
+        self
     }
 
     async fn account_exists(&self, id: i64) -> AdminResult<bool> {
@@ -440,13 +447,27 @@ impl AdminStore for PgAdminStore {
     }
 
     async fn refresh_quota(&self, account_id: i64) -> AdminResult<bool> {
-        let exists = self.account_exists(account_id).await?;
-        if exists {
-            tracing::warn!(
-                "admin refresh-quota 未接上游 sidecar（TODO），仅确认账号存在: {account_id}"
-            );
+        if !self.account_exists(account_id).await? {
+            return Ok(false);
         }
-        Ok(exists)
+        let Some(quota) = &self.quota else {
+            tracing::warn!(
+                "admin refresh-quota 未接线（缺直连/sso）：仅确认账号存在: {account_id}"
+            );
+            return Ok(true);
+        };
+        match quota.refresh_account(account_id).await {
+            Ok(w) => {
+                tracing::info!(
+                    account_id,
+                    remaining = w.remaining,
+                    total = w.total,
+                    "admin refresh-quota ok"
+                );
+                Ok(true)
+            }
+            Err(e) => Err(AdminError::RuntimeUnavailable(e.to_string())),
+        }
     }
 
     async fn refresh_token(&self, account_id: i64) -> AdminResult<bool> {
@@ -787,11 +808,16 @@ pub async fn build_admin_bundle_pg(
     username: &str,
     password: Option<&str>,
     secret: &str,
-) -> AdminHttpBundle {
+    extras: crate::admin::AdminExtras,
+) -> crate::admin::AdminHttpBundle {
     let repo = Arc::new(PgAdminRepo::new(pool.clone()));
     let sessions = Arc::new(PgSessionRepo::new(pool.clone()));
-    let store: Arc<dyn AdminStore> = Arc::new(PgAdminStore::new(pool));
-    build_bundle(repo, sessions, store, username, password, secret).await
+    let mut store = PgAdminStore::new(pool);
+    if let Some(q) = extras.quota.clone() {
+        store = store.with_quota_service(q);
+    }
+    let store: Arc<dyn AdminStore> = Arc::new(store);
+    crate::admin::build_bundle(repo, sessions, store, username, password, secret, extras).await
 }
 #[cfg(test)]
 mod tests {
@@ -805,7 +831,7 @@ mod tests {
             .connect_lazy("postgres://nobody:secret@127.0.0.1:1/grok?connect_timeout=1")
             .expect("lazy pool never connects");
         // password=None → 跳过 bootstrap（不做 DB 查询），仅验证 PG store/repo 组装。
-        let bundle = build_admin_bundle_pg(pool, "admin", None, "test-secret").await;
+        let bundle = build_admin_bundle_pg(pool, "admin", None, "test-secret", Default::default()).await;
         let _ = bundle;
     }
 }

@@ -2221,6 +2221,7 @@ dependencies = [
  "http-body-util",
  "rand 0.8.7",
  "redis",
+ "reqwest",
  "rustls 0.23.42",
  "serde",
  "serde_json",

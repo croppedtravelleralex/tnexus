@@ -126,22 +126,28 @@ impl SimplifiedPool {
     /// - 否则在所有「未冷却」账号中随机取一个。
     /// - 无可选账号返回 `None`；`exclude` 账号即便在池内也被排除。
     pub async fn select(&self, exclude: Option<i64>) -> Option<i64> {
+        self.select_skip(exclude, &[]).await
+    }
+
+    /// 选一个账号，跳过 `skip` 列表中的 id（用于无 session keys 等场景，不进入冷却）。
+    pub async fn select_skip(&self, exclude: Option<i64>, skip: &[i64]) -> Option<i64> {
         let now = tokio::time::Instant::now();
         let inner = self.inner.read().await;
+        let skipped = |id: i64| {
+            Some(id) == exclude || skip.contains(&id) || inner.in_cooldown(id, now)
+        };
 
-        // 1) pin 优先（未冷却 + 未被 exclude + 未超出池）。
         if let Some(pin_id) = inner.pin {
-            if Some(pin_id) != exclude && !inner.in_cooldown(pin_id, now) && inner.has(pin_id) {
+            if !skipped(pin_id) && inner.has(pin_id) {
                 return Some(pin_id);
             }
         }
 
-        // 2) 随机选一个非冷却、非 exclude 账号。
         let candidates: Vec<i64> = inner
             .accounts
             .iter()
             .map(|a| a.id)
-            .filter(|id| Some(*id) != exclude && !inner.in_cooldown(*id, now))
+            .filter(|id| !skipped(*id))
             .collect();
 
         if candidates.is_empty() {

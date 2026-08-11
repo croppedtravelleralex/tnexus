@@ -2,6 +2,7 @@
 
 import { cn } from "@/lib/utils";
 import type { GrokQuotaWindow } from "@/lib/grok-admin";
+import { labelQuotaMode } from "@/lib/grok-labels";
 
 function fmtNum(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}m`;
@@ -30,7 +31,7 @@ export function GrokQuotaHeatstrip({
   const color =
     ratio > 0.3 ? "bg-[var(--neo-primary)]/85" : ratio > 0.05 ? "bg-amber-500/90" : "bg-rose-500/90";
   return (
-    <div className={cn("flex min-w-28 items-center gap-1.5", className)} title={`${window.mode} · 剩 ${fmtNum(remaining)} / 总 ${fmtNum(window.total)}`}>
+    <div className={cn("flex min-w-28 items-center gap-1.5", className)} title={`${labelQuotaMode(window.mode)} · 剩 ${fmtNum(remaining)} / 总 ${fmtNum(window.total)}`}>
       <div className="relative h-2 w-16 overflow-hidden rounded-full bg-[var(--neo-surface-muted)]">
         <div className={cn("absolute inset-y-0 left-0 rounded-full", color)} style={{ width: `${(ratio * 100).toFixed(1)}%` }} />
       </div>

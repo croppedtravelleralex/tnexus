@@ -74,6 +74,7 @@ fn build_router(state: Arc<AppState>) -> Router {
             routes::proxy::webshare_routes(),
         )
         .nest("/api/proxy", routes::proxy::routes())
+        .nest("/api/grok/v1", routes::grok_gateway::routes())
         .nest("/api/grok", routes::grok_admin::routes())
         .with_state(state.clone());
 

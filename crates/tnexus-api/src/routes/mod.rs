@@ -4,6 +4,7 @@ pub mod auth;
 pub mod chat;
 pub mod conversations;
 pub mod grok_admin;
+pub mod grok_gateway;
 pub mod jobs;
 pub mod media;
 pub mod ops;

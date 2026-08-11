@@ -1,19 +1,39 @@
 /**
- * Grok 独立 API client：直连 grok 子系统（:8000 /v1/*），与 gpt 一侧（:8014）完全隔离。
- *
- * - BASE 缺省 `/grok/v1`（同源相对路径，生产由 nginx 反代 /grok/v1/ → 127.0.0.1:8000）；
- *   本地开发可用 `NEXT_PUBLIC_GROK_API_BASE=http://localhost:8000` 覆盖。
- * - KEY = `NEXT_PUBLIC_GROK_API_KEY`（即 GROK_GATEWAY_AUTH_KEY 的公开转发值），缺省空。
+ * Grok 独立 API client：默认经 TNexus `/api/grok/v1` 代理（cookie 鉴权，无需前端持 key）。
+ * 直连：设 NEXT_PUBLIC_GROK_API_BASE=http://host:8000 并配 NEXT_PUBLIC_GROK_API_KEY。
  */
 
-const BASE = (process.env.NEXT_PUBLIC_GROK_API_BASE ?? "/grok/v1").replace(/\/$/, "");
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:9000";
+
+export const GROK_API_VIA_TNEXUS =
+  process.env.NEXT_PUBLIC_GROK_API_VIA_TNEXUS !== "0" &&
+  !process.env.NEXT_PUBLIC_GROK_API_BASE;
+
+const BASE = GROK_API_VIA_TNEXUS
+  ? `${API_BASE.replace(/\/$/, "")}/api/grok/v1`
+  : (process.env.NEXT_PUBLIC_GROK_API_BASE ?? "/grok/v1").replace(/\/$/, "");
+
 const KEY = process.env.NEXT_PUBLIC_GROK_API_KEY ?? "";
 
 function authHeaders(extra?: Record<string, string>): Record<string, string> {
+  const useProxy = GROK_API_VIA_TNEXUS;
   return {
     ...(extra ?? {}),
-    ...(KEY ? { Authorization: `Bearer ${KEY}` } : {}),
+    ...(useProxy ? {} : KEY ? { Authorization: `Bearer ${KEY}` } : {}),
   };
+}
+
+function fetchOpts(init?: RequestInit): RequestInit {
+  if (!GROK_API_VIA_TNEXUS) return init ?? {};
+  return { ...init, credentials: "include" };
+}
+
+/** OpenAI 兼容路径：代理模式 BASE 已含 /v1 前缀。 */
+function grokUrl(path: string): string {
+  const p = path.startsWith("/") ? path : `/${path}`;
+  if (GROK_API_VIA_TNEXUS) return `${BASE}${p}`;
+  if (BASE.endsWith("/v1")) return `${BASE}${p}`;
+  return `${BASE}/v1${p}`;
 }
 
 /** 嗅探 base64 图片 MIME（与 api.ts 同实现；独立拷贝避免耦合 gpt client）。 */
@@ -57,11 +77,20 @@ async function readChatStream(
   }
 }
 
+export type GrokChatContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
+export type GrokChatMessage = {
+  role: string;
+  content: string | GrokChatContentPart[];
+};
+
 export const grokApi = {
   /** GET /v1/models → 模型 id 列表（含 grok-vision-ocr 别名）。失败返回空数组。 */
   listModels: async (): Promise<string[]> => {
     try {
-      const res = await fetch(`${BASE}/v1/models`, { headers: authHeaders() });
+      const res = await fetch(grokUrl("/models"), fetchOpts({ headers: authHeaders() }));
       if (!res.ok) return [];
       const data = (await res.json()) as { data?: Array<{ id?: string }> };
       return (data.data ?? []).map((m) => m.id).filter(Boolean) as string[];
@@ -70,43 +99,62 @@ export const grokApi = {
     }
   },
 
-  /** POST /v1/chat/completions（SSE 流式；非流式也支持）。只走 grok 网关。 */
+  /** POST /v1/chat/completions（SSE 流式；非流式也支持）。返回调度账号 ID（若有）。 */
   streamCompletion: async (
     body: {
       model: string;
-      messages: Array<{ role: string; content: string }>;
+      messages: GrokChatMessage[];
       stream?: boolean;
     },
     onDelta: (text: string) => void,
-  ): Promise<void> => {
+  ): Promise<{ accountId: number | null }> => {
     const stream = body.stream !== false;
-    const res = await fetch(`${BASE}/v1/chat/completions`, {
-      method: "POST",
-      headers: authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ ...body, stream }),
-    });
+    const res = await fetch(
+      grokUrl("/chat/completions"),
+      fetchOpts({
+        method: "POST",
+        headers: authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ ...body, stream }),
+      }),
+    );
     if (!res.ok) {
       const text = await res.text();
       throw new Error(text || res.statusText);
     }
+    const headerId = res.headers.get("x-grok-account-id");
+    let accountId = headerId ? Number.parseInt(headerId, 10) : null;
+    if (accountId != null && Number.isNaN(accountId)) accountId = null;
     if (stream) {
       await readChatStream(res, onDelta);
-      return;
+      return { accountId };
     }
     const data = (await res.json()) as {
       choices?: Array<{ message?: { content?: string } }>;
+      account_id?: number | null;
     };
     const content = data.choices?.[0]?.message?.content ?? "";
     if (content) onDelta(content);
+    if (accountId == null && data.account_id != null) {
+      accountId = data.account_id;
+    }
+    return { accountId };
   },
 
   /** 生图（独立端点 /v1/images/generations）。返回 b64 数组。 */
-  generateImage: async (prompt: string, n: number): Promise<string[]> => {
-    const res = await fetch(`${BASE}/v1/images/generations`, {
-      method: "POST",
-      headers: authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ prompt, n, response_format: "b64_json" }),
-    });
+  generateImage: async (
+    prompt: string,
+    n: number,
+    opts?: { size?: string; aspectRatio?: string },
+  ): Promise<string[]> => {
+    const size = opts?.aspectRatio ?? opts?.size ?? "1:1";
+    const res = await fetch(
+      grokUrl("/images/generations"),
+      fetchOpts({
+        method: "POST",
+        headers: authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ prompt, n, size, response_format: "b64_json" }),
+      }),
+    );
     if (!res.ok) {
       const text = await res.text();
       let message = text || res.statusText;
@@ -151,11 +199,14 @@ export const grokApi = {
         },
       ],
     };
-    const res = await fetch(`${BASE}/v1/chat/completions`, {
-      method: "POST",
-      headers: authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify(body),
-    });
+    const res = await fetch(
+      grokUrl("/chat/completions"),
+      fetchOpts({
+        method: "POST",
+        headers: authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify(body),
+      }),
+    );
     if (!res.ok) {
       const text = await res.text();
       throw new Error(text || res.statusText);

@@ -315,12 +315,20 @@ export function clearGrokAdminToken() {
 export const grokAdminApi = {
   listAccounts: async (
     token: string,
-    params?: { page?: number; pageSize?: number; provider?: string },
+    params?: {
+      page?: number;
+      pageSize?: number;
+      provider?: string;
+      enabled?: string;
+      authStatus?: string;
+    },
   ): Promise<GrokAccountPage> => {
     const q = new URLSearchParams();
     if (params?.page != null) q.set("page", String(params.page));
     if (params?.pageSize != null) q.set("pageSize", String(params.pageSize));
     if (params?.provider) q.set("provider", params.provider);
+    if (params?.enabled) q.set("enabled", params.enabled);
+    if (params?.authStatus) q.set("authStatus", params.authStatus);
     const query = q.toString();
     let res: Response;
     try {
@@ -339,7 +347,13 @@ export const grokAdminApi = {
     if (!res.ok) {
       throw new Error(`grok-admin 返回 ${res.status}: ${res.statusText}`);
     }
-    return res.json() as Promise<GrokAccountPage>;
+    const raw = (await res.json()) as GrokAccountPage & { pageSize?: number };
+    return {
+      items: raw.items ?? [],
+      page: raw.page ?? params?.page ?? 1,
+      page_size: raw.page_size ?? raw.pageSize ?? params?.pageSize ?? 20,
+      total: raw.total ?? 0,
+    };
   },
 
   getSummary: async (token: string): Promise<GrokAccountSummary> => {
@@ -378,6 +392,54 @@ export const grokAdminApi = {
       `/admin/accounts/${id}/refresh-${kind}`,
       { method: "POST" },
     );
+    return res.json();
+  },
+
+  /** 批量刷新 enabled grok_web 账号额度（直连模式）。 */
+  refreshAllQuotas: async (
+    token: string,
+    limit = 64,
+  ): Promise<{ ok: number; fail: number }> => {
+    const res = await grokAdminFetch(token, "/admin/accounts/web/refresh-quotas", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ limit }),
+    });
+    return res.json() as Promise<{ ok: number; fail: number }>;
+  },
+
+  nurtureStatus: async (token: string) => {
+    return grokAdminGet<{
+      running: boolean;
+      queue_depth: number;
+      completed_in_day: number;
+      last_error: string | null;
+    }>(token, "/admin/nurture/status");
+  },
+
+  nurtureEnqueue: async (
+    token: string,
+    accountIds: number[],
+    prompt?: string,
+  ) => {
+    const res = await grokAdminFetch(token, "/admin/nurture/enqueue", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ account_ids: accountIds, prompt }),
+    });
+    return res.json() as Promise<{ enqueued: number; queue_depth: number }>;
+  },
+
+  nurtureProcessOne: async (
+    token: string,
+    accountId: number,
+    prompt?: string,
+  ) => {
+    const res = await grokAdminFetch(token, "/admin/nurture/process-one", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ account_id: accountId, prompt }),
+    });
     return res.json();
   },
 

@@ -24,9 +24,13 @@
 mod admin;
 mod admin_domains;
 mod config;
+mod grok_nurture_ops;
 mod http;
 mod pg_admin;
 mod tasks;
+mod web_nurture;
+mod web_probe;
+mod web_quota;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -136,24 +140,25 @@ async fn main() -> anyhow::Result<()> {
     } else {
         grok_provider_web::proxy::proxy_pool_from_file(cfg.proxy_file.as_deref())
     };
-    let bridge: Arc<dyn BridgeClient> = if cfg.direct_enabled {
-        let session_store = cfg
-            .pure_http_keys_dir
-            .as_deref()
-            .map(std::path::PathBuf::from)
-            .and_then(|dir| {
-                if dir.is_dir() {
-                    tracing::info!(
-                        "GROK_PURE_HTTP_KEYS_DIR={}：按账号加载 session keys",
-                        dir.display()
-                    );
-                    Some(Arc::new(SessionKeyStore::new(dir)))
-                } else {
-                    SessionKeyStore::from_env().map(Arc::new)
-                }
-            })
-            .or_else(|| SessionKeyStore::from_env().map(Arc::new));
-        Arc::new(HttpDirectClient::new(DirectConfig {
+    let session_store = cfg
+        .pure_http_keys_dir
+        .as_deref()
+        .map(std::path::PathBuf::from)
+        .and_then(|dir| {
+            if dir.is_dir() {
+                tracing::info!(
+                    "GROK_PURE_HTTP_KEYS_DIR={}：按账号加载 session keys",
+                    dir.display()
+                );
+                Some(Arc::new(SessionKeyStore::new(dir)))
+            } else {
+                SessionKeyStore::from_env().map(Arc::new)
+            }
+        })
+        .or_else(|| SessionKeyStore::from_env().map(Arc::new));
+
+    let direct_client: Option<Arc<HttpDirectClient>> = if cfg.direct_enabled {
+        Some(Arc::new(HttpDirectClient::new(DirectConfig {
             base_url: "https://grok.com".to_string(),
             signer_url: cfg.signer_url.clone(),
             signer_mode: cfg.signer_mode,
@@ -162,25 +167,79 @@ async fn main() -> anyhow::Result<()> {
             local_proxy: cfg.local_proxy.clone(),
             session: None,
             session_store,
-        }))
+        })))
     } else {
-        Arc::new(HttpBridgeClient::new())
+        None
+    };
+
+    let bridge: Arc<dyn BridgeClient> = direct_client
+        .clone()
+        .map(|d| d as Arc<dyn BridgeClient>)
+        .unwrap_or_else(|| Arc::new(HttpBridgeClient::new()));
+
+    let quota_service = match (&sso, &direct_client) {
+        (Some(provider), Some(direct)) => Some(Arc::new(web_quota::WebQuotaService::new(
+            direct.clone(),
+            provider.clone(),
+            pool.clone(),
+        ))),
+        _ => None,
+    };
+
+    let chat_engine = Arc::new(
+        ChatEngine::new(
+            shared_pool.clone(),
+            lease.clone(),
+            bridge.clone(),
+            None,
+        )
+        .with_sso_opt(sso.clone()),
+    );
+
+    let nurture_ops = Arc::new(grok_nurture_ops::GrokNurtureOps::new());
+    let nurture_service = Arc::new(grok_nurture_ops::GrokNurtureService::new(
+        nurture_ops.clone(),
+        chat_engine.clone(),
+    ));
+
+    let web_dispatch_probe = match (&direct_client, &sso) {
+        (Some(direct), Some(provider)) if cfg.direct_enabled => Some(Arc::new(
+            web_probe::build_web_dispatch_probe(
+                shared_pool.clone(),
+                direct.clone(),
+                provider.clone(),
+            ),
+        )),
+        _ => None,
     };
 
     // 安全红线（Critical-1）：/v1 写操作鉴权密钥挂进 gateway state。
     let gateway_key = cfg.gateway_auth_key.clone();
     let v1_app = grok_gateway::build_app(
-        gateway_state(&cfg, bridge, shared_pool, lease, sso).with_gateway_auth_key(gateway_key),
+        gateway_state(
+            &cfg,
+            chat_engine.clone(),
+            shared_pool.clone(),
+            lease.clone(),
+            bridge.clone(),
+            sso.clone(),
+        )
+        .with_gateway_auth_key(gateway_key),
     );
 
     // 安全红线（Critical-2/3）：/admin 独立端口（GROK_ADMIN_LISTEN，默认 :8091 仅内网），
     // login/refresh 绕过 guard（见 admin.rs）。DB 已配置 → PG 数据面（真实号池）；
     // 否则内存实现（测试/无 DB 降级，账号列表空）。
+    let admin_extras = admin::AdminExtras {
+        nurture: Some(nurture_service.clone()),
+        quota: quota_service.clone(),
+    };
     let admin_bundle = if cfg.database_url.trim().is_empty() {
         build_admin_bundle(
             &cfg.admin_username,
             cfg.admin_password.as_deref(),
             &admin_secret,
+            admin_extras.clone(),
         )
         .await
     } else {
@@ -189,6 +248,7 @@ async fn main() -> anyhow::Result<()> {
             &cfg.admin_username,
             cfg.admin_password.as_deref(),
             &admin_secret,
+            admin_extras,
         )
         .await
     };
@@ -197,7 +257,13 @@ async fn main() -> anyhow::Result<()> {
     // （TaskScheduler 包装，panic 续跑）。无 DB → 不启动并日志提示。
     let task_cfg = tasks::TaskConfig::from_env();
     let _background = if task_cfg.enabled {
-        let bt = tasks::spawn_background_tasks(&task_cfg, repo);
+        let bt = tasks::spawn_background_tasks(
+            &task_cfg,
+            repo,
+            quota_service.clone(),
+            Some(nurture_service),
+            web_dispatch_probe,
+        );
         tracing::info!(
             "后台任务已注册: {:?}",
             bt.status_snapshot()
@@ -261,19 +327,18 @@ async fn build_lease(cfg: &config::Config) -> Arc<dyn LeaseManager> {
 /// 默认接线见文件头注释；`bridge` 可注入（测试用 mock，生产用 [`HttpBridgeClient`]）。
 fn gateway_state(
     cfg: &config::Config,
-    bridge: Arc<dyn BridgeClient>,
+    engine: Arc<ChatEngine>,
     pool: SharedPool,
     lease: Arc<dyn LeaseManager>,
+    bridge: Arc<dyn BridgeClient>,
     sso: Option<Arc<dyn grok_domain::SsoTokenProvider>>,
 ) -> AppState {
     // /v1/responses + /v1/messages：真实 Build/Console 后端（token 未配置时为 None → 503）。
     let (responses, messages) =
         default_protocol_backends(cfg.build_base_url.clone(), cfg.console_base_url.clone());
-    let engine = ChatEngine::new(pool.clone(), lease.clone(), bridge.clone(), None)
-        .with_sso_opt(sso.clone());
     let mut state = AppState {
         // 端口注入：ChatEngine 实现 grok_domain::ChatBackend，Arc 直接 upcast。
-        engine: Some(Arc::new(engine) as Arc<dyn grok_domain::ChatBackend>),
+        engine: Some(engine as Arc<dyn grok_domain::ChatBackend>),
         responses_backend: responses,
         messages_backend: messages,
         ..AppState::empty()
@@ -326,7 +391,15 @@ fn gateway_app(
     lease: Arc<dyn LeaseManager>,
     bridge: Arc<dyn BridgeClient>,
 ) -> axum::Router {
-    grok_gateway::build_app(gateway_state(cfg, bridge, pool, lease, None))
+    let engine = Arc::new(ChatEngine::new(pool.clone(), lease.clone(), bridge.clone(), None));
+    grok_gateway::build_app(gateway_state(
+        cfg,
+        engine,
+        pool,
+        lease,
+        bridge,
+        None,
+    ))
 }
 
 /// 随机 admin JWT secret（GROK_ADMIN_SECRET 缺省时）。
@@ -405,6 +478,7 @@ mod tests {
             &cfg.admin_username,
             cfg.admin_password.as_deref(),
             &cfg.admin_secret,
+            admin::AdminExtras::default(),
         )
         .await;
         build_router(state)
@@ -424,8 +498,10 @@ mod tests {
         let lease: Arc<dyn LeaseManager> =
             Arc::new(InMemoryLeaseManager::new(&[(Scope::GrokWeb, 4)]));
         let cfg = test_cfg();
+        let bridge: Arc<dyn BridgeClient> = Arc::new(mock);
+        let engine = Arc::new(ChatEngine::new(pool.clone(), lease.clone(), bridge.clone(), None));
         grok_gateway::build_app(
-            gateway_state(&cfg, Arc::new(mock), pool, lease, None)
+            gateway_state(&cfg, engine, pool, lease, bridge, None)
                 .with_gateway_auth_key(Some(key.to_string())),
         )
     }
@@ -654,6 +730,7 @@ mod tests {
             &cfg.admin_username,
             cfg.admin_password.as_deref(),
             &cfg.admin_secret,
+            admin::AdminExtras::default(),
         )
         .await;
         let app = admin::admin_app(bundle);
@@ -700,6 +777,7 @@ mod tests {
             &cfg.admin_username,
             cfg.admin_password.as_deref(),
             &cfg.admin_secret,
+            admin::AdminExtras::default(),
         )
         .await;
         let app = admin::admin_app(bundle);
@@ -723,7 +801,7 @@ mod tests {
     async fn admin_login_disabled_without_password() {
         // GROK_ADMIN_PASSWORD 未配置：无管理员，login 恒 401（不 bootstrap）。
         let cfg = test_cfg();
-        let bundle = build_admin_bundle(&cfg.admin_username, None, &cfg.admin_secret).await;
+        let bundle = build_admin_bundle(&cfg.admin_username, None, &cfg.admin_secret, admin::AdminExtras::default()).await;
         let app = admin::admin_app(bundle);
         let resp = app
             .oneshot(
@@ -747,18 +825,26 @@ mod tests {
     #[test]
     fn gateway_state_image_engine_switch() {
         let mut cfg = test_cfg();
-        let mock = Arc::new(grok_provider_web::MockBridgeClient::new());
+        let bridge: Arc<dyn BridgeClient> = Arc::new(grok_provider_web::MockBridgeClient::new());
         let pool: SharedPool = Arc::new(SimplifiedPool::new());
         let lease = Arc::new(grok_egress::InMemoryLeaseManager::new(&[(
             grok_domain::Scope::GrokWeb,
             4,
         )]));
+        let engine = Arc::new(ChatEngine::new(pool.clone(), lease.clone(), bridge.clone(), None));
         // 默认关闭 → None
-        let state = gateway_state(&cfg, mock.clone(), pool.clone(), lease.clone(), None);
+        let state = gateway_state(
+            &cfg,
+            engine.clone(),
+            pool.clone(),
+            lease.clone(),
+            bridge.clone(),
+            None,
+        );
         assert!(state.image_engine.is_none(), "默认应无生图引擎");
         // 开启 → Some（真实 ImageEngine 组装成功）
         cfg.image_enabled = true;
-        let state2 = gateway_state(&cfg, mock, pool, lease, None);
+        let state2 = gateway_state(&cfg, engine, pool, lease, bridge, None);
         assert!(
             state2.image_engine.is_some(),
             "GROK_IMAGE_ENABLED=1 应组装真实 ImageEngine"

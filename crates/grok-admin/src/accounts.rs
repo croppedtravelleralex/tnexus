@@ -269,11 +269,7 @@ impl AccountAdminService {
         page_size: i64,
     ) -> AdminResult<AccountPage> {
         let page = page.max(1);
-        let page_size = if (1..=100).contains(&page_size) {
-            page_size
-        } else {
-            20
-        };
+        let page_size = page_size.clamp(1, 200);
         self.store.list_accounts(&filter, page, page_size).await
     }
 

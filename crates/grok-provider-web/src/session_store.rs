@@ -50,6 +50,38 @@ impl SessionKeyStore {
     }
 
     /// 按 grok2api 账号 id 取 session keys（有 fingerprint 才视为可用）。
+    pub fn has(&self, account_id: i64) -> bool {
+        self.get(account_id).is_some()
+    }
+
+    /// 扫描目录下 `account_{id}.json` 且含有效 fingerprint 的账号 id。
+    pub fn list_account_ids(&self) -> Vec<i64> {
+        let mut out = Vec::new();
+        let entries = match std::fs::read_dir(&self.dir) {
+            Ok(e) => e,
+            Err(_) => return out,
+        };
+        for ent in entries.flatten() {
+            let path = ent.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let Some(id_str) = name.strip_prefix("account_").and_then(|s| s.strip_suffix(".json")) else {
+                continue;
+            };
+            let Ok(id) = id_str.parse::<i64>() else {
+                continue;
+            };
+            if self.has(id) {
+                out.push(id);
+            }
+        }
+        out.sort_unstable();
+        out
+    }
+
+    /// 按 grok2api 账号 id 取 session keys（有 fingerprint 才视为可用）。
     pub fn get(&self, account_id: i64) -> Option<Arc<SessionKeys>> {
         if let Some(hit) = self.cache.lock().unwrap().get(&account_id).cloned() {
             return Some(hit);

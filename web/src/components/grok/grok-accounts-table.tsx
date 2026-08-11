@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { GrokQuotaHeatstrip } from "@/components/grok/grok-quota-heatstrip";
 import type { GrokAccountView, GrokQuotaWindow } from "@/lib/grok-admin";
 import { cn } from "@/lib/utils";
+import { labelAuthStatus } from "@/lib/grok-labels";
 
 const AUTH_STATUS_VARIANT: Record<string, "success" | "warning" | "danger" | "muted" | "info"> = {
   active: "success",
@@ -15,9 +16,9 @@ const AUTH_STATUS_VARIANT: Record<string, "success" | "warning" | "danger" | "mu
 };
 
 const PROVIDER_LABEL: Record<string, string> = {
-  grok_build: "Build",
-  grok_web: "Web",
-  grok_console: "Console",
+  grok_build: "Build 构建",
+  grok_web: "Web 网页",
+  grok_console: "Console 控制台",
 };
 
 function fmtTime(value: string | null | undefined): string {
@@ -29,8 +30,7 @@ function fmtTime(value: string | null | undefined): string {
 
 function authBadge(status: string) {
   const variant = AUTH_STATUS_VARIANT[status] ?? "muted";
-  const label = status.replace(/^reauth_?/, "reauth:");
-  return <Badge variant={variant}>{label}</Badge>;
+  return <Badge variant={variant}>{labelAuthStatus(status)}</Badge>;
 }
 
 function providerLabel(provider: string) {
@@ -69,7 +69,7 @@ export function GrokAccountsTable({
         <thead>
           <tr className="border-b border-[var(--neo-border)] text-[11px] uppercase tracking-wide text-[var(--neo-muted)]">
             <th className="px-3 py-2 font-medium">ID</th>
-            <th className="px-3 py-2 font-medium">Provider</th>
+            <th className="px-3 py-2 font-medium">类型</th>
             <th className="px-3 py-2 font-medium">名称</th>
             <th className="px-3 py-2 font-medium">状态</th>
             <th className="px-3 py-2 font-medium">认证</th>

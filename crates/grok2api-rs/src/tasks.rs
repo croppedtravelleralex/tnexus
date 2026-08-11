@@ -8,9 +8,10 @@
 //! [`BuildProbeTransport`]，默认 [`NotWiredTransport`] 返回「未接线」，探测本身
 //! 不影响调度索引/冷却记账）。
 //!
-//! **TODO（需 Go sidecar）**：`web_quota_refresh`（QuotaRefresher 需上游 quota
-//! API）、`web_dispatch_probe`（Web 池探针）、`pin_sync`（RoutePinRepository 需
-//! `grok_model_route_accounts` 查询）——仓库无对应 PG 实现，注册时仅日志提示。
+//! **已接线**：`build_four_pool_probe`；`web_quota_refresh`（直连 `/rest/rate-limits` → PG）；
+//! `grok_web_nurture`（`GROK_NURTURE_ENABLED=1`）。
+//!
+//! **TODO（需 Go sidecar）**：`web_dispatch_probe`（Web 池探针）、`pin_sync`。
 //!
 //! 开关：`GROK_TASKS_ENABLED=1`（缺省关）；interval 可配：
 //! `GROK_PROBE_INTERVAL_MS`（缺省 30s）、`GROK_QUOTA_INTERVAL_MS`（60s）、
@@ -28,6 +29,13 @@ use grok_ops::pg_ops::{NotWiredTransport, PgBuildProbeOps};
 use grok_ops::scheduler::{AsyncRun, TaskScheduler};
 use grok_storage::repo::account::PgAccountRepository;
 use tokio::task::AbortHandle;
+
+use grok_domain::WebLane;
+use grok_ops::probe::WebDispatchProbe;
+
+use crate::grok_nurture_ops::GrokNurtureService;
+use crate::web_nurture;
+use crate::web_quota::WebQuotaService;
 
 /// 后台任务配置（env 驱动）。
 #[derive(Debug, Clone)]
@@ -124,6 +132,9 @@ pub fn register_tasks(
     scheduler: &mut TaskScheduler,
     cfg: &TaskConfig,
     four_pool: Option<Arc<BuildFourPool>>,
+    quota: Option<Arc<WebQuotaService>>,
+    nurture: Option<Arc<GrokNurtureService>>,
+    web_probe: Option<Arc<WebDispatchProbe>>,
 ) {
     if !cfg.enabled {
         tracing::info!("GROK_TASKS_ENABLED 未设置：后台任务未注册");
@@ -142,11 +153,123 @@ pub fn register_tasks(
         probe_run(four_pool),
     );
 
-    // TODO（G6 切流前）：web_quota_refresh / web_dispatch_probe / pin_sync 需 Go sidecar
-    // （QuotaRefresher / ProbeBackend / RoutePinRepository 的 PG 实现），此处仅登记语义。
+    if web_nurture::nurture_enabled() {
+        let base = std::env::var("GROK_NURTURE_BASE_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:8000".into());
+        let auth = std::env::var("GROK_GATEWAY_AUTH_KEY")
+            .ok()
+            .or_else(|| std::env::var("GATEWAY_AUTH_KEY").ok());
+        let client = reqwest::Client::new();
+        let interval = web_nurture::nurture_interval();
+        scheduler.add_task("grok_web_nurture", interval, {
+            Arc::new(move || {
+                let client = client.clone();
+                let base = base.clone();
+                let auth = auth.clone();
+                Box::pin(async move {
+                    web_nurture::run_once(&client, &base, auth.as_deref()).await.map_err(|e| {
+                        grok_ops::OpsError::Probe(e.to_string())
+                    })
+                })
+            })
+        });
+        tracing::info!("grok_web_nurture enabled interval={interval:?}");
+    }
+
+    if let Some(quota_svc) = quota {
+        let batch_limit = std::env::var("GROK_QUOTA_BATCH_LIMIT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(32);
+        let svc = quota_svc.clone();
+        scheduler.add_task("web_quota_refresh", cfg.quota_interval, {
+            Arc::new(move || {
+                let svc = svc.clone();
+                Box::pin(async move {
+                    let (ok, fail) = svc.refresh_enabled_batch(batch_limit).await;
+                    if ok > 0 || fail > 0 {
+                        tracing::info!("web_quota_refresh round ok={ok} fail={fail}");
+                    }
+                    Ok(())
+                })
+            })
+        });
+        tracing::info!(
+            "web_quota_refresh enabled interval={:?} batch={batch_limit}",
+            cfg.quota_interval
+        );
+    } else {
+        tracing::warn!(
+            "web_quota_refresh({:?}) 未接线：需 GROK2API_DIRECT + GROK_CREDENTIAL_KEY",
+            cfg.quota_interval
+        );
+    }
+
+    if let Some(probe) = web_probe {
+        let probe = probe.clone();
+        scheduler.add_task("web_dispatch_probe", cfg.probe_interval, {
+            Arc::new(move || {
+                let probe = probe.clone();
+                Box::pin(async move {
+                    let n = probe.run_once(WebLane::Image).await.map_err(|e| {
+                        grok_ops::OpsError::Probe(e.to_string())
+                    })?;
+                    if n > 0 {
+                        tracing::debug!("web_dispatch_probe probed {n} accounts");
+                    }
+                    Ok(())
+                })
+            })
+        });
+        tracing::info!(
+            "web_dispatch_probe enabled interval={:?}",
+            cfg.probe_interval
+        );
+    } else {
+        tracing::warn!(
+            "web_dispatch_probe({:?}) 未接线：需 GROK2API_DIRECT + GROK_CREDENTIAL_KEY + keys",
+            cfg.probe_interval
+        );
+    }
+
+    if let Some(svc) = nurture {
+        let nurture_interval = Duration::from_secs(
+            std::env::var("GROK_NURTURE_QUEUE_INTERVAL_SECS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(8),
+        );
+        let svc = svc.clone();
+        scheduler.add_task("grok_nurture_queue", nurture_interval, {
+            Arc::new(move || {
+                let svc = svc.clone();
+                Box::pin(async move {
+                    if !svc.ops.is_running() {
+                        return Ok(());
+                    }
+                    if let Some(job) = svc.ops.pop_job() {
+                        match svc.process_job(&job).await {
+                            Ok(v) => tracing::info!(
+                                account_id = job.account_id,
+                                result = %v,
+                                "nurture queue job ok"
+                            ),
+                            Err(e) => tracing::warn!(
+                                account_id = job.account_id,
+                                error = %e,
+                                "nurture queue job failed"
+                            ),
+                        }
+                    }
+                    Ok(())
+                })
+            })
+        });
+        tracing::info!("grok_nurture_queue enabled interval={nurture_interval:?}");
+    }
+
     tracing::warn!(
-        "web_quota_refresh({:?})/web_dispatch_probe/pin_sync({:?}) 未接线：待 Go sidecar（G6）",
-        cfg.quota_interval,
+        "pin_sync({:?}) 未接线：待 Go sidecar（G6）",
         cfg.pin_interval
     );
 }
@@ -163,10 +286,23 @@ fn probe_run(four_pool: Arc<BuildFourPool>) -> Arc<AsyncRun> {
 }
 
 /// 启动后台任务（`GROK_TASKS_ENABLED=1` 且 DB 就绪时）。
-pub fn spawn_background_tasks(cfg: &TaskConfig, repo: PgAccountRepository) -> BackgroundTasks {
+pub fn spawn_background_tasks(
+    cfg: &TaskConfig,
+    repo: PgAccountRepository,
+    quota: Option<Arc<WebQuotaService>>,
+    nurture: Option<Arc<GrokNurtureService>>,
+    web_probe: Option<Arc<WebDispatchProbe>>,
+) -> BackgroundTasks {
     let mut scheduler = TaskScheduler::new();
     let four_pool = build_four_pool(cfg, repo);
-    register_tasks(&mut scheduler, cfg, four_pool);
+    register_tasks(
+        &mut scheduler,
+        cfg,
+        four_pool,
+        quota,
+        nurture,
+        web_probe,
+    );
     let handles = scheduler.spawn_all();
     tracing::info!(
         "后台任务已启动: {}",
@@ -307,7 +443,7 @@ mod tests {
     fn register_disabled_registers_nothing() {
         let mut scheduler = TaskScheduler::new();
         let cfg = TaskConfig::new(false, Duration::from_secs(10));
-        register_tasks(&mut scheduler, &cfg, Some(fake_four_pool()));
+        register_tasks(&mut scheduler, &cfg, Some(fake_four_pool()), None, None, None);
         assert!(scheduler.status_snapshot().is_empty());
     }
 
@@ -315,7 +451,7 @@ mod tests {
     fn register_without_db_registers_nothing() {
         let mut scheduler = TaskScheduler::new();
         let cfg = TaskConfig::new(true, Duration::from_secs(10));
-        register_tasks(&mut scheduler, &cfg, None);
+        register_tasks(&mut scheduler, &cfg, None, None, None, None);
         assert!(scheduler.status_snapshot().is_empty());
     }
 
@@ -323,7 +459,7 @@ mod tests {
     async fn register_enabled_with_pool_registers_probe_task() {
         let mut scheduler = TaskScheduler::new();
         let cfg = TaskConfig::new(true, Duration::from_secs(10));
-        register_tasks(&mut scheduler, &cfg, Some(fake_four_pool()));
+        register_tasks(&mut scheduler, &cfg, Some(fake_four_pool()), None, None, None);
         let handles = scheduler.spawn_all();
         // status 由 task_loop 首轮 mark 填充，等一小会再快照。
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -345,7 +481,7 @@ mod tests {
         let four_pool = Arc::new(BuildFourPool::new(ops.clone()));
         let mut scheduler = TaskScheduler::new();
         let cfg = TaskConfig::new(true, Duration::from_millis(20));
-        register_tasks(&mut scheduler, &cfg, Some(four_pool));
+        register_tasks(&mut scheduler, &cfg, Some(four_pool), None, None, None);
         let handles = scheduler.spawn_all();
 
         // 等至少一轮：maintenance_tick 调 list_build_accounts（fake 计数）。

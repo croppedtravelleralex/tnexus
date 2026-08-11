@@ -106,11 +106,23 @@ pub enum ProviderError {
     Upstream(String),
 }
 
+/// 对话推理结果（含调度账号，供网关透传）。
+#[derive(Debug, Clone)]
+pub struct ChatOutcome {
+    pub text: String,
+    pub account_id: Option<i64>,
+}
+
 /// 对话推理端口：网关对 chat 引擎的全部依赖。
 #[async_trait::async_trait]
 pub trait ChatBackend: Send + Sync {
     /// 执行一次对话推理，返回最终文本。
-    async fn chat(&self, req: &ChatRequest) -> Result<String, ProviderError>;
+    async fn chat(&self, req: &ChatRequest) -> Result<String, ProviderError> {
+        Ok(self.chat_outcome(req).await?.text)
+    }
+
+    /// 执行一次对话推理，返回文本与调度账号 id。
+    async fn chat_outcome(&self, req: &ChatRequest) -> Result<ChatOutcome, ProviderError>;
 }
 
 /// 生图端口：网关对 image 引擎的全部依赖。

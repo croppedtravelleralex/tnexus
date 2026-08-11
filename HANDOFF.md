@@ -2,12 +2,36 @@
 
 最后更新：**2026-08-02（`1ab5d25`：出图元数据 + 全量同步额度 + gateway edits 已部署 Panda）**
 
-## 读什么（按顺序）
+## 本地构建 → GHCR → Panda pull（合规发布）
+
+**禁止在 Panda 上 `docker build` / `cargo build` / `npm run build`。**
+
+```bash
+# 1. 本机构建并推送（WSL 推荐，target 放 ext4）
+bash scripts/build_push_ghcr.sh all          # tnexus + grok2api-rs
+# 或单独：bash scripts/build_push_ghcr.sh grok
+
+# 2. Panda 仅 pull + up
+ssh panda "cd /root/TNexus && bash deploy/panda/deploy.sh"
+ssh panda "cd /root/TNexus && bash deploy/panda/grok-deploy.sh deploy"
+```
+
+Grok 侧关键 env（`deploy/panda/grok-compose.yml`）：
+- `GROK2API_SIGNER_MODE=native`（默认，Rust statsig，无 QuickJS/wodf.de）
+- `GROK2API_PROXY_LIST=host:port:user:pass`（**勿**用 `http://user:pass@host:port` 整串）
+- `GROK_CREDENTIAL_KEY` 必须配置（SSO 解密）
+
+Studio 生图 `401 invalid session`：**非 Grok 号池**，是 gateway `UPSTREAM_API_KEY` JWT 过期 → `bash deploy/panda/refresh_upstream_jwt.sh`。
+
+---
+
 
 1. **[plan.md](plan.md)** — 合并施工总控与详细待办
-2. **[docs/39f-grok-progress.md](docs/39f-grok-progress.md)** — **grok2api 完整 Rust 移植进 TNexus**（G2–G7 完成并合 main；Admin 8 域接线/账号导入/登录已交付；**签名器已打通**——纯 HTTP 链路技术层全通，唯一阻塞：账号池被 grok 批量风控禁言）
-   - **[docs/39h-direct-signer.md](docs/39h-direct-signer.md)** — 纯 HTTP 无 chrome 签名器专项（协议/资产/硬墙/三模式/全量测试结论）
-   - **[docs/39i-roadmap.md](docs/39i-roadmap.md)** — Roadmap（5 路侦察汇总：状态五维/近期中期远期/改进方向/最终目标/风险）
+2. **[docs/39f-grok-progress.md](docs/39f-grok-progress.md)** — **grok2api Rust 移植**（Admin/签名/部署脚本已交付）
+   - **[docs/39k-pure-http-verification-matrix.md](docs/39k-pure-http-verification-matrix.md)** — **号池×本机/Panda×工具** 验收矩阵（2026-08-10，**必读**）
+   - **[docs/39j-grok-pure-http-reverse-engineering.md](docs/39j-grok-pure-http-reverse-engineering.md)** — 纯 HTTP 协议/WS/SSE/脚本
+   - **[docs/39h-direct-signer.md](docs/39h-direct-signer.md)** — x-statsig-id 签名器攻坚
+   - **[docs/39i-roadmap.md](docs/39i-roadmap.md)** — Roadmap（阻塞：PG 老池 POST 全 403；yumail 活号未灌 PG）
 3. **[docs/38-tnexus-production-cutover.md](docs/38-tnexus-production-cutover.md)** — **1:1 替代 gptimage 生产切流路线图**
 3. **[docs/36-image-delivery-bandwidth-strategy.md](docs/36-image-delivery-bandwidth-strategy.md)** — AVIF/WebP 显示、R2/Edge 302、带宽分层
 4. **[docs/37-gptimage-tnexus-comparison.md](docs/37-gptimage-tnexus-comparison.md)** — 与 Python `:8012` 横向对比

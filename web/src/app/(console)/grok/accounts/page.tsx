@@ -1,6 +1,6 @@
 "use client";
 
-import { Download, LoaderCircle, RefreshCw } from "lucide-react";
+import { Download, LoaderCircle, RefreshCw, ChevronLeft, ChevronRight } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { PageShell } from "@/components/admin/page-shell";
 import { GrokAccountDetailDialog } from "@/components/grok/grok-account-detail-dialog";
@@ -25,9 +25,13 @@ import {
   type GrokQuotaWindow,
 } from "@/lib/grok-admin";
 
-const PAGE_SIZE = 50;
-/** 额度列并发拉取的账号上限（列表接口不带额度；后端批量额度端点 TODO）。 */
-const QUOTA_FETCH_LIMIT = 20;
+const PAGE_SIZE_OPTIONS = [20, 50, 100, 200] as const;
+
+type PoolFilter = {
+  provider: string;
+  enabled: string;
+  authStatus: string;
+};
 
 export default function GrokAccountsPage() {
   const [token, setToken] = useState<string | null>(() =>
@@ -36,44 +40,71 @@ export default function GrokAccountsPage() {
   const [items, setItems] = useState<GrokAccountView[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<number>(50);
+  const [filter, setFilter] = useState<PoolFilter>({ provider: "", enabled: "", authStatus: "" });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  // 自增触发统计卡片/活跃面板/热力图重新拉取（「刷新」按钮）。
   const [reloadKey, setReloadKey] = useState(0);
-  // 额度列：账号 → 额度窗口（当前页前 N 个并发拉取，容错；缺失显示「未知」）
   const [quotaByAccount, setQuotaByAccount] = useState<Record<number, GrokQuotaWindow | null>>({});
 
-  // 对话框状态
   const [editTarget, setEditTarget] = useState<GrokAccountView | null>(null);
   const [detailTarget, setDetailTarget] = useState<GrokAccountView | null>(null);
   const [importOpen, setImportOpen] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
+
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+
+  const refreshPageQuota = useCallback(async () => {
+    if (!token || items.length === 0) return;
+    const settled = await Promise.allSettled(
+      items.map(async (a) => {
+        await grokAdminApi.refreshAccount(token, a.id, "quota").catch(() => undefined);
+        return grokAdminApi.getQuotaWindows(token, a.id);
+      }),
+    );
+    setQuotaByAccount((prev) => {
+      const next: Record<number, GrokQuotaWindow | null> = { ...prev };
+      items.forEach((a, i) => {
+        next[a.id] = settled[i].status === "fulfilled" ? (settled[i].value[0] ?? null) : null;
+      });
+      return next;
+    });
+  }, [token, items]);
 
   const load = useCallback(
-    async (pageNum: number, currentToken: string) => {
+    async (pageNum: number, currentToken: string, size: number, f: PoolFilter) => {
       setLoading(true);
       setError("");
       try {
         const data: GrokAccountPage = await grokAdminApi.listAccounts(currentToken, {
           page: pageNum,
-          pageSize: PAGE_SIZE,
+          pageSize: size,
+          provider: f.provider || undefined,
+          enabled: f.enabled || undefined,
+          authStatus: f.authStatus || undefined,
         });
-        setItems(data.items ?? []);
+        const rows = data.items ?? [];
+        setItems(rows);
         setTotal(data.total ?? 0);
         setPage(data.page ?? pageNum);
-        // 额度列：仅对当前页前 N 个账号并发拉取（列表接口不带额度窗口）
-        const targets = (data.items ?? []).slice(0, QUOTA_FETCH_LIMIT);
+        if (data.page_size && data.page_size !== size) {
+          setPageSize(data.page_size);
+        }
+
         const settled = await Promise.allSettled(
-          targets.map((a) => grokAdminApi.getQuotaWindows(currentToken, a.id)),
+          rows.map(async (a) => {
+            await grokAdminApi.refreshAccount(currentToken, a.id, "quota").catch(() => undefined);
+            return grokAdminApi.getQuotaWindows(currentToken, a.id);
+          }),
         );
         setQuotaByAccount((prev) => {
           const next: Record<number, GrokQuotaWindow | null> = { ...prev };
-          targets.forEach((a, i) => {
+          rows.forEach((a, i) => {
             next[a.id] = settled[i].status === "fulfilled" ? (settled[i].value[0] ?? null) : null;
           });
           return next;
         });
       } catch (err) {
-        // 401：会话失效 → 清 token 回登录门禁。
         if (err instanceof GrokAdminAuthError) {
           clearGrokAdminToken();
           setToken(null);
@@ -93,35 +124,76 @@ export default function GrokAccountsPage() {
   );
 
   const handleReload = useCallback(() => {
-    if (token) void load(page, token);
+    if (token) void load(page, token, pageSize, filter);
     setReloadKey((k) => k + 1);
-  }, [token, page, load]);
+  }, [token, page, pageSize, filter, load]);
+
+  const refreshAllQuotas = useCallback(async () => {
+    if (!token) return;
+    setBulkBusy(true);
+    setError("");
+    try {
+      const result = await grokAdminApi.refreshAllQuotas(token, 128);
+      await refreshPageQuota();
+      setError(`批量额度刷新完成：成功 ${result.ok}，失败 ${result.fail}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBulkBusy(false);
+    }
+  }, [token, refreshPageQuota]);
+
+  const nurtureCurrentPage = useCallback(async () => {
+    if (!token || items.length === 0) return;
+    setBulkBusy(true);
+    setError("");
+    try {
+      const ids = items.filter((a) => a.enabled).map((a) => a.id);
+      const result = await grokAdminApi.nurtureEnqueue(token, ids);
+      setError(`已入队养号 ${result.enqueued} 个账号（队列深度 ${result.queue_depth}）`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBulkBusy(false);
+    }
+  }, [token, items]);
 
   useEffect(() => {
     if (!token) return;
-    // setTimeout 0：避免 effect 内同步 setState（react-compiler 规则）。
-    const timer = setTimeout(() => void load(1, token), 0);
+    const timer = setTimeout(() => void load(1, token, pageSize, filter), 0);
     return () => clearTimeout(timer);
-  }, [token, load]);
+  }, [token, pageSize, filter.provider, filter.enabled, filter.authStatus, load]);
+
+  useEffect(() => {
+    if (!token || items.length === 0) return;
+    const timer = setInterval(() => void refreshPageQuota(), 60_000);
+    return () => clearInterval(timer);
+  }, [token, items, refreshPageQuota]);
+
+  const goPage = (next: number) => {
+    if (!token || next < 1 || next > pageCount) return;
+    void load(next, token, pageSize, filter);
+  };
 
   return (
     <PageShell
       title="Grok 管理"
-      subtitle="grok-admin 账号管理（列表 / 编辑 / 导入 / 统计 / 详情）"
+      subtitle="号池管理：分页 / 筛选 / 额度 / 导入 / 统计"
       badge="Phase 1"
       actions={
         token ? (
           <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setImportOpen(true)}
-              disabled={loading}
-            >
+            <Button variant="outline" size="sm" onClick={() => setImportOpen(true)} disabled={loading}>
               <Download className="size-4" />
               导入
             </Button>
-            <Button variant="outline" size="sm" onClick={handleReload} disabled={loading}>
+            <Button variant="outline" size="sm" onClick={() => void refreshAllQuotas()} disabled={loading || bulkBusy}>
+              同步全部额度
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => void nurtureCurrentPage()} disabled={loading || bulkBusy || items.length === 0}>
+              本页养号入队
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => { handleReload(); void refreshPageQuota(); }} disabled={loading || bulkBusy}>
               {loading ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
               刷新
             </Button>
@@ -134,30 +206,84 @@ export default function GrokAccountsPage() {
           onToken={(value) => {
             setGrokAdminToken(value);
             setToken(value);
-            void load(1, value);
+            void load(1, value, pageSize, filter);
           }}
         />
       ) : (
         <div className="flex flex-col gap-3">
           <GrokSummaryCards token={token} onError={setError} reloadKey={reloadKey} />
-          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--neo-muted)]">
-            <span>
-              共 {total} 个账号 · 第 {page} 页（每页 {PAGE_SIZE}）
-            </span>
-            <button
-              type="button"
-              className="text-[var(--neo-muted)] underline-offset-2 hover:underline"
-              onClick={() => {
-                clearGrokAdminToken();
-                setToken(null);
-                setItems([]);
-                setTotal(0);
-                setError("");
-              }}
-            >
-              清除令牌
-            </button>
+
+          <div className="neo-card flex flex-wrap items-end gap-3 p-3 text-sm">
+            <label className="flex flex-col gap-1 text-xs text-[var(--neo-muted)]">
+              Provider
+              <select
+                className="neo-input h-8 min-w-[120px] rounded-lg px-2"
+                value={filter.provider}
+                onChange={(e) => {
+                  setFilter((f) => ({ ...f, provider: e.target.value }));
+                  setPage(1);
+                }}
+              >
+                <option value="">全部</option>
+                <option value="grok_web">grok_web</option>
+                <option value="grok_console">grok_console</option>
+                <option value="grok_build">grok_build</option>
+              </select>
+            </label>
+            <label className="flex flex-col gap-1 text-xs text-[var(--neo-muted)]">
+              启用
+              <select
+                className="neo-input h-8 min-w-[100px] rounded-lg px-2"
+                value={filter.enabled}
+                onChange={(e) => {
+                  setFilter((f) => ({ ...f, enabled: e.target.value }));
+                  setPage(1);
+                }}
+              >
+                <option value="">全部</option>
+                <option value="true">启用</option>
+                <option value="false">禁用</option>
+              </select>
+            </label>
+            <label className="flex flex-col gap-1 text-xs text-[var(--neo-muted)]">
+              认证状态
+              <select
+                className="neo-input h-8 min-w-[140px] rounded-lg px-2"
+                value={filter.authStatus}
+                onChange={(e) => {
+                  setFilter((f) => ({ ...f, authStatus: e.target.value }));
+                  setPage(1);
+                }}
+              >
+                <option value="">全部</option>
+                <option value="active">active</option>
+                <option value="reauthRequired">reauthRequired</option>
+                <option value="restricted">restricted</option>
+                <option value="banned">banned</option>
+              </select>
+            </label>
+            <label className="flex flex-col gap-1 text-xs text-[var(--neo-muted)]">
+              每页
+              <select
+                className="neo-input h-8 min-w-[100px] rounded-lg px-2"
+                value={pageSize}
+                onChange={(e) => {
+                  setPageSize(Number(e.target.value));
+                  setPage(1);
+                }}
+              >
+                {PAGE_SIZE_OPTIONS.map((n) => (
+                  <option key={n} value={n}>
+                    {n} 条
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="ml-auto text-xs text-[var(--neo-muted)]">
+              共 {total} 个账号 · 第 {page}/{pageCount} 页
+            </div>
           </div>
+
           {error ? <p className="text-sm text-rose-600">{error}</p> : null}
           {loading && items.length === 0 ? (
             <div className="flex items-center justify-center gap-2 py-16 text-sm text-[var(--neo-muted)]">
@@ -171,9 +297,28 @@ export default function GrokAccountsPage() {
               onDetail={(account) => setDetailTarget(account)}
             />
           )}
-          <div className="mt-2 text-[10px] text-[var(--neo-muted)]">
-            额度列仅对当前页前 {QUOTA_FETCH_LIMIT} 个账号拉取（列表接口不带额度；后端批量额度端点 TODO）
+
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-xs text-[var(--neo-muted)]">
+              当前页 {items.length} 条 · 额度每 60s 自动刷新
+            </span>
+            <div className="flex items-center gap-2">
+              <Button variant="outline" size="sm" disabled={page <= 1 || loading} onClick={() => goPage(page - 1)}>
+                <ChevronLeft className="size-4" />
+                上一页
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={page >= pageCount || loading}
+                onClick={() => goPage(page + 1)}
+              >
+                下一页
+                <ChevronRight className="size-4" />
+              </Button>
+            </div>
           </div>
+
           <GrokActivityPanels token={token} reloadKey={reloadKey} />
           <GrokAccountHeatmap token={token} reloadKey={reloadKey} />
         </div>

@@ -19,7 +19,7 @@ use crate::attachments::prepare_file_attachments;
 use crate::bridge::BridgeClient;
 use crate::chat::{build_web_chat_payload, DEFAULT_OCR_SYSTEM_PROMPT};
 use grok_domain::ProviderError;
-use grok_domain::{ChatBackend, ChatRequest};
+use grok_domain::{ChatBackend, ChatOutcome, ChatRequest};
 
 /// egress lease 获取超时（G1 单槽 web scope；时长可经构造覆盖）。
 const DEFAULT_LEASE_DURATION: Duration = Duration::from_secs(5);
@@ -73,13 +73,32 @@ impl ChatEngine {
 
     /// 执行一次 chat/OCR，返回上游文本。
     pub async fn chat(&self, req: &ChatRequest) -> Result<String, ProviderError> {
-        let account_id = self
-            .pool
-            .select(None)
-            .await
-            .ok_or(ProviderError::NoAvailableAccount)?;
+        Ok(self.chat_outcome(req).await?.text)
+    }
 
-        // egress lease（grok_web scope）。失败 → 记 dispatch 失败并返回。
+    /// 执行一次 chat/OCR，返回文本与调度账号。
+    pub async fn chat_outcome(&self, req: &ChatRequest) -> Result<ChatOutcome, ProviderError> {
+        let account_id = self.select_account_with_keys().await?;
+        self.execute_for_account(account_id, req).await
+    }
+
+    /// 对指定账号执行养号/定向对话（跳过池随机选择）。
+    pub async fn chat_for_account(
+        &self,
+        account_id: i64,
+        req: &ChatRequest,
+    ) -> Result<ChatOutcome, ProviderError> {
+        if !self.bridge.has_pure_http_keys(account_id) {
+            return Err(ProviderError::NoAvailableAccount);
+        }
+        self.execute_for_account(account_id, req).await
+    }
+
+    async fn execute_for_account(
+        &self,
+        account_id: i64,
+        req: &ChatRequest,
+    ) -> Result<ChatOutcome, ProviderError> {
         let _lease = match self
             .lease
             .acquire(
@@ -96,8 +115,6 @@ impl ChatEngine {
             }
         };
 
-        // 附件准备 + payload（OCR 控制 enableImageGeneration）。
-        // 附件失败（bridge 下载空/失败）视为上游/provider 失败，应冷却该账号。
         let attachments = match prepare_file_attachments(&req.images, self.bridge.as_ref()).await {
             Ok(a) => a,
             Err(e) => {
@@ -112,7 +129,6 @@ impl ChatEngine {
             .unwrap_or(DEFAULT_OCR_SYSTEM_PROMPT);
         let payload = build_web_chat_payload(&req.prompt, &attachments, req.ocr, system_prompt);
 
-        // 无 chrome 直连：按账号取 sso token；bridge 模式跳过。
         let sso_token = match &self.sso {
             Some(provider) => Some(provider.sso_token(account_id).await?),
             None => None,
@@ -126,7 +142,10 @@ impl ChatEngine {
             Ok(text) => {
                 self.pool.dispatch_success(account_id).await;
                 self.record_audit(req, account_id, true);
-                Ok(text)
+                Ok(ChatOutcome {
+                    text,
+                    account_id: Some(account_id),
+                })
             }
             Err(e) => {
                 self.pool.dispatch_failure(account_id).await;
@@ -134,6 +153,22 @@ impl ChatEngine {
                 Err(e)
             }
         }
+    }
+
+    /// 从号池选一个具备 pure_http_keys 的账号（无 keys 自动跳过，不进入冷却）。
+    async fn select_account_with_keys(&self) -> Result<i64, ProviderError> {
+        const MAX_ATTEMPTS: usize = 64;
+        let mut skip: Vec<i64> = Vec::new();
+        for _ in 0..MAX_ATTEMPTS {
+            let Some(id) = self.pool.select_skip(None, &skip).await else {
+                break;
+            };
+            if self.bridge.has_pure_http_keys(id) {
+                return Ok(id);
+            }
+            skip.push(id);
+        }
+        Err(ProviderError::NoAvailableAccount)
     }
 
     /// 记录审计（异步、非阻塞；sink 为 None 时跳过）。
@@ -161,8 +196,8 @@ impl ChatEngine {
 
 #[async_trait::async_trait]
 impl ChatBackend for ChatEngine {
-    async fn chat(&self, req: &ChatRequest) -> Result<String, grok_domain::ProviderError> {
-        ChatEngine::chat(self, req).await
+    async fn chat_outcome(&self, req: &ChatRequest) -> Result<ChatOutcome, grok_domain::ProviderError> {
+        ChatEngine::chat_outcome(self, req).await
     }
 }
 

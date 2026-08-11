@@ -29,6 +29,8 @@ pub struct AppConfig {
     pub grok_admin_base: String,
     pub grok_admin_username: Option<String>,
     pub grok_admin_password: Option<String>,
+    pub grok2api_base: String,
+    pub grok_gateway_auth_key: Option<String>,
 }
 
 impl AppConfig {
@@ -95,6 +97,9 @@ impl AppConfig {
                 .unwrap_or_else(|_| "http://127.0.0.1:8091".into()),
             grok_admin_username: env::var("GROK_ADMIN_USERNAME").ok(),
             grok_admin_password: env::var("GROK_ADMIN_PASSWORD").ok(),
+            grok2api_base: env::var("GROK2API_BASE")
+                .unwrap_or_else(|_| "http://127.0.0.1:8000".into()),
+            grok_gateway_auth_key: env::var("GROK_GATEWAY_AUTH_KEY").ok(),
         })
     }
 }

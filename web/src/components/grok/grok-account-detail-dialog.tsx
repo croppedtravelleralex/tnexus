@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { grokAdminApi, type GrokAccountView, type GrokAccountDetail } from "@/lib/grok-admin";
+import { labelModelStatusLine, labelQuotaMode, labelQuotaSource } from "@/lib/grok-labels";
 
 type Props = {
   open: boolean;
@@ -117,14 +118,14 @@ export function GrokAccountDetailDialog({ open, account, token, onOpenChange, on
                     <tbody>
                       {windows.map((w) => (
                         <tr key={w.mode} className="border-b border-[var(--neo-border)] last:border-0">
-                          <td className="px-3 py-2 font-medium text-[var(--neo-ink)]">{w.mode}</td>
+                          <td className="px-3 py-2 font-medium text-[var(--neo-ink)]">{labelQuotaMode(w.mode)}</td>
                           <td className="px-3 py-2 tabular-nums">
                             <span className={w.total > 0 && w.remaining <= 0 ? "text-rose-600" : ""}>
                               {w.remaining} / {w.total}
                             </span>
                           </td>
                           <td className="px-3 py-2 whitespace-nowrap text-xs">{fmtTime(w.reset_at)}</td>
-                          <td className="px-3 py-2">{w.source || "—"}</td>
+                          <td className="px-3 py-2">{labelQuotaSource(w.source)}</td>
                           <td className="px-3 py-2 whitespace-nowrap text-xs">{fmtTime(w.synced_at)}</td>
                         </tr>
                       ))}
@@ -149,8 +150,7 @@ export function GrokAccountDetailDialog({ open, account, token, onOpenChange, on
                     >
                       <span className="font-medium text-[var(--neo-ink)]">{s.upstream_model}</span>
                       <span className={MODEL_STATUS_VARIANT[s.status] ?? "text-stone-500"}>
-                        {s.status}
-                        {s.reason ? `（${s.reason}）` : ""}
+                        {labelModelStatusLine(s.status, s.reason)}
                       </span>
                       <span className="text-xs text-[var(--neo-muted)]">
                         失败 {s.consecutive_failures} · 冷却至 {fmtTime(s.cooldown_until)}

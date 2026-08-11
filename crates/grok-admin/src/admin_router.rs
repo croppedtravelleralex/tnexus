@@ -278,7 +278,8 @@ impl AdminRouter {
         let page_size = params
             .get("pageSize")
             .and_then(|v| v.parse::<i64>().ok())
-            .unwrap_or(20);
+            .unwrap_or(20)
+            .clamp(1, 200);
         let provider = match params.get("provider").map(|s| s.as_str()) {
             None | Some("") => None,
             Some("grok_build") => Some(Provider::GrokBuild),
@@ -875,7 +876,7 @@ fn page_params(query: &str) -> (i64, i64) {
         .get("pageSize")
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(20);
-    (page.max(1), page_size.clamp(1, 100))
+    (page.max(1), page_size.clamp(1, 200))
 }
 
 /// 查询参数表（`?a=1&b=2` → map）。

@@ -98,4 +98,4 @@ gptimage **26 个 GPT 号**与 Grok 无关，不得导入 grok 池。
 |------|------|
 | 2026-08-10 | 初版：号池/工具/环境矩阵、672 全扫、与 39j 分工 |
 | 2026-08-10 | Panda udeal gate：老池 86/304 pure_http keys 全绿（与 yumail 同级） |
-| 2026-08-10 | Panda curl /v1/chat/completions 当前 GHCR 镜像 → 502 chat 403，待 SessionKeyStore 镜像 |
+| 2026-08-11 | Panda `curl /v1/chat/completions` + SessionKeyStore 镜像 **200 PONG** | 池限 86/304 + keys 挂载后通过 |

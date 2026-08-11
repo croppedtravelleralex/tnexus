@@ -11,6 +11,7 @@ export function apiAssetUrl(path: string | null | undefined): string | undefined
 }
 
 import { type ChatConversationState, DEFAULT_CHAT_MODELS } from "@/lib/chat-conversations";
+import type { GrokChatConversationState } from "@/lib/grok-chat-conversations";
 import type { Conversation, ConversationState } from "@/lib/conversations";
 import type { GenConfig } from "@/lib/gen-config";
 
@@ -309,7 +310,7 @@ export const authApi = {
     }),
 };
 
-export type ConversationStatePayload = ConversationState | ChatConversationState;
+export type ConversationStatePayload = ConversationState | ChatConversationState | GrokChatConversationState;
 
 export const conversationsApi = {
   list: () =>

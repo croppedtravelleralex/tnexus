@@ -384,6 +384,48 @@ impl HttpDirectClient {
         parse_sse_chat(&bytes)
     }
 
+    /// POST `/rest/rate-limits` 拉取对话额度（对齐 Python `grok_quota_probe.probe_rate_limits`）。
+    pub async fn fetch_rate_limits(
+        &self,
+        sso_token: Option<&str>,
+        account_id: Option<i64>,
+    ) -> Result<Value, ProviderError> {
+        let Some(sso_token) = sso_token else {
+            return Err(ProviderError::NoAvailableAccount);
+        };
+        let path = "/rest/rate-limits";
+        let session = self.session_for(account_id);
+        let cookie = Self::resolve_cookie(sso_token, session.as_ref());
+        let client = self.client_for(&cookie);
+        let statsig_id = self
+            .sign_path(&cookie, "POST", path, session.as_ref())
+            .await?;
+        let endpoint = format!("{}{}", self.cfg.base_url.trim_end_matches('/'), path);
+        for body in [json!({}), json!({"modelName": "grok-3"})] {
+            let resp = client
+                .post(&endpoint)
+                .headers(self.build_headers(&cookie, &statsig_id, "application/json"))
+                .json(&body)
+                .send()
+                .await
+                .map_err(proxy_err)?;
+            let status = resp.status();
+            let bytes = resp
+                .bytes()
+                .await
+                .map_err(|e| ProviderError::Bridge(format!("rate-limits body: {e}")))?;
+            if !status.is_success() {
+                continue;
+            }
+            let value: Value = serde_json::from_slice(&bytes)
+                .map_err(|_| ProviderError::Upstream("rate-limits invalid json".into()))?;
+            if value.get("remainingQueries").is_some() || value.get("totalQueries").is_some() {
+                return Ok(value);
+            }
+        }
+        Err(ProviderError::Upstream("rate-limits empty or failed".into()))
+    }
+
     /// POST chat 路径并返回原始响应体（lite 生图从 SSE 提取 imageUrl）。
     pub(crate) async fn fetch_chat_raw_body(
         &self,
@@ -663,6 +705,13 @@ impl BridgeClient for HttpDirectClient {
         account_id: Option<i64>,
     ) -> Result<Value, ProviderError> {
         self.imagine_upstream(payload, sso_token, account_id).await
+    }
+
+    fn has_pure_http_keys(&self, account_id: i64) -> bool {
+        match &self.cfg.session_store {
+            Some(store) => store.has(account_id),
+            None => true,
+        }
     }
 }
 

@@ -1,5 +1,18 @@
 # 39f — Grok 移植进度记录（做了的 / 未做的 / 要做的）
 
+## 2026-08-10：文档对齐 + PG 全池复扫 + 老池 Chrome 验收
+
+- **文档**：[39k-pure-http-verification-matrix.md](39k-pure-http-verification-matrix.md) — 两套号池（grok2api PG 672 vs yumail 700+）、两套探测工具、本机/Panda 矩阵
+- **PG 全扫**：`grok_pg_chat_probe.py` 在 Panda 跑 **672** 账号（~92min）→ **671×POST 403 anti-bot + 1×no_meta**；日志 `/tmp/grok_pool_scan.log`
+- **结论修正**：不是「逆向白做」——yumail 老号 + `grok_pure_http_client` 仍可在本机/Panda 纯 HTTP 200；**TNexus 生产的 grok2api 老池** 与 **新注册 kevin** 在 node/pg probe 下 POST 全挂
+| 2026-08-10 | 老池 Chrome 验收：SSO 灌入 + Clash 7897 → **86/304/92** 网页 WS 收 `pong`（非 REST POST） |
+
+## 2026-08-08：纯 HTTP yumail 打通 + WS mgw + 新号注册
+
+- **yumail 老号**（nancybaker / aharris / aclark）：`grok_pure_http_client.py --gate` 本机 **POST chat 200**；Panda udeal aharris chat/OCR **100%**（3 轮）
+- **yumail 新号** kevin（id=1701）：注册 ✅；POST **403**（与老池同类）
+- **WS**：`grok_ws_chat_probe.py` `ui` 模式 nancybaker 收 **PONG**（非 REST）
+- **逆向文档**：[39j-grok-pure-http-reverse-engineering.md](39j-grok-pure-http-reverse-engineering.md)
 
 ## 2026-08-07 深夜：多路并行收官 + 签名器突破 + 全池验证（`98119e1`/`b92632a`/`cca7c52`）
 

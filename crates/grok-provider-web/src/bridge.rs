@@ -66,6 +66,12 @@ pub trait BridgeClient: Send + Sync {
         sso_token: Option<&str>,
         account_id: Option<i64>,
     ) -> Result<Value, ProviderError>;
+
+    /// 直连模式：账号是否具备 `pure_http_keys`（无 store 时恒 true）。
+    fn has_pure_http_keys(&self, account_id: i64) -> bool {
+        let _ = account_id;
+        true
+    }
 }
 
 /// 基于 `reqwest::Client` 的真实 bridge 客户端（协议对齐 Go `browser_bridge.go`）。

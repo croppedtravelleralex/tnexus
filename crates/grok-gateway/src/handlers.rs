@@ -328,24 +328,32 @@ pub async fn chat_completions(
         .ok_or_else(|| GatewayError::Internal("ChatEngine not configured".into()))?;
 
     // 3) 执行推理（池 / lease / payload / bridge）。
-    let text = engine.chat(&provider_req).await?;
+    let outcome = engine.chat_outcome(&provider_req).await?;
 
     // 4) 组装 OpenAI 兼容响应 / SSE。
     let model_out = if ocr { ALIAS_OCR } else { "grok-chat" };
-    if req.stream {
-        Ok(stream_response(provider_req.request_id, model_out, text).into_response())
+    let mut response = if req.stream {
+        stream_response(provider_req.request_id, model_out, outcome.text).into_response()
     } else {
-        Ok(Json(chat_completion_json(
+        Json(chat_completion_json(
             provider_req.request_id,
             model_out,
-            text,
+            outcome.text,
+            outcome.account_id,
         ))
-        .into_response())
+        .into_response()
+    };
+    if let Some(id) = outcome.account_id {
+        response.headers_mut().insert(
+            header::HeaderName::from_static("x-grok-account-id"),
+            header::HeaderValue::from_str(&id.to_string()).unwrap_or(header::HeaderValue::from_static("0")),
+        );
     }
+    Ok(response)
 }
 
 /// 非流式 OpenAI 兼容 `chat.completion`。
-fn chat_completion_json(id: String, model: &str, content: String) -> Value {
+fn chat_completion_json(id: String, model: &str, content: String, account_id: Option<i64>) -> Value {
     json!({
         "id": id,
         "object": "chat.completion",
@@ -358,6 +366,7 @@ fn chat_completion_json(id: String, model: &str, content: String) -> Value {
             "finish_reason": "stop",
         }],
         "usage": { "total_tokens": null },
+        "account_id": account_id,
     })
 }
 

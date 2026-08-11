@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Bot, Eraser, Image as ImageIcon, Loader2, Send, Sparkles } from "lucide-react";
-import { grokApi, sniffImageMime } from "@/lib/grok-api";
+import { Bot, Eraser, Image as ImageIcon, Loader2, Paperclip, Send, Sparkles } from "lucide-react";
+import { grokApi, sniffImageMime, type GrokChatMessage, type GrokChatContentPart } from "@/lib/grok-api";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -13,6 +13,7 @@ import { estimateBase64Bytes, formatBytes } from "@/lib/chat-conversations";
 /** Grok 对话模型选项（gateway 非 OCR 时会归一化到上游 grok-chat；下拉保留可读性/未来透传）。 */
 export const GROK_CHAT_MODELS = [
   "grok-chat-fast",
+  "grok-vision-ocr",
   "grok-3",
   "grok-4.5",
   "grok-4.5-build-free",
@@ -25,8 +26,9 @@ interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   error?: boolean;
-  /** 生图结果（b64，无 data URI 前缀）。 */
   images?: string[];
+  /** data URL 附件（纯 HTTP OCR 默认走 upload-file） */
+  attachments?: string[];
 }
 
 let nextId = 1;
@@ -35,15 +37,53 @@ function makeMessage(role: ChatMessage["role"], content: string): ChatMessage {
   return { id: nextId++, role, content };
 }
 
-/** 流式对话面板：内存会话（无持久化），走 grokApi（直连 :8000 /v1/chat/completions SSE）。 */
-export function GrokChatPanel() {
-  const [model, setModel] = useState<GrokChatModel>("grok-chat-fast");
+/** 流式对话面板：可走外部会话持久化，走 grokApi（直连 :8000 /v1/chat/completions SSE）。 */
+export type GrokChatPanelProps = {
+  /** 切换会话时变化，用于重置本地消息 */
+  sessionKey?: string | null;
+  initialModel?: GrokChatModel;
+  initialMessages?: Array<{
+    id?: string | number;
+    role: "user" | "assistant";
+    content: string;
+    error?: boolean;
+    images?: string[];
+    attachments?: string[];
+  }>;
+  /** 消息或模型变更后回调（供 workbench 写 conversations API） */
+  onPersist?: (state: {
+    model: GrokChatModel;
+    messages: ChatMessage[];
+    lastAccountId?: number | null;
+  }) => void;
+  /** 从某条用户消息起重新发送 */
+  resendIndex?: number | null;
+  onResendDone?: () => void;
+  initialLastAccountId?: number | null;
+  onResendRequest?: (messageIndex: number) => void;
+};
+
+export function GrokChatPanel({
+  sessionKey = null,
+  initialModel = "grok-chat-fast",
+  initialMessages = [],
+  onPersist,
+  resendIndex = null,
+  onResendDone,
+  initialLastAccountId = null,
+  onResendRequest,
+}: GrokChatPanelProps = {}) {
+  const [model, setModel] = useState<GrokChatModel>(initialModel);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [activeAccountId, setActiveAccountId] = useState<number | null>(initialLastAccountId);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
   const [imagining, setImagining] = useState(false);
   const [imageCount, setImageCount] = useState(1);
+  const [aspectRatio, setAspectRatio] = useState("1:1");
+  const [pendingImages, setPendingImages] = useState<string[]>([]);
+  const fileRef = useRef<HTMLInputElement>(null);
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -55,6 +95,35 @@ export function GrokChatPanel() {
   useEffect(() => {
     imaginingRef.current = imagining;
   }, [imagining]);
+
+  const hydrateFromInitial = useCallback(() => {
+    setModel(initialModel);
+    setMessages(
+      initialMessages.map((m) => ({
+        id: typeof m.id === "number" ? m.id : nextId++,
+        role: m.role,
+        content: m.content,
+        error: m.error,
+        images: m.images,
+        attachments: m.attachments,
+      })),
+    );
+    setError("");
+    setDraft("");
+    setPendingImages([]);
+  }, [initialModel, initialMessages]);
+
+  useEffect(() => {
+    hydrateFromInitial();
+    setActiveAccountId(initialLastAccountId);
+  }, [sessionKey, hydrateFromInitial, initialLastAccountId]);
+
+  const persistNow = useCallback(
+    (nextMessages: ChatMessage[], nextModel: GrokChatModel = model, accountId = activeAccountId) => {
+      onPersist?.({ model: nextModel, messages: nextMessages, lastAccountId: accountId });
+    },
+    [model, onPersist, activeAccountId],
+  );
 
   const appendAssistant = useCallback((content: string, isError = false) => {
     setMessages((prev) => {
@@ -73,38 +142,96 @@ export function GrokChatPanel() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages, sending]);
 
+  const buildUpstreamMessages = useCallback((history: ChatMessage[]): GrokChatMessage[] => {
+    return history.map((m) => {
+      if (m.role === "user" && (m.attachments?.length || 0) > 0) {
+        const parts: GrokChatContentPart[] = [
+          { type: "text", text: m.content },
+          ...m.attachments!.map((url) => ({ type: "image_url" as const, image_url: { url } })),
+        ];
+        return { role: m.role, content: parts };
+      }
+      return { role: m.role, content: m.content };
+    });
+  }, []);
+
+  const runCompletion = useCallback(
+    async (history: ChatMessage[]) => {
+      const upstreamModel =
+        model === "grok-vision-ocr" || history.some((m) => (m.attachments?.length ?? 0) > 0)
+          ? "grok-vision-ocr"
+          : model;
+      const { accountId } = await grokApi.streamCompletion(
+        { model: upstreamModel, messages: buildUpstreamMessages(history), stream: true },
+        (delta) => appendAssistant(delta),
+      );
+      if (accountId != null) setActiveAccountId(accountId);
+      return accountId;
+    },
+    [model, appendAssistant, buildUpstreamMessages],
+  );
+
   const send = useCallback(async () => {
     const text = draft.trim();
     if (!text || sendingRef.current) return;
+    const attachments = [...pendingImages];
     setDraft("");
+    setPendingImages([]);
     setError("");
-    setMessages((prev) => [...prev, makeMessage("user", text)]);
+    const userMsg: ChatMessage = { ...makeMessage("user", text), attachments };
+    setMessages((prev) => [...prev, userMsg]);
     setSending(true);
-    // 内存会话：流式开始时先放一个空的 assistant 气泡，delta 逐字追加。
     setMessages((prev) => [...prev, makeMessage("assistant", "")]);
     try {
-      const history = [...messages, makeMessage("user", text)].map((m) => ({
-        role: m.role,
-        content: m.content,
-      }));
-      await grokApi.streamCompletion(
-        { model, messages: history, stream: true },
-        (delta) => appendAssistant(delta),
-      );
+      const history = [...messages, userMsg];
+      await runCompletion(history);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setError(msg);
       appendAssistant(msg, true);
     } finally {
       setSending(false);
+      setMessages((prev) => {
+        persistNow(prev);
+        return prev;
+      });
     }
-  }, [draft, messages, model, appendAssistant]);
+  }, [draft, messages, pendingImages, appendAssistant, persistNow, runCompletion]);
+
+  useEffect(() => {
+    if (resendIndex == null || sendingRef.current) return;
+    const target = messages[resendIndex];
+    if (!target || target.role !== "user") {
+      onResendDone?.();
+      return;
+    }
+    const history = messages.slice(0, resendIndex + 1);
+    setSending(true);
+    setMessages([...history, makeMessage("assistant", "")]);
+    void (async () => {
+      try {
+        await runCompletion(history);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        setError(msg);
+        appendAssistant(msg, true);
+      } finally {
+        setSending(false);
+        setMessages((prev) => {
+          persistNow(prev);
+          return prev;
+        });
+        onResendDone?.();
+      }
+    })();
+  }, [resendIndex, messages, runCompletion, appendAssistant, persistNow, onResendDone]);
 
   const clear = useCallback(() => {
     if (sendingRef.current || imaginingRef.current) return;
     setMessages([]);
     setError("");
-  }, []);
+    persistNow([]);
+  }, [persistNow]);
 
   const lightboxImages = useMemo((): LightboxImage[] => {
     const out: LightboxImage[] = [];
@@ -135,7 +262,7 @@ export function GrokChatPanel() {
     setMessages((prev) => [...prev, makeMessage("user", text)]);
     setImagining(true);
     try {
-      const items = await grokApi.generateImage(text, imageCount);
+      const items = await grokApi.generateImage(text, imageCount, { aspectRatio });
       if (items.length === 0) throw new Error("生图返回空结果");
       setMessages((prev) => [
         ...prev,
@@ -155,8 +282,12 @@ export function GrokChatPanel() {
       ]);
     } finally {
       setImagining(false);
+      setMessages((prev) => {
+        persistNow(prev);
+        return prev;
+      });
     }
-  }, [draft, imageCount]);
+  }, [draft, imageCount, aspectRatio, persistNow]);
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -175,7 +306,11 @@ export function GrokChatPanel() {
           </span>
           <select
             value={model}
-            onChange={(e) => setModel(e.target.value as GrokChatModel)}
+            onChange={(e) => {
+              const next = e.target.value as GrokChatModel;
+              setModel(next);
+              persistNow(messages, next);
+            }}
             className="neo-input h-8 rounded-lg px-2 text-sm font-medium text-[var(--neo-ink)] focus-visible:outline-none"
             aria-label="Grok 模型"
           >
@@ -185,6 +320,11 @@ export function GrokChatPanel() {
               </option>
             ))}
           </select>
+          {activeAccountId != null && (
+            <span className="rounded-full bg-[var(--neo-surface-muted)] px-2 py-0.5 text-xs text-[var(--neo-muted)]">
+              账号 #{activeAccountId}
+            </span>
+          )}
         </div>
         <Button variant="ghost" size="sm" onClick={clear} disabled={sending || imagining || messages.length === 0}>
           <Eraser className="size-4" />
@@ -201,15 +341,14 @@ export function GrokChatPanel() {
             </div>
             <p className="text-base font-medium text-[var(--neo-ink)]">开始一段 Grok 对话</p>
             <p className="max-w-md text-sm leading-relaxed text-[var(--neo-muted)]">
-              对话走 <code className="rounded bg-[var(--neo-surface-muted)] px-1">/grok/v1/chat/completions</code>
-              （SSE 流式，独立 grok 网关）；生图走{" "}
-              <code className="rounded bg-[var(--neo-surface-muted)] px-1">/grok/v1/images/generations</code>
-              （需 gateway 开启 GROK_IMAGE_ENABLED=1）。当前为内存会话，刷新后清空。
+              对话走纯 HTTP Rust 网关（<code className="rounded bg-[var(--neo-surface-muted)] px-1">/grok/v1/chat/completions</code>
+              ）；上传图片自动走 OCR 链路（upload-file → grok-vision-ocr）。生图走{" "}
+              <code className="rounded bg-[var(--neo-surface-muted)] px-1">/grok/v1/images/generations</code>。
             </p>
           </div>
         ) : (
           <div className="mx-auto flex max-w-3xl flex-col gap-4">
-            {messages.map((m) => (
+            {messages.map((m, i) => (
               <div
                 key={m.id}
                 className={cn("flex items-start gap-2", m.role === "user" && "flex-row-reverse")}
@@ -249,6 +388,16 @@ export function GrokChatPanel() {
                       })}
                     </div>
                   )}
+                  {m.role === "user" && onResendRequest && (
+                    <button
+                      type="button"
+                      className="mt-1 block text-[11px] text-white/80 underline-offset-2 hover:underline"
+                      onClick={() => onResendRequest(i)}
+                      disabled={sending || imagining}
+                    >
+                      从此重发
+                    </button>
+                  )}
                 </div>
               </div>
             ))}
@@ -270,7 +419,42 @@ export function GrokChatPanel() {
 
       {/* 输入区 */}
       <div className="shrink-0 border-t border-[var(--neo-border)] bg-[var(--neo-surface-muted)] px-4 py-3">
+        {pendingImages.length > 0 && (
+          <div className="mx-auto mb-2 flex max-w-3xl flex-wrap gap-2">
+            {pendingImages.map((url, i) => (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img key={i} src={url} alt="" className="h-14 w-14 rounded-lg border object-cover" />
+            ))}
+          </div>
+        )}
         <div className="mx-auto flex max-w-3xl items-end gap-2 rounded-2xl border border-[var(--neo-border)] bg-white p-2 shadow-sm">
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (!file) return;
+              const reader = new FileReader();
+              reader.onload = () => {
+                const url = String(reader.result || "");
+                if (url.startsWith("data:")) setPendingImages((p) => [...p, url]);
+              };
+              reader.readAsDataURL(file);
+              e.target.value = "";
+            }}
+          />
+          <Button
+            type="button"
+            size="icon"
+            variant="ghost"
+            onClick={() => fileRef.current?.click()}
+            disabled={sending || imagining}
+            aria-label="上传图片"
+          >
+            <Paperclip className="size-4" />
+          </Button>
           <Textarea
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
@@ -279,6 +463,20 @@ export function GrokChatPanel() {
             className="min-h-[44px] max-h-40 flex-1 resize-none border-none bg-transparent px-2 py-2 text-[15px] leading-relaxed shadow-none placeholder:text-[var(--neo-muted)] focus-visible:outline-none"
             disabled={sending}
           />
+          <select
+            value={aspectRatio}
+            onChange={(e) => setAspectRatio(e.target.value)}
+            className="neo-input h-9 rounded-lg px-1.5 text-sm text-[var(--neo-ink)] focus-visible:outline-none"
+            aria-label="画幅比例"
+            title="画幅比例"
+            disabled={sending || imagining}
+          >
+            {["1:1", "16:9", "9:16", "4:3", "3:4"].map((r) => (
+              <option key={r} value={r}>
+                {r}
+              </option>
+            ))}
+          </select>
           <select
             value={imageCount}
             onChange={(e) => setImageCount(Number(e.target.value))}

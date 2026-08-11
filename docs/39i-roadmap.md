@@ -1,7 +1,7 @@
 # 39i — Grok 子系统 Roadmap（多路侦察汇总 2026-08-08）
 
-> 来源：5 路只读侦察（后端体检/前端部署/签名链路/文档对照/Go 全貌）+ 全程攻坚记录。
-> 结论先行：**技术层已完备可切流，卡点是外部账号池**；后续工作分「切流放行 / 深化 / 远期」三层。
+> 来源：5 路只读侦察 + 全程攻坚记录。最后对齐：**2026-08-10**（见 [39k-pure-http-verification-matrix.md](39k-pure-http-verification-matrix.md)）。  
+> 结论先行：**签名/协议已通，但 TNexus 调度用的 grok2api 老池 POST 全死**；yumail 活号 + `pure_http_client` 链路可纯 HTTP 200，**未灌 PG**。
 
 ---
 
@@ -15,7 +15,15 @@
 | **前端** | 🟡 B（页面全建、数据面依赖后端） | 7 页 + 10 组件 + 独立 grokApi；静态导出已过；未接线入口已清点 |
 | **上线链路** | 🟡 B（部署脚本/CI 全绿，**流量未开**） | compose/nginx/CI 就绪；media 501/videos 500 待收尾；3 个 sidecar 任务（quota_refresh/dispatch_probe/pin_sync）标注 TODO |
 
-**当前唯一硬阻塞**：grokImage 账号池（687 个实测）被 grok 批量风控禁言发消息——POST 全 403。与代码无关。
+**当前硬阻塞**（分池）：
+
+| 池 | POST chat | 说明 |
+|----|-----------|------|
+| grok2api → PG **672** | ❌ 0/672（2026-08-10） | TNexus/grok2api-rs 生产调度池 |
+| yumail `@yumail.co` 老号 | ✅ 本机 + Panda udeal 有实证 | 未 ETL 进 PG |
+| 8/8 新注册 kevin | ❌ | 不能靠「新号」 alone 解阻塞 |
+
+Rust 生产路径（`NativeSigner` + node 风格 probe）与 `pure_http_client`（Python statsig + session keys）**未对齐**。
 
 ## 2. Roadmap
 
