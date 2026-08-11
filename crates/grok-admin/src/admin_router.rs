@@ -277,6 +277,7 @@ impl AdminRouter {
             .unwrap_or(1);
         let page_size = params
             .get("pageSize")
+            .or_else(|| params.get("page_size"))
             .and_then(|v| v.parse::<i64>().ok())
             .unwrap_or(20)
             .clamp(1, 200);

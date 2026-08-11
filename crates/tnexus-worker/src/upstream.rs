@@ -222,7 +222,12 @@ impl UpstreamClient {
         let status = resp.status();
         let text = resp.text().await.context("image generation body")?;
         if !status.is_success() {
-            return Err(anyhow::anyhow!("image generation HTTP {status}: {text}"));
+            let hint = if status.as_u16() == 401 && text.contains("invalid session") {
+                "（Gateway JWT 过期：在 Panda 运行 deploy/panda/refresh_upstream_jwt.sh 后重启 worker）"
+            } else {
+                ""
+            };
+            return Err(anyhow::anyhow!("image generation HTTP {status}: {text}{hint}"));
         }
         let resp: ImageGenerationResponse =
             serde_json::from_str(&text).context("image generation json")?;

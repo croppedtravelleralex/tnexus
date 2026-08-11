@@ -406,12 +406,16 @@ async fn admin_refresh(
 async fn admin_handle(
     State(state): State<AdminState>,
     method: Method,
+    uri: axum::http::Uri,
     Path(path): Path<String>,
     headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> impl IntoResponse {
-    // axum 的 {*path} 不含前导斜杠；AdminRouter 期待完整路径（含 /admin 前缀）。
-    let full_path = format!("/admin/{path}");
+    // axum 的 {*path} 不含前导斜杠与 query；AdminRouter 通过 split_query 解析分页参数。
+    let full_path = match uri.query() {
+        Some(q) if !q.is_empty() => format!("/admin/{path}?{q}"),
+        _ => format!("/admin/{path}"),
+    };
     let authorization = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
@@ -538,6 +542,34 @@ mod tests {
             "列表应含新建模型: {}",
             listed.body
         );
+    }
+
+    #[tokio::test]
+    async fn accounts_list_honors_page_query() {
+        let (router, token) = bundle_with_admin().await;
+        let auth = |bearer: &str| Some(format!("Bearer {bearer}"));
+        let page1 = router
+            .handle(
+                "GET",
+                "/admin/accounts?page=1&pageSize=5",
+                auth(&token).as_deref(),
+                None,
+            )
+            .await;
+        assert_eq!(page1.status, 200, "{}", page1.body);
+        assert_eq!(page1.body["pageSize"], 5, "{}", page1.body);
+        assert_eq!(page1.body["page"], 1, "{}", page1.body);
+        let page2 = router
+            .handle(
+                "GET",
+                "/admin/accounts?page=2&pageSize=5",
+                auth(&token).as_deref(),
+                None,
+            )
+            .await;
+        assert_eq!(page2.status, 200, "{}", page2.body);
+        assert_eq!(page2.body["page"], 2, "{}", page2.body);
+        assert_eq!(page2.body["pageSize"], 5, "{}", page2.body);
     }
 
     #[tokio::test]
