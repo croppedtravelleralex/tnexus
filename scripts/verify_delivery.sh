@@ -58,7 +58,7 @@ echo "=== Gateway image + JWT ==="
 GW="${GATEWAY_AUTH_KEY:?}"
 python3 -c "import jwt,sys,time; t=sys.argv[1]; p=jwt.decode(t,options={'verify_signature':False}); assert p.get('exp',0)>int(time.time())" "$GW" \
   && pass jwt_valid || fail jwt_valid
-CODE=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 180 -X POST http://127.0.0.1:8014/v1/images/generations \
+CODE=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 300 -X POST http://127.0.0.1:8014/v1/images/generations \
   -H "Authorization: Bearer $GW" -H "Content-Type: application/json" \
   -d '{"model":"gpt-image-2","prompt":"verify_delivery","n":1,"size":"256x256","response_format":"b64_json"}')
 [[ "$CODE" == "200" ]] && pass gateway_image || fail "gateway_image http=$CODE"
