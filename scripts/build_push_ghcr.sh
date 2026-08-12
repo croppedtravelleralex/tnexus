@@ -9,6 +9,20 @@ OWNER="${GHCR_OWNER:-croppedtravelleralex}"
 TAG="${IMAGE_TAG:-latest}"
 SHA="$(git -C "$ROOT" rev-parse --short HEAD)"
 API_BASE="${NEXT_PUBLIC_API_BASE:-https://tnexus.relai.asia}"
+RUNTIME_IMAGE="${TNEXUS_RUNTIME_IMAGE:-tnexus-runtime:bookworm}"
+
+# debian 镜像源慢时 apt 层能跑十几分钟，而 repack 每次都会重来一遍。
+# 做成一次性本地基础镜像，后续 repack 只剩一层 COPY。
+ensure_runtime_image() {
+  if docker image inspect "$RUNTIME_IMAGE" >/dev/null 2>&1; then
+    return
+  fi
+  echo ">>> building $RUNTIME_IMAGE (one-off)"
+  local empty_ctx
+  empty_ctx="$(mktemp -d)"
+  docker build --network host -f "$ROOT/Dockerfile.runtime" -t "$RUNTIME_IMAGE" "$empty_ctx"
+  rmdir "$empty_ctx"
+}
 
 build_tnexus() {
   echo ">>> repack tnexus from prebuilt artifacts ($TAG + $SHA)"
@@ -70,11 +84,27 @@ build_grok() {
 }
 
 build_gateway() {
-  echo ">>> build tnexus-gateway ($TAG + $SHA) from Dockerfile.gateway"
-  docker build --network host -f "$ROOT/Dockerfile.gateway" \
+  echo ">>> repack tnexus-gateway from prebuilt artifact ($TAG + $SHA)"
+  local bin="$ROOT/target/release/gptimage-gateway-rs"
+  # 在 bookworm 容器里编译（复用增量 target），而不是在镜像层里冷编译整个依赖树。
+  if [[ "${FORCE_REBUILD:-0}" == "1" ]] || [[ ! -f "$bin" ]]; then
+    bash "$ROOT/scripts/build_linux_bins_fast.sh" gateway:gptimage-gateway-rs
+  elif ! docker run --rm -v "$bin:/bin/gw:ro" --entrypoint true debian:bookworm-slim /bin/gw 2>/dev/null; then
+    echo ">>> existing binary incompatible with bookworm, rebuilding"
+    bash "$ROOT/scripts/build_linux_bins_fast.sh" gateway:gptimage-gateway-rs
+  else
+    echo ">>> skip cargo (binary exists and runs on bookworm; FORCE_REBUILD=1 to override)"
+  fi
+  ensure_runtime_image
+  local stage="$ROOT/dist/docker-gateway"
+  rm -rf "$stage"
+  mkdir -p "$stage"
+  cp "$bin" "$stage/"
+  docker build --network host -f "$ROOT/Dockerfile.gateway.repack" \
+    --build-arg "RUNTIME_IMAGE=$RUNTIME_IMAGE" \
     -t "ghcr.io/$OWNER/tnexus-gateway:$TAG" \
     -t "ghcr.io/$OWNER/tnexus-gateway:$SHA" \
-    "$ROOT"
+    "$stage"
   docker push "ghcr.io/$OWNER/tnexus-gateway:$TAG"
   docker push "ghcr.io/$OWNER/tnexus-gateway:$SHA"
 }

@@ -1,0 +1,10 @@
+# 本地预编译 gateway → GHCR（context = dist/docker-gateway/，见 scripts/build_push_ghcr.sh）
+# 与 Dockerfile.gateway 的区别：不在镜像层里 cargo build，改为 COPY 已在
+# bookworm 容器内编译好的产物，从而复用宿主机的增量 target 缓存。
+# 基础镜像用本地 tnexus-runtime:bookworm（见 Dockerfile.runtime），避免每次重跑 apt。
+ARG RUNTIME_IMAGE=tnexus-runtime:bookworm
+FROM ${RUNTIME_IMAGE}
+COPY gptimage-gateway-rs /usr/local/bin/gptimage-gateway-rs
+ENV GATEWAY_LISTEN=0.0.0.0:8014
+EXPOSE 8014
+ENTRYPOINT ["/usr/local/bin/gptimage-gateway-rs"]

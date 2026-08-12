@@ -1,0 +1,7 @@
+# 运行时基础镜像：debian:bookworm-slim + ca-certificates。
+# 单独成像是为了让 apt 层只付一次代价——在慢速网络下这一步曾耗时 14 分钟，
+# 而它每次 repack 都会重跑（apt 的 InRelease 每次都要重新拉取）。
+FROM debian:bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*

@@ -4,3 +4,5 @@ web/.next
 .env
 *.db
 .git
+dist
+reports
