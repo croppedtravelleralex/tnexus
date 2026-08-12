@@ -17,7 +17,9 @@ services:
       IMAGE_GLOBAL_CONCURRENCY: "10"
       IMAGE_ACCOUNT_INFLIGHT_MAX: "1"
       IMAGE_ADMIN_RETRY_MAX: "5"
-      UPSTREAM_IMAGE_POLL_TIMEOUT_SECS: "300"
+      # Measured successful generations reach 407s (p99≈349s); 300s cut off
+      # requests that would have succeeded.
+      UPSTREAM_IMAGE_POLL_TIMEOUT_SECS: "420"
       UPSTREAM_IMAGE_POLL_INITIAL_WAIT_SECS: "5"
       UPSTREAM_IMAGE_POLL_INTERVAL_SECS: "3"
       UPSTREAM_IMAGE_POLL_SETTLE_SECS: "2"

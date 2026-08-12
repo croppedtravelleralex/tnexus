@@ -45,6 +45,14 @@ pub fn classify_fault(fault: Option<&str>, message: Option<&str>) -> ErrorClass 
     if msg.contains("admission") || msg.contains("duplicate-prompt") || msg.contains("quota") {
         return ErrorClass::Gate;
     }
+    // Oversized payloads are the caller's input, not an upstream fault. Reporting
+    // them as `upstream` surfaces a 502 that NewAPI counts against channel health.
+    if msg.contains("message_length_exceeds_limit")
+        || msg.contains("payload too large")
+        || msg.contains("http 413")
+    {
+        return ErrorClass::Client;
+    }
     if msg.contains("invalid_request")
         || msg.contains("must include")
         || msg.contains("unsupported")
@@ -130,6 +138,20 @@ mod tests {
     #[test]
     fn empty_input_defaults_to_upstream() {
         assert_eq!(classify_fault(None, None), ErrorClass::Upstream);
+    }
+
+    #[test]
+    fn oversized_payload_is_client() {
+        for msg in [
+            "conversation HTTP 413 Payload Too Large: {\"detail\":{\"code\":\"message_length_exceeds_limit\"}}",
+            "upstream returned payload too large",
+        ] {
+            assert_eq!(
+                classify_fault(None, Some(msg)),
+                ErrorClass::Client,
+                "{msg}"
+            );
+        }
     }
 
     #[test]

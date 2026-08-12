@@ -15,9 +15,20 @@ if [[ ! -f "$GATEWAY_ENV" ]]; then
   exit 1
 fi
 
-if ! curl -fsS -o /dev/null --max-time 3 http://127.0.0.1:8014/health 2>/dev/null; then
-  echo "gateway :8014 not healthy — skip UPSTREAM_API_KEY refresh" >&2
-  exit 0
+# gateway 重启窗口内 health 会短暂失败；静默跳过会让 JWT 一直过期，故重试后再放弃。
+HEALTH_RETRIES="${HEALTH_RETRIES:-5}"
+HEALTH_SLEEP="${HEALTH_SLEEP:-10}"
+healthy=0
+for _ in $(seq 1 "$HEALTH_RETRIES"); do
+  if curl -fsS -o /dev/null --max-time 3 http://127.0.0.1:8014/health 2>/dev/null; then
+    healthy=1
+    break
+  fi
+  sleep "$HEALTH_SLEEP"
+done
+if [[ "$healthy" -ne 1 ]]; then
+  echo "gateway :8014 not healthy after ${HEALTH_RETRIES} tries — refresh aborted" >&2
+  exit 1
 fi
 
 PASS=$(grep '^AUTH_BOOTSTRAP_ADMIN_PASSWORD=' "$GATEWAY_ENV" | cut -d= -f2- || true)
@@ -48,9 +59,20 @@ chmod 600 "$ENV_FILE"
 echo "refreshed UPSTREAM_API_KEY + GATEWAY_AUTH_KEY (len=${#GW_TOKEN})"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -x "$SCRIPT_DIR/newapi_grayd_tnexus.sh" ]]; then
-  bash "$SCRIPT_DIR/newapi_grayd_tnexus.sh" sync-key || true
-fi
-if [[ -x "$SCRIPT_DIR/newapi_tnexus_dedicated.sh" ]]; then
-  bash "$SCRIPT_DIR/newapi_tnexus_dedicated.sh" sync-key || true
-fi
+
+# 用 -f 而非 -x：这些脚本经 git/scp 落盘后常是 0644，用 -x 判断会让同步被静默跳过，
+# 导致 .env 已换新 JWT 而 NewAPI 渠道仍持旧 key，旧 key 过期后成片 401 invalid session。
+sync_rc=0
+for s in newapi_grayd_tnexus.sh newapi_tnexus_dedicated.sh; do
+  if [[ -f "$SCRIPT_DIR/$s" ]]; then
+    if bash "$SCRIPT_DIR/$s" sync-key; then
+      echo "sync-key ok: $s"
+    else
+      echo "sync-key FAILED: $s" >&2
+      sync_rc=1
+    fi
+  else
+    echo "sync-key skipped (missing): $s" >&2
+  fi
+done
+exit "$sync_rc"

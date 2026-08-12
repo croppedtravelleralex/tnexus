@@ -154,8 +154,22 @@ pub fn chat_message_prefers_text(text: &str) -> bool {
     false
 }
 
+/// Model slugs that can only produce images (`gpt-image-2`, `dall-e-3`, …).
+pub fn model_is_image_model(model: &str) -> bool {
+    let m = model.trim().to_ascii_lowercase();
+    m.contains("image") || m.contains("dall-e") || m.contains("dalle")
+}
+
 /// Whether chat should route to inline image generation.
-pub fn chat_should_use_image_path(text: &str, image_mode: bool) -> bool {
+///
+/// `model` is authoritative: an image-only slug must never fall through to the
+/// text path. Keyword/`image_mode` heuristics alone let `gpt-image-2` requests
+/// reach `fold_chat_messages_for_upstream`, which folds the whole history into
+/// one message and trips upstream's 413 `message_length_exceeds_limit`.
+pub fn chat_should_use_image_path(model: &str, text: &str, image_mode: bool) -> bool {
+    if model_is_image_model(model) {
+        return true;
+    }
     if chat_message_requests_image(text) {
         return true;
     }

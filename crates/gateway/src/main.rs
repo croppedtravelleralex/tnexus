@@ -68,6 +68,9 @@ use uuid::Uuid;
 /// Axum default is 2MB; image edits multipart must accept large PNG uploads (nginx allows 256m).
 const MAX_REQUEST_BODY_BYTES: usize = 32 * 1024 * 1024;
 
+/// Upper bound for the folded chat history sent upstream as a single message.
+const MAX_FOLDED_PROMPT_CHARS: usize = 30_000;
+
 /// Build the CORS layer from a comma-separated origin allowlist.
 ///
 /// tower-http rejects `Access-Control-Allow-Credentials: true` alongside a
@@ -858,12 +861,7 @@ async fn chat_image_completions(
         }
         Err(e) => {
             error!(error=%e, "chat image upstream failed");
-            err(
-                StatusCode::BAD_GATEWAY,
-                e.to_string(),
-                "upstream_unreachable",
-                Some("upstream"),
-            )
+            upstream_error_response(&e, "upstream_unreachable")
         }
     }
 }
@@ -890,6 +888,17 @@ async fn chat_completions(
             Some("client"),
         );
     }
+    // Folding sends the whole history as one upstream message; reject early rather
+    // than let upstream answer 413, and never truncate (that would silently drop
+    // the system prompt or the newest instruction).
+    if prompt.chars().count() > MAX_FOLDED_PROMPT_CHARS {
+        return err(
+            StatusCode::BAD_REQUEST,
+            format!("folded conversation exceeds {MAX_FOLDED_PROMPT_CHARS} chars; shorten history"),
+            "prompt_too_long",
+            Some("client"),
+        );
+    }
 
     let account =
         match resolve_account(&st, preferred_email(&headers), user.claims.role.is_admin()).await {
@@ -897,7 +906,7 @@ async fn chat_completions(
             Err(r) => return r,
         };
 
-    if chat_should_use_image_path(&last_user, req.image_mode) {
+    if chat_should_use_image_path(&req.model, &last_user, req.image_mode) {
         return chat_image_completions(&st, &req, &account, &last_user).await;
     }
 
@@ -926,12 +935,7 @@ async fn chat_completions(
                 }
                 Err(e) => {
                     error!(error=%e, "upstream text stream failed");
-                    err(
-                        StatusCode::BAD_GATEWAY,
-                        e.to_string(),
-                        "text_stream_failed",
-                        Some("upstream"),
-                    )
+                    upstream_error_response(&e, "text_stream_failed")
                 }
             };
         }
@@ -986,12 +990,7 @@ async fn chat_completions(
             }
             Err(e) => {
                 error!(error=%e, "upstream text call failed");
-                return err(
-                    StatusCode::BAD_GATEWAY,
-                    e.to_string(),
-                    "text_failed",
-                    Some("upstream"),
-                );
+                return upstream_error_response(&e, "text_failed");
             }
         }
     }
@@ -1238,7 +1237,8 @@ fn image_batch_bridge_failure(
     let (code, err_code) = match class {
         protocol::ErrorClass::Self_ => (StatusCode::INTERNAL_SERVER_ERROR, "image_failed"),
         protocol::ErrorClass::Gate => (StatusCode::TOO_MANY_REQUESTS, "image_quota_insufficient"),
-        _ => (StatusCode::BAD_GATEWAY, "image_failed"),
+        protocol::ErrorClass::Client => (StatusCode::BAD_REQUEST, "invalid_request"),
+        protocol::ErrorClass::Upstream => (StatusCode::BAD_GATEWAY, "image_failed"),
     };
     err(code, msg, err_code, Some(class.as_str()))
 }
@@ -1250,20 +1250,16 @@ fn image_batch_upstream_failure(
     e: &anyhow::Error,
 ) -> Response {
     error!(email=%account.email, elapsed_ms, error=%e, "image call failed");
-    err(
-        StatusCode::BAD_GATEWAY,
-        e.to_string(),
-        if st.data_plane == DataPlane::Upstream {
-            "upstream_unreachable"
-        } else {
-            "helper_unreachable"
-        },
-        Some(if st.data_plane == DataPlane::Upstream {
-            "upstream"
-        } else {
-            "self"
-        }),
-    )
+    if st.data_plane == DataPlane::Upstream {
+        upstream_error_response(e, "upstream_unreachable")
+    } else {
+        err(
+            StatusCode::BAD_GATEWAY,
+            e.to_string(),
+            "helper_unreachable",
+            Some("self"),
+        )
+    }
 }
 
 async fn image_generations(
@@ -1936,6 +1932,22 @@ fn err(
     fault: Option<&str>,
 ) -> Response {
     err_wait(status, message, code, fault, 30)
+}
+
+/// Map an upstream `anyhow::Error` to a status via the contract taxonomy.
+///
+/// Hardcoding 502 here made client-input faults (notably upstream's 413
+/// `message_length_exceeds_limit`) look like channel outages to NewAPI.
+fn upstream_error_response(e: &anyhow::Error, code: &str) -> Response {
+    let msg = e.to_string();
+    let class = classify_fault(None, Some(&msg));
+    let status = match class {
+        protocol::ErrorClass::Client => StatusCode::BAD_REQUEST,
+        protocol::ErrorClass::Gate => StatusCode::TOO_MANY_REQUESTS,
+        protocol::ErrorClass::Self_ => StatusCode::INTERNAL_SERVER_ERROR,
+        protocol::ErrorClass::Upstream => StatusCode::BAD_GATEWAY,
+    };
+    err(status, msg, code, Some(class.as_str()))
 }
 
 fn err_wait(

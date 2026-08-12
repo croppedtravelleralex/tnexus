@@ -58,9 +58,12 @@ echo "=== Gateway image + JWT ==="
 GW="${GATEWAY_AUTH_KEY:?}"
 python3 -c "import jwt,sys,time; t=sys.argv[1]; p=jwt.decode(t,options={'verify_signature':False}); assert p.get('exp',0)>int(time.time())" "$GW" \
   && pass jwt_valid || fail jwt_valid
-CODE=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 300 -X POST http://127.0.0.1:8014/v1/images/generations \
+# Unique prompt per run: the gateway 429s an identical prompt seen within its
+# dedup TTL, which previously made repeat smoke runs fail spuriously.
+IMG_PROMPT="verify_delivery $(date +%s)"
+CODE=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 430 -X POST http://127.0.0.1:8014/v1/images/generations \
   -H "Authorization: Bearer $GW" -H "Content-Type: application/json" \
-  -d '{"model":"gpt-image-2","prompt":"verify_delivery","n":1,"size":"256x256","response_format":"b64_json"}')
+  -d "$(printf '{"model":"gpt-image-2","prompt":"%s","n":1,"size":"256x256","response_format":"b64_json"}' "$IMG_PROMPT")")
 [[ "$CODE" == "200" ]] && pass gateway_image || fail "gateway_image http=$CODE"
 
 echo "=== NewAPI channel key sync ==="
