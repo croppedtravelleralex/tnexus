@@ -559,6 +559,22 @@ pub fn poll_image_ready_from_tasks(tasks: &[Value]) -> Option<Vec<String>> {
     }
 }
 
+/// Back off after a failed conversation GET.
+///
+/// A flat 2s retry is *shorter* than the normal poll interval, so an upstream 429
+/// made us poll faster than usual and kept the rate limit engaged — one request
+/// once burned 141 attempts over its whole budget without ever recovering.
+fn poll_error_backoff(err: &str, consecutive: u32, interval: Duration) -> Duration {
+    const MAX_BACKOFF: Duration = Duration::from_secs(30);
+    let base = if err.contains("429") {
+        interval.max(Duration::from_secs(5))
+    } else {
+        Duration::from_secs(2)
+    };
+    let shift = consecutive.saturating_sub(1).min(4);
+    base.saturating_mul(1u32 << shift).min(MAX_BACKOFF)
+}
+
 async fn cancel_aware_sleep(deadline: Instant, duration: Duration) {
     let remaining = deadline.saturating_duration_since(Instant::now());
     let sleep_for = duration.min(remaining);
@@ -591,6 +607,7 @@ where
     let mut tasks_gets: u32 = 0;
     let mut last_task_error = String::new();
     let mut last_hit_key: Option<(Vec<String>, Vec<String>)> = None;
+    let mut consecutive_errors: u32 = 0;
 
     if file_ids.is_empty() && sediment_ids.is_empty() && config.initial_wait > Duration::ZERO {
         info!(
@@ -619,6 +636,7 @@ where
 
         match get_conversation(client, &headers_fn, conversation_id).await {
             Ok(conversation) => {
+                consecutive_errors = 0;
                 if let Some(reason) = detect_image_gen_failure_from_conversation(&conversation) {
                     bail!("upstream image generation failed: {reason}");
                 }
@@ -645,13 +663,18 @@ where
                 }
             }
             Err(err) => {
+                consecutive_errors += 1;
+                let backoff =
+                    poll_error_backoff(&err.to_string(), consecutive_errors, config.interval);
                 info!(
                     conversation_id = %conversation_id,
                     attempt,
+                    consecutive_errors,
+                    backoff_secs = backoff.as_secs_f64(),
                     error = %err,
                     "image poll conversation GET failed"
                 );
-                cancel_aware_sleep(deadline, Duration::from_secs(2)).await;
+                cancel_aware_sleep(deadline, backoff).await;
                 continue;
             }
         }
@@ -809,6 +832,32 @@ mod tests {
         let (file_ids, sediment_ids) = extract_image_ids_from_conversation(&data);
         assert_eq!(file_ids, ["file_00000000a1b2c3d4e5f678901234"]);
         assert!(sediment_ids.is_empty());
+    }
+
+    #[test]
+    fn rate_limited_backoff_exceeds_poll_interval() {
+        let interval = Duration::from_secs(3);
+        let err = "conversation HTTP 429 Too Many Requests: {\"detail\":\"Too many requests\"}";
+        let first = poll_error_backoff(err, 1, interval);
+        assert!(
+            first > interval,
+            "a 429 must slow polling down, got {first:?} vs interval {interval:?}"
+        );
+        // grows with consecutive failures, but stays bounded
+        assert!(poll_error_backoff(err, 3, interval) > first);
+        assert_eq!(
+            poll_error_backoff(err, 99, interval),
+            Duration::from_secs(30)
+        );
+    }
+
+    #[test]
+    fn transient_error_backoff_stays_short() {
+        let interval = Duration::from_secs(3);
+        assert_eq!(
+            poll_error_backoff("connection reset", 1, interval),
+            Duration::from_secs(2)
+        );
     }
 
     #[test]
