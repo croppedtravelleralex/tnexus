@@ -22,7 +22,10 @@ def panda_sync_enabled() -> None:
         "bash /root/TNexus/scripts/sync_grok_enabled_from_keys.sh "
         "--keys-dir /opt/tnexus/pure_http_keys --apply'"
     )
-    subprocess.call(["ssh", os.environ.get("PANDA_SSH", "panda"), remote])
+    try:
+        subprocess.call(["ssh", os.environ.get("PANDA_SSH", "panda"), remote], timeout=600)
+    except subprocess.TimeoutExpired:
+        print("WARN: panda sync enabled timed out", flush=True)
 
 
 def main() -> int:

@@ -29,7 +29,15 @@ _LOG_LOCK = threading.Lock()
 _SYNC_LOCK = threading.Lock()
 
 
-def sh(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+# Panda 侧 ssh/scp 必须带超时：并发 6 个 worker 时曾出现 ssh 连接挂死，
+# subprocess 无 timeout 会让 worker 永久阻塞，整批停在 41/50 不动。
+SSH_TIMEOUT = float(os.environ.get("PANDA_SSH_TIMEOUT", "150"))
+SSH_RETRIES = int(os.environ.get("PANDA_SSH_RETRIES", "3"))
+
+
+def sh(
+    cmd: list[str], *, check: bool = True, timeout: float | None = SSH_TIMEOUT
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         cmd,
         capture_output=True,
@@ -37,7 +45,25 @@ def sh(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str
         encoding="utf-8",
         errors="replace",
         check=check,
+        timeout=timeout,
     )
+
+
+def sh_retry(cmd: list[str], *, what: str) -> subprocess.CompletedProcess[str]:
+    """带超时+重试的 ssh/scp；全部失败抛 RuntimeError（不会挂死 worker）。"""
+    last = ""
+    for attempt in range(1, SSH_RETRIES + 1):
+        try:
+            r = sh(cmd, check=False)
+        except subprocess.TimeoutExpired:
+            last = f"timeout>{SSH_TIMEOUT:.0f}s"
+        else:
+            if r.returncode == 0:
+                return r
+            last = f"rc={r.returncode} {(r.stderr or '').strip()[:160]}"
+        if attempt < SSH_RETRIES:
+            time.sleep(2.0 * attempt)
+    raise RuntimeError(f"{what} failed after {SSH_RETRIES} tries: {last}")
 
 
 def panda_account_ids(limit: int = 0, offset: int = 0) -> list[int]:
@@ -49,15 +75,14 @@ def panda_account_ids(limit: int = 0, offset: int = 0) -> list[int]:
 
 
 def panda_fetch_sso(account_id: int) -> dict:
-    r = subprocess.run(
+    r = sh_retry(
         ["ssh", PANDA, "python3", "/root/TNexus/scripts/panda_fetch_sso.py", str(account_id)],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=True,
+        what=f"fetch_sso({account_id})",
     )
-    data = json.loads(r.stdout.strip().splitlines()[-1])
+    lines = [l for l in r.stdout.strip().splitlines() if l.strip()]
+    if not lines:
+        raise RuntimeError(f"account {account_id}: empty fetch_sso output")
+    data = json.loads(lines[-1])
     if data.get("error"):
         raise RuntimeError(data["error"])
     if not data.get("sso"):
@@ -66,7 +91,7 @@ def panda_fetch_sso(account_id: int) -> dict:
 
 
 def scp_key_to_panda(local_path: Path) -> None:
-    sh(["scp", str(local_path), f"{PANDA}:{PANDA_KEYS}/"], check=True)
+    sh_retry(["scp", str(local_path), f"{PANDA}:{PANDA_KEYS}/"], what=f"scp({local_path.name})")
 
 
 def panda_sync_enabled() -> None:
@@ -78,7 +103,10 @@ def panda_sync_enabled() -> None:
         f"--keys-dir {PANDA_KEYS} --apply'"
     )
     with _SYNC_LOCK:
-        sh(["ssh", PANDA, remote], check=False)
+        try:
+            sh(["ssh", PANDA, remote], check=False, timeout=600)
+        except subprocess.TimeoutExpired:
+            print("WARN: panda sync enabled timed out", file=sys.stderr, flush=True)
 
 
 def log_row(row: dict) -> None:
