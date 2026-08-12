@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 本地构建并推送 GHCR（Actions 分钟用尽时的合规发布链路）
-# 用法：bash scripts/build_push_ghcr.sh [tnexus|grok|all]
+# 用法：bash scripts/build_push_ghcr.sh [tnexus|grok|gateway|all]
 # 前置：docker login ghcr.io -u croppedtravelleralex（PAT 需 write:packages）
 set -euo pipefail
 
@@ -69,12 +69,23 @@ build_grok() {
   docker push "ghcr.io/$OWNER/grok2api-rs:$SHA"
 }
 
+build_gateway() {
+  echo ">>> build tnexus-gateway ($TAG + $SHA) from Dockerfile.gateway"
+  docker build --network host -f "$ROOT/Dockerfile.gateway" \
+    -t "ghcr.io/$OWNER/tnexus-gateway:$TAG" \
+    -t "ghcr.io/$OWNER/tnexus-gateway:$SHA" \
+    "$ROOT"
+  docker push "ghcr.io/$OWNER/tnexus-gateway:$TAG"
+  docker push "ghcr.io/$OWNER/tnexus-gateway:$SHA"
+}
+
 what="${1:-all}"
 case "$what" in
   tnexus) build_tnexus ;;
   grok) build_grok ;;
-  all) build_tnexus; build_grok ;;
-  *) echo "usage: $0 [tnexus|grok|all]" >&2; exit 2 ;;
+  gateway) build_gateway ;;
+  all) build_tnexus; build_grok; build_gateway ;;
+  *) echo "usage: $0 [tnexus|grok|gateway|all]" >&2; exit 2 ;;
 esac
 
 echo ">>> done. Panda: ssh panda 'cd /root/TNexus && bash deploy/panda/deploy.sh && bash deploy/panda/grok-bootstrap.sh'"

@@ -74,7 +74,8 @@ deploy() {
   up_and_probe
 
   # 部署后按 pure_http_keys 同步 grok_web enabled（有 key 启用，无 key 禁用）。
-  if [[ -x "$TNEXUS_ROOT/scripts/sync_grok_enabled_from_keys.sh" ]] \
+  # -f, not -x: git stores this as 0644, so an -x guard silently skips the sync.
+  if [[ -f "$TNEXUS_ROOT/scripts/sync_grok_enabled_from_keys.sh" ]] \
     && [[ -n "${GROK_DATABASE_URL:-}" ]]; then
     bash "$TNEXUS_ROOT/scripts/sync_grok_enabled_from_keys.sh" \
       --keys-dir "${GROK_PURE_HTTP_KEYS_DIR:-/opt/tnexus/pure_http_keys}" \

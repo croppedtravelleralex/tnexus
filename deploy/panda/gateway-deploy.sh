@@ -29,7 +29,9 @@ curl -fsS http://127.0.0.1:8014/health
 echo
 
 # Gateway recreate wipes ephemeral /data/auth.db; refresh worker JWT to match bootstrap user.
-if [[ -x "$TNEXUS_ROOT/deploy/panda/refresh_upstream_jwt.sh" ]]; then
+# Test with -f, not -x: git stores these as 0644, so an -x guard skips the refresh
+# and leaves NewAPI holding a JWT the freshly recreated gateway rejects.
+if [[ -f "$TNEXUS_ROOT/deploy/panda/refresh_upstream_jwt.sh" ]]; then
   bash "$TNEXUS_ROOT/deploy/panda/refresh_upstream_jwt.sh"
 fi
 if [[ -f "$TNEXUS_ROOT/deploy/panda/docker-compose.yml" ]]; then
