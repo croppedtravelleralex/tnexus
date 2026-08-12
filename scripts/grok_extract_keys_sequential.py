@@ -26,14 +26,21 @@ LOG_PATH = ROOT / "reports" / "key_extract_progress.jsonl"
 
 
 def sh(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, capture_output=True, text=True, check=check)
+    return subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=check,
+    )
 
 
 def panda_account_ids(limit: int = 0, offset: int = 0) -> list[int]:
     cmd = ["ssh", PANDA, "python3", "/root/TNexus/scripts/panda_list_grok_ids.py"]
     if limit > 0:
         cmd.extend([str(limit), str(offset)])
-    r = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", check=True)
     return [int(x) for x in r.stdout.split() if x.strip().isdigit()]
 
 
@@ -104,7 +111,8 @@ def main() -> int:
         if args.skip_existing and out_local.exists():
             try:
                 keys = json.loads(out_local.read_text(encoding="utf-8"))
-                if keys.get("fingerprint") and keys.get("meta_b64"):
+                fp = (keys.get("fingerprint") or "").strip()
+                if keys.get("meta_b64") and len(fp) >= 8:
                     print(f"[{i+1}/{len(ids)}] skip {aid} (local key exists)")
                     skip += 1
                     continue
