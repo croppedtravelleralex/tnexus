@@ -52,6 +52,7 @@ def extract_for_account(account_id: int, *, headed: bool = False) -> Path:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--account-ids", default="86,304,92", help="comma-separated grok2api ids")
+    ap.add_argument("--account", dest="account_ids", help="alias for single id")
     ap.add_argument("--headed", action="store_true")
     args = ap.parse_args()
     ids = [int(x.strip()) for x in args.account_ids.split(",") if x.strip()]
