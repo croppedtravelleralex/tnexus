@@ -45,6 +45,11 @@ pub fn classify_fault(fault: Option<&str>, message: Option<&str>) -> ErrorClass 
     if msg.contains("admission") || msg.contains("duplicate-prompt") || msg.contains("quota") {
         return ErrorClass::Gate;
     }
+    // Upstream image quota exhaustion is a rate limit, not a channel outage; as a 502
+    // it counts against channel health and hides the fact that a retry would work.
+    if msg.contains("image_instant_limit") || msg.contains("image creation limit") {
+        return ErrorClass::Gate;
+    }
     // Oversized payloads are the caller's input, not an upstream fault. Reporting
     // them as `upstream` surfaces a 502 that NewAPI counts against channel health.
     if msg.contains("message_length_exceeds_limit")
@@ -138,6 +143,17 @@ mod tests {
     #[test]
     fn empty_input_defaults_to_upstream() {
         assert_eq!(classify_fault(None, None), ErrorClass::Upstream);
+    }
+
+    #[test]
+    fn image_quota_exhaustion_is_gate() {
+        assert_eq!(
+            classify_fault(
+                None,
+                Some("upstream image generation failed (image_instant_limit): You've hit the limit")
+            ),
+            ErrorClass::Gate
+        );
     }
 
     #[test]
