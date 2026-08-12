@@ -28,7 +28,12 @@ done
 enable_ids=()
 for f in "$KEYS_DIR"/account_*.json; do
   [ -f "$f" ] || continue
-  id="${f##*/account_}"; id="${id%.json}"
+  base="${f##*/account_}"; base="${base%.json}"
+  # 仅 account_{数字}.json；跳过 account_100_at_oldpool.local 等旁路命名
+  case "$base" in
+    *[!0-9]*) continue ;;
+  esac
+  id="$base"
   if python3 -c "import json,sys; d=json.load(open(sys.argv[1])); fp=str(d.get('fingerprint','')).strip(); sys.exit(0 if fp else 1)" "$f" 2>/dev/null; then
     enable_ids+=("$id")
   fi
