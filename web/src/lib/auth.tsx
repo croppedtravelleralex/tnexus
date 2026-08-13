@@ -1,7 +1,8 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { authApi, healthApi, isApiOfflineError, type User } from "@/lib/api";
+import { clearAllCaches } from "@/lib/api-cache";
 
 const USER_CACHE_KEY = "tnexus_auth_user";
 

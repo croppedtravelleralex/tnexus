@@ -35,6 +35,16 @@ const TERMINAL_TASK_STATUSES: &[&str] = &[
 /// 会话文档的竞态。
 const TERMINAL_TASK_CONFIRMATIONS: u32 = 2;
 
+/// 连续多少轮观察到「会话里压根没有 image_gen 节点且无图」才判定生图工具从未被调用。
+///
+/// 线上实测：SSE 走完 22 个事件即结束且无 file_id，随后 94 轮全是 `no ids yet`，
+/// 直到 420s 用尽。那种会话根本没有创建异步任务，因此 `/backend-api/tasks` 返回空、
+/// `tasks_all_terminal` 判为「无法判定」，早停永远不触发。
+///
+/// 该判定只在 image_gen 节点**始终不存在**时生效：工具一旦被调用（哪怕生成很慢）
+/// 就恒为 true，从而不会误杀慢生成。对照一次成功请求在 attempt=8（约 55s）拿到图。
+const DEFAULT_NO_ACTIVITY_MAX_ATTEMPTS: u32 = 20;
+
 const CONTENT_POLICY_KEYWORDS: &[&str] = &[
     "内容政策",
     "防护限制",
@@ -645,6 +655,13 @@ where
     let mut last_hit_key: Option<(Vec<String>, Vec<String>)> = None;
     let mut consecutive_errors: u32 = 0;
     let mut terminal_task_streak: u32 = 0;
+    let mut no_activity_streak: u32 = 0;
+    let mut tasks_seen_max: usize = 0;
+    let no_activity_max = env_u32(
+        "UPSTREAM_IMAGE_POLL_NO_ACTIVITY_MAX",
+        DEFAULT_NO_ACTIVITY_MAX_ATTEMPTS,
+    )
+    .max(5);
 
     if file_ids.is_empty() && sediment_ids.is_empty() && config.initial_wait > Duration::ZERO {
         info!(
@@ -665,6 +682,7 @@ where
                 if let Some(err) = last_task_error_from_tasks(&tasks) {
                     last_task_error = err;
                 }
+                tasks_seen_max = tasks_seen_max.max(tasks.len());
                 match tasks_all_terminal(&tasks) {
                     Some(true) => terminal_task_streak += 1,
                     Some(false) => terminal_task_streak = 0,
@@ -691,10 +709,14 @@ where
                 // 只看 image_gen 节点是否存在，任务一旦启动它就恒为 true，会把下面的
                 // 失败识别永久屏蔽掉，让失败的生成空转到 wall budget 用尽。
                 let generation_settled = terminal_task_streak >= TERMINAL_TASK_CONFIRMATIONS;
-                if file_ids.is_empty()
-                    && sediment_ids.is_empty()
-                    && (generation_settled || !conversation_has_image_gen_activity(&conversation))
-                {
+                let has_activity = conversation_has_image_gen_activity(&conversation);
+                let no_ids = file_ids.is_empty() && sediment_ids.is_empty();
+                if no_ids && !has_activity {
+                    no_activity_streak += 1;
+                } else {
+                    no_activity_streak = 0;
+                }
+                if no_ids && (generation_settled || !has_activity) {
                     if let Some((code, msg)) =
                         find_terminal_upstream_block_in_conversation(&conversation)
                     {
@@ -715,6 +737,16 @@ where
                         bail!(
                             "upstream image generation finished without an image \
                              (conversation_id={conversation_id}, attempts={attempt}){detail}"
+                        );
+                    }
+                    // 生图工具自始至终没被调用：会话里没有 image_gen 节点，也就没有异步
+                    // 任务可查，继续轮询到 420s 也不会凭空出现图片。
+                    if no_activity_streak >= no_activity_max {
+                        bail!(
+                            "upstream image generation was never started \
+                             (conversation_id={conversation_id}, attempts={attempt}, \
+                             no_image_gen_activity_for={no_activity_streak} polls, \
+                             tasks_seen={tasks_seen_max})"
                         );
                     }
                 }
@@ -773,10 +805,15 @@ where
             });
         }
 
+        // 这几个字段是判定为何没能早停的唯一依据：线上出现过 94 轮空转而早停从未
+        // 触发，事后无法从日志区分「任务列表为空」「任务永不终结」「工具没被调用」。
         info!(
             conversation_id = %conversation_id,
             attempt,
             remaining_secs = deadline.saturating_duration_since(Instant::now()).as_secs_f64(),
+            tasks_seen_max,
+            terminal_task_streak,
+            no_activity_streak,
             "image poll check: no ids yet"
         );
         cancel_aware_sleep(deadline, config.interval).await;
@@ -947,6 +984,31 @@ mod tests {
             None,
             "上游没给 status 时不得据此判失败"
         );
+    }
+
+    #[test]
+    fn conversation_without_image_gen_node_never_started_generation() {
+        // 复现线上 420s 空转：SSE 结束无 file_id，会话里也没有 image_gen 节点，
+        // 说明生图工具压根没被调用——此时 tasks 为空，旧逻辑无任何出口。
+        let data: Value = serde_json::from_str(
+            r#"{
+                "mapping": {
+                    "m1": {
+                        "message": {
+                            "author": { "role": "assistant" },
+                            "content": { "content_type": "text", "parts": ["好的"] }
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        assert!(!conversation_has_image_gen_activity(&data));
+        let (files, sediments) = extract_image_ids_from_conversation(&data);
+        assert!(files.is_empty() && sediments.is_empty());
+        // 已知文案匹配不到，所以只能靠 no_activity_streak 收尾。
+        assert!(find_terminal_upstream_block_in_conversation(&data).is_none());
+        assert_eq!(tasks_all_terminal(&[]), None, "空任务列表不可判定");
     }
 
     #[test]

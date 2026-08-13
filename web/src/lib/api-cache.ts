@@ -27,6 +27,14 @@ export function deleteCached(key: string) {
   store.delete(key);
 }
 
+/**
+ * 登出或检测到用户身份切换时调用，清除所有客户端内存缓存。
+ * 后端对每个请求仍按用户强制鉴权；这里只消除已获取数据在客户端的可见性。
+ */
+export function clearAllCaches() {
+  invalidateCache();
+}
+
 export async function fetchWithCache<T>(
   key: string,
   fetcher: () => Promise<T>,

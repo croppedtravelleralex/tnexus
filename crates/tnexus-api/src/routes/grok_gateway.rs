@@ -5,7 +5,7 @@ use crate::state::AppState;
 use axum::{
     body::Body,
     extract::{Request, State},
-    http::{header, StatusCode},
+    http::{header, HeaderName, StatusCode},
     response::{IntoResponse, Response},
     Router,
 };
@@ -61,6 +61,7 @@ async fn proxy_grok_gateway(
         header::CONTENT_TYPE,
         header::CACHE_CONTROL,
         header::TRANSFER_ENCODING,
+        HeaderName::from_static("x-grok-account-id"),
     ] {
         if let Some(v) = upstream.headers().get(&name) {
             resp = resp.header(name, v);

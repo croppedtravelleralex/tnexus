@@ -544,6 +544,13 @@ pub async fn consume_sse_until(
             if parser.image_ready().is_some() {
                 return Ok(ConsumedSse { parser, bytes_in });
             }
+            // moderation 已判定拦截时不可能再产出图片，轮询只会白等满 wall budget。
+            if parser.state().blocked {
+                bail!(
+                    "upstream image generation failed (content_policy_violation): \
+                     moderation blocked before any image was produced"
+                );
+            }
             // ChatGPT often closes SSE before file_id appears; poll conversation/tasks afterward
             // (aligned with gptimage `image_resolve_poll_needed`).
             if !parser.state().conversation_id.is_empty() {
