@@ -42,6 +42,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(() => readCachedUser());
   const [bootstrapping, setBootstrapping] = useState(() => readCachedUser() === null);
   const [apiOnline, setApiOnline] = useState(true);
+  // undefined = 首次加载前未知；null = 已知未登录
+  const prevUserIdRef = useRef<string | null | undefined>(undefined);
 
   const refresh = useCallback(async () => {
     const cached = readCachedUser();
@@ -50,6 +52,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       await healthApi.ping();
       setApiOnline(true);
       const me = await authApi.me();
+      // 检测到不同用户（如共享浏览器中换账号），清除已缓存的前用户数据。
+      // 后端对每个请求仍按用户强制鉴权；这里只消除客户端内存中的残留。
+      if (prevUserIdRef.current !== undefined && prevUserIdRef.current !== me.id) {
+        clearAllCaches();
+      }
+      prevUserIdRef.current = me.id;
       setUser(me);
       writeCachedUser(me);
     } catch (err) {
@@ -74,6 +82,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch {
       // ignore when API is offline
     }
+    // 登出时清除客户端内存缓存，防止后续用户在同一浏览器中短暂看到前用户的已获取数据。
+    clearAllCaches();
+    prevUserIdRef.current = null;
     setUser(null);
     writeCachedUser(null);
   }, []);

@@ -25,11 +25,15 @@ cd "$REPO/grokproxy"
 step() { printf '\n=== %s ===\n' "$1"; }
 
 step "preflight"
-dirty="$(git -C "$REPO" status --porcelain -- grokproxy deploy/panda | wc -l)"
-if [[ "$dirty" -ne 0 ]]; then
+# --ignore-cr-at-eol: a Windows checkout of LF-normalized files shows every
+# script as modified. Only real content changes should block a release.
+dirty="$(git -C "$REPO" diff --ignore-cr-at-eol --numstat -- grokproxy deploy/panda | wc -l)"
+untracked="$(git -C "$REPO" ls-files --others --exclude-standard -- grokproxy deploy/panda | wc -l)"
+if [[ "$dirty" -ne 0 || "$untracked" -ne 0 ]]; then
   echo "uncommitted changes under grokproxy/ or deploy/panda —" >&2
   echo "commit first, or the image cannot be traced to a commit:" >&2
-  git -C "$REPO" status --short -- grokproxy deploy/panda >&2
+  git -C "$REPO" diff --ignore-cr-at-eol --stat -- grokproxy deploy/panda >&2
+  git -C "$REPO" ls-files --others --exclude-standard -- grokproxy deploy/panda >&2
   exit 1
 fi
 sha="$(git -C "$REPO" rev-parse HEAD)"

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Bot, Eraser, Image as ImageIcon, Loader2, Paperclip, Send, Sparkles } from "lucide-react";
 import { grokApi, sniffImageMime, type GrokChatMessage, type GrokChatContentPart } from "@/lib/grok-api";
+import { useAuth } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -74,6 +75,7 @@ export function GrokChatPanel({
   initialLastAccountId = null,
   onResendRequest,
 }: GrokChatPanelProps = {}) {
+  const { user } = useAuth();
   const [model, setModel] = useState<GrokChatModel>(initialModel);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [activeAccountId, setActiveAccountId] = useState<number | null>(initialLastAccountId);

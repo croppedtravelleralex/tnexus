@@ -195,6 +195,11 @@ export default function StudioPage() {
   };
 
   useEffect(() => {
+    // 用户切换时清空组件级 job 详情缓存，防止后续用户短暂看到前用户已加载的数据。
+    jobDetailCacheRef.current.clear();
+  }, [user?.id]);
+
+  useEffect(() => {
     if (!user) return;
     void ensureConversation().catch((err) => {
       setError(err instanceof Error ? err.message : "加载对话失败");
