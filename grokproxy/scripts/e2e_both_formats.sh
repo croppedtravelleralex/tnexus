@@ -55,16 +55,24 @@ else:
     print("   意外的响应形状:", json.dumps(d, ensure_ascii=False)[:300])'
 }
 
+# Some stored keys already carry the prefix; double-prefixing reads as a
+# different, non-existent token.
+with_prefix() { case "$1" in sk-*) printf '%s' "$1" ;; *) printf 'sk-%s' "$1" ;; esac; }
+key_openai="$(with_prefix "$tok_openai")"
+key_claude="$(with_prefix "$tok_claude")"
+echo ">>> openai token ...${key_openai: -8}   anthropic token ...${key_claude: -8}"
+
+echo
 echo "=== 1. OpenAI format: POST /v1/chat/completions (group=grok) ==="
 curl -s --max-time 180 -X POST "$NEWAPI/v1/chat/completions" \
-  -H "Authorization: Bearer sk-${tok_openai}" -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer ${key_openai}" -H 'Content-Type: application/json' \
   -d '{"model":"grok-4.6","messages":[{"role":"user","content":"Reply with exactly: openai ok"}],"max_tokens":24}' \
   | pretty
 
 echo
 echo "=== 2. Anthropic format: POST /v1/messages (group=grok-claude) ==="
 curl -s --max-time 180 -X POST "$NEWAPI/v1/messages" \
-  -H "x-api-key: sk-${tok_claude}" -H 'anthropic-version: 2023-06-01' \
+  -H "x-api-key: ${key_claude}" -H 'anthropic-version: 2023-06-01' \
   -H 'Content-Type: application/json' \
   -d '{"model":"grok-4.6","max_tokens":24,"system":"Be terse.","messages":[{"role":"user","content":[{"type":"text","text":"Reply with exactly: anthropic ok"}]}]}' \
   | pretty
@@ -86,9 +94,13 @@ curl -s --max-time 180 -X POST http://127.0.0.1:8110/v1/messages \
 echo
 echo "=== scheduler state after the run ==="
 curl -s --max-time 20 http://127.0.0.1:8110/api/v1/stats \
-  -H "Authorization: Bearer $GROKPROXY_ADMIN_KEY" \
-  | python3 -c 'import json,sys
-d = json.load(sys.stdin)
+  -H "Authorization: Bearer $GROKPROXY_ADMIN_KEY" > /tmp/stats.json
+python3 - <<'PY'
+import json
+d = json.load(open('/tmp/stats.json'))
 print("  scheduler:", d.get("scheduler"))
 q = (d.get("build") or {}).get("quota", {})
-print(f"  build 已探测 {q.get(\"measured_accounts\")} 个  剩余 {q.get(\"remaining_tokens\", 0):,} token")'
+measured = q.get("measured_accounts")
+remaining = q.get("remaining_tokens", 0)
+print(f"  build measured={measured}  remaining={remaining:,} tokens")
+PY
