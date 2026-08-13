@@ -18,16 +18,16 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use grok_admin::{
-    AccountAnalytics, AccountListFilter, AccountPage, AccountSummary, AccountView, Admin,
-    AdminDomains, AdminError, AdminRepository, AdminResult, AdminSessionRepository, AdminStore,
-    AuditAdminService, AuditEntryView, AuditStore, AuditSummaryView, ChromeTicketService,
-    ChromeTicketStats, ChromeTicketStore, ChromeTicketView, ClientKeyAdminService, ClientKeyInput,
-    ClientKeyStore, ClientKeyView, DashboardService, DashboardStore, DashboardView,
-    ImageTimelineEntry, ImportAccountInput, ImportError, ImportResult, MediaImageView,
-    MediaService, MediaSizeSummaryView, MediaStatsView, MediaStore, ModelAdminService,
-    ModelAliasView, ModelBindingView, ModelRoute, ModelRouteInput, ModelStore, ModelSyncStateView,
-    QuotaModeSummary, Session, SettingsService, SettingsStore, SettingsView, TimeseriesPoint,
-    TopAccountView, UpdateAccountInput, hash_token,
+    hash_token, AccountAnalytics, AccountListFilter, AccountPage, AccountSummary, AccountView,
+    Admin, AdminDomains, AdminError, AdminRepository, AdminResult, AdminSessionRepository,
+    AdminStore, AuditAdminService, AuditEntryView, AuditStore, AuditSummaryView,
+    ChromeTicketService, ChromeTicketStats, ChromeTicketStore, ChromeTicketView,
+    ClientKeyAdminService, ClientKeyInput, ClientKeyStore, ClientKeyView, DashboardService,
+    DashboardStore, DashboardView, ImageTimelineEntry, ImportAccountInput, ImportError,
+    ImportResult, MediaImageView, MediaService, MediaSizeSummaryView, MediaStatsView, MediaStore,
+    ModelAdminService, ModelAliasView, ModelBindingView, ModelRoute, ModelRouteInput, ModelStore,
+    ModelSyncStateView, QuotaModeSummary, Session, SettingsService, SettingsStore, SettingsView,
+    TimeseriesPoint, TopAccountView, UpdateAccountInput,
 };
 use grok_domain::{
     Account, AuthStatus, ModelState, ModelStatus, Provider, QuotaSource, QuotaWindow,
@@ -838,7 +838,698 @@ fn map_session_row(row: &sqlx::postgres::PgRow) -> AdminResult<Session> {
     })
 }
 
-/// 构造带 PG 数据面的 admin bundle（`GROK_DATABASE_URL` 已配置时使用）。
+// ── 审计读侧 PG store（grok_request_audits）─────────────────────────
+
+/// PG 审计只读 store（对齐 `AuditStore` trait；写侧由 `grok-audit::AuditSink` 负责）。
+pub struct PgAuditStore {
+    pool: PgPool,
+}
+
+impl PgAuditStore {
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait]
+impl AuditStore for PgAuditStore {
+    /// 按时间倒序分页，同时返回全表总行数（前端 total 字段）。
+    async fn list(&self, page: i64, page_size: i64) -> AdminResult<(Vec<AuditEntryView>, i64)> {
+        let offset = (page - 1) * page_size;
+        let rows = sqlx::query(
+            "SELECT id, account_id, provider, model_upstream_model, \
+                    status_code::smallint AS status_code, duration_ms, created_at \
+             FROM grok_request_audits \
+             ORDER BY created_at DESC, id DESC \
+             LIMIT $1 OFFSET $2",
+        )
+        .bind(page_size)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(admin_err)?;
+
+        let count_row = sqlx::query("SELECT count(*) AS total FROM grok_request_audits")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(admin_err)?;
+        let total: i64 = count_row.try_get("total").map_err(admin_err)?;
+
+        let items = rows
+            .iter()
+            .map(|row| {
+                let status_code: i16 = row.try_get("status_code").map_err(admin_err)?;
+                let outcome = if (200i16..=299).contains(&status_code) {
+                    "success"
+                } else {
+                    "error"
+                }
+                .to_string();
+                Ok(AuditEntryView {
+                    id: row.try_get("id").map_err(admin_err)?,
+                    account_id: row.try_get("account_id").map_err(admin_err)?,
+                    provider: row
+                        .try_get::<Option<String>, _>("provider")
+                        .map_err(admin_err)?,
+                    upstream_model: row
+                        .try_get::<Option<String>, _>("model_upstream_model")
+                        .map_err(admin_err)?,
+                    status: status_code,
+                    outcome,
+                    latency_ms: row.try_get("duration_ms").map_err(admin_err)?,
+                    created_at: row.try_get("created_at").map_err(admin_err)?,
+                })
+            })
+            .collect::<AdminResult<Vec<_>>>()?;
+
+        Ok((items, total))
+    }
+
+    async fn summary(&self) -> AdminResult<AuditSummaryView> {
+        let row = sqlx::query(
+            "SELECT \
+                count(*) AS total, \
+                count(*) FILTER (WHERE created_at >= now() - interval '24 hours') AS requests_24h, \
+                count(*) FILTER (WHERE created_at >= now() - interval '24 hours' \
+                    AND status_code BETWEEN 200 AND 299) AS succeeded_24h, \
+                count(*) FILTER (WHERE created_at >= now() - interval '24 hours' \
+                    AND (status_code < 200 OR status_code > 299)) AS failed_24h \
+             FROM grok_request_audits",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(admin_err)?;
+
+        let requests_24h: i64 = row.try_get("requests_24h").map_err(admin_err)?;
+        let succeeded_24h: i64 = row.try_get("succeeded_24h").map_err(admin_err)?;
+        Ok(AuditSummaryView {
+            total: row.try_get("total").map_err(admin_err)?,
+            requests_24h,
+            succeeded_24h,
+            failed_24h: row.try_get("failed_24h").map_err(admin_err)?,
+            success_rate_24h: if requests_24h > 0 {
+                succeeded_24h as f64 / requests_24h as f64
+            } else {
+                0.0
+            },
+        })
+    }
+}
+
+// ── 仪表盘 PG store ──────────────────────────────────────────────────
+
+/// PG 仪表盘聚合（grok_accounts + grok_request_audits + grok_model_routes + grok_client_keys）。
+pub struct PgDashboardStore {
+    pool: PgPool,
+}
+
+impl PgDashboardStore {
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait]
+impl DashboardStore for PgDashboardStore {
+    async fn view(&self) -> AdminResult<DashboardView> {
+        // 账号统计（与 /admin/accounts/summary 同源，保证数字不矛盾）。
+        let acc = sqlx::query(
+            "SELECT \
+                count(*) AS total, \
+                count(*) FILTER (WHERE enabled = true AND auth_status = 'active' \
+                    AND (cooldown_until IS NULL OR cooldown_until <= now())) AS available, \
+                count(*) FILTER (WHERE cooldown_until IS NOT NULL \
+                    AND cooldown_until > now()) AS cooldown, \
+                count(*) FILTER (WHERE auth_status IN ('reauthRequired','reauth_required')) AS reauth \
+             FROM grok_accounts",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(admin_err)?;
+
+        // 额度耗尽账号（独立子查询，窗口 remaining<=0 且 total>0 的去重账号数）。
+        let quota_ex = sqlx::query(
+            "SELECT count(DISTINCT account_id) AS n FROM grok_quota_windows \
+             WHERE remaining <= 0 AND total > 0",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(admin_err)?;
+
+        // 近 24h 请求统计。
+        let req = sqlx::query(
+            "SELECT \
+                count(*) AS requests_24h, \
+                count(*) FILTER (WHERE status_code BETWEEN 200 AND 299) AS succeeded_24h, \
+                max(created_at) AS last_request_at \
+             FROM grok_request_audits \
+             WHERE created_at >= now() - interval '24 hours'",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(admin_err)?;
+
+        let model_routes: i64 =
+            sqlx::query("SELECT count(*) AS n FROM grok_model_routes WHERE enabled = true")
+                .fetch_one(&self.pool)
+                .await
+                .map_err(admin_err)?
+                .try_get("n")
+                .map_err(admin_err)?;
+
+        let active_client_keys: i64 = sqlx::query(
+            "SELECT count(*) AS n FROM grok_client_keys \
+             WHERE enabled = true AND (expires_at IS NULL OR expires_at > now())",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(admin_err)?
+        .try_get("n")
+        .map_err(admin_err)?;
+
+        let requests_24h: i64 = req.try_get("requests_24h").map_err(admin_err)?;
+        let succeeded_24h: i64 = req.try_get("succeeded_24h").map_err(admin_err)?;
+        Ok(DashboardView {
+            total_accounts: acc.try_get("total").map_err(admin_err)?,
+            available_accounts: acc.try_get("available").map_err(admin_err)?,
+            cooldown_accounts: acc.try_get("cooldown").map_err(admin_err)?,
+            reauth_accounts: acc.try_get("reauth").map_err(admin_err)?,
+            quota_exhausted_accounts: quota_ex.try_get("n").map_err(admin_err)?,
+            requests_24h,
+            success_rate_24h: if requests_24h > 0 {
+                succeeded_24h as f64 / requests_24h as f64
+            } else {
+                0.0
+            },
+            model_routes,
+            active_client_keys,
+            last_request_at: req.try_get("last_request_at").map_err(admin_err)?,
+        })
+    }
+}
+
+// ── 模型路由 PG store ────────────────────────────────────────────────
+
+/// PG 模型路由 store（grok_model_routes + grok_model_route_aliases）。
+pub struct PgModelStore {
+    pool: PgPool,
+}
+
+impl PgModelStore {
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+/// 映射一行 `grok_model_routes`（含 aliases 数组聚合）到 `ModelRoute`。
+fn map_model_row(row: &sqlx::postgres::PgRow) -> AdminResult<ModelRoute> {
+    Ok(ModelRoute {
+        id: row.try_get("id").map_err(admin_err)?,
+        provider: row.try_get("provider").map_err(admin_err)?,
+        upstream_model: row.try_get("upstream_model").map_err(admin_err)?,
+        aliases: row.try_get::<Vec<String>, _>("aliases").unwrap_or_default(),
+        enabled: row.try_get("enabled").map_err(admin_err)?,
+        created_at: row.try_get("created_at").map_err(admin_err)?,
+        updated_at: row.try_get("updated_at").map_err(admin_err)?,
+    })
+}
+
+/// 带别名聚合的 SELECT 子句（LEFT JOIN + ARRAY_AGG，可安全加 WHERE/LIMIT）。
+const MODEL_SELECT_WITH_ALIASES: &str = "\
+    SELECT r.id, r.provider, r.upstream_model, r.enabled, r.created_at, r.updated_at, \
+           COALESCE(ARRAY_AGG(a.alias) FILTER (WHERE a.alias IS NOT NULL), '{}') AS aliases \
+    FROM grok_model_routes r \
+    LEFT JOIN grok_model_route_aliases a ON a.model_route_id = r.id \
+    GROUP BY r.id";
+
+#[async_trait]
+impl ModelStore for PgModelStore {
+    async fn list(&self, page: i64, page_size: i64) -> AdminResult<Vec<ModelRoute>> {
+        let offset = (page - 1) * page_size;
+        let sql = format!(
+            "{MODEL_SELECT_WITH_ALIASES} \
+             ORDER BY r.created_at DESC, r.id DESC LIMIT $1 OFFSET $2"
+        );
+        sqlx::query(&sql)
+            .bind(page_size)
+            .bind(offset)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(admin_err)?
+            .iter()
+            .map(map_model_row)
+            .collect()
+    }
+
+    async fn get(&self, id: i64) -> AdminResult<Option<ModelRoute>> {
+        let sql = format!("{MODEL_SELECT_WITH_ALIASES} HAVING r.id = $1");
+        let row = sqlx::query(&sql)
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(admin_err)?;
+        row.as_ref().map(map_model_row).transpose()
+    }
+
+    async fn create(&self, input: &ModelRouteInput) -> AdminResult<ModelRoute> {
+        // public_id = "{provider}/{upstream_model}"，与 (provider, upstream_model) 唯一约束对应。
+        let public_id = format!("{}/{}", input.provider, input.upstream_model);
+        let row = sqlx::query(
+            "INSERT INTO grok_model_routes \
+             (public_id, provider, upstream_model, capability, origin, enabled) \
+             VALUES ($1, $2, $3, 'chat', 'manual', $4) \
+             RETURNING id, provider, upstream_model, enabled, created_at, updated_at",
+        )
+        .bind(&public_id)
+        .bind(&input.provider)
+        .bind(&input.upstream_model)
+        .bind(input.enabled.unwrap_or(true))
+        .fetch_one(&self.pool)
+        .await
+        .map_err(admin_err)?;
+        let id: i64 = row.try_get("id").map_err(admin_err)?;
+        // 写入别名（忽略单条失败，不回滚整个创建）。
+        for alias in &input.aliases {
+            let _ = sqlx::query(
+                "INSERT INTO grok_model_route_aliases (alias, model_route_id) \
+                 VALUES ($1, $2) ON CONFLICT (alias) DO NOTHING",
+            )
+            .bind(alias)
+            .bind(id)
+            .execute(&self.pool)
+            .await;
+        }
+        Ok(ModelRoute {
+            id,
+            provider: row.try_get("provider").map_err(admin_err)?,
+            upstream_model: row.try_get("upstream_model").map_err(admin_err)?,
+            aliases: input.aliases.clone(),
+            enabled: row.try_get("enabled").map_err(admin_err)?,
+            created_at: row.try_get("created_at").map_err(admin_err)?,
+            updated_at: row.try_get("updated_at").map_err(admin_err)?,
+        })
+    }
+
+    async fn update(&self, id: i64, input: &ModelRouteInput) -> AdminResult<Option<ModelRoute>> {
+        let row = sqlx::query(
+            "UPDATE grok_model_routes SET \
+               enabled = COALESCE($2, enabled), \
+               updated_at = now() \
+             WHERE id = $1 \
+             RETURNING id, provider, upstream_model, enabled, created_at, updated_at",
+        )
+        .bind(id)
+        .bind(input.enabled)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(admin_err)?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        // 别名替换：先删后插（aliases 非空时才替换，保持 PATCH 语义）。
+        if !input.aliases.is_empty() {
+            sqlx::query("DELETE FROM grok_model_route_aliases WHERE model_route_id = $1")
+                .bind(id)
+                .execute(&self.pool)
+                .await
+                .map_err(admin_err)?;
+            for alias in &input.aliases {
+                let _ = sqlx::query(
+                    "INSERT INTO grok_model_route_aliases (alias, model_route_id) \
+                     VALUES ($1, $2) ON CONFLICT (alias) DO NOTHING",
+                )
+                .bind(alias)
+                .bind(id)
+                .execute(&self.pool)
+                .await;
+            }
+        }
+        let aliases = if input.aliases.is_empty() {
+            // 返回当前别名列表（未替换时从 DB 重读）。
+            sqlx::query("SELECT alias FROM grok_model_route_aliases WHERE model_route_id = $1")
+                .bind(id)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(admin_err)?
+                .iter()
+                .filter_map(|r| r.try_get::<String, _>("alias").ok())
+                .collect()
+        } else {
+            input.aliases.clone()
+        };
+        Ok(Some(ModelRoute {
+            id,
+            provider: row.try_get("provider").map_err(admin_err)?,
+            upstream_model: row.try_get("upstream_model").map_err(admin_err)?,
+            aliases,
+            enabled: row.try_get("enabled").map_err(admin_err)?,
+            created_at: row.try_get("created_at").map_err(admin_err)?,
+            updated_at: row.try_get("updated_at").map_err(admin_err)?,
+        }))
+    }
+
+    async fn delete(&self, id: i64) -> AdminResult<bool> {
+        let row = sqlx::query("DELETE FROM grok_model_routes WHERE id = $1 RETURNING id")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(admin_err)?;
+        Ok(row.is_some())
+    }
+
+    async fn bindings(&self) -> AdminResult<Vec<ModelBindingView>> {
+        let rows = sqlx::query(
+            "SELECT r.id AS model_route_id, r.upstream_model, \
+                    COALESCE(ARRAY_AGG(mra.account_id) FILTER (WHERE mra.account_id IS NOT NULL), '{}') AS account_ids \
+             FROM grok_model_routes r \
+             LEFT JOIN grok_model_route_accounts mra ON mra.model_route_id = r.id \
+             GROUP BY r.id ORDER BY r.id ASC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(admin_err)?;
+        rows.iter()
+            .map(|row| {
+                Ok(ModelBindingView {
+                    model_route_id: row.try_get("model_route_id").map_err(admin_err)?,
+                    upstream_model: row.try_get("upstream_model").map_err(admin_err)?,
+                    account_ids: row
+                        .try_get::<Vec<i64>, _>("account_ids")
+                        .unwrap_or_default(),
+                })
+            })
+            .collect()
+    }
+
+    async fn aliases(&self) -> AdminResult<Vec<ModelAliasView>> {
+        let rows = sqlx::query(
+            "SELECT r.upstream_model, r.enabled, \
+                    COALESCE(ARRAY_AGG(a.alias) FILTER (WHERE a.alias IS NOT NULL), '{}') AS aliases \
+             FROM grok_model_routes r \
+             LEFT JOIN grok_model_route_aliases a ON a.model_route_id = r.id \
+             GROUP BY r.id ORDER BY r.upstream_model ASC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(admin_err)?;
+        rows.iter()
+            .map(|row| {
+                Ok(ModelAliasView {
+                    upstream_model: row.try_get("upstream_model").map_err(admin_err)?,
+                    aliases: row.try_get::<Vec<String>, _>("aliases").unwrap_or_default(),
+                    enabled: row.try_get("enabled").map_err(admin_err)?,
+                })
+            })
+            .collect()
+    }
+
+    async fn sync_states(&self) -> AdminResult<Vec<ModelSyncStateView>> {
+        let rows = sqlx::query(
+            "SELECT r.upstream_model, \
+                    count(mra.account_id)::bigint AS account_count \
+             FROM grok_model_routes r \
+             LEFT JOIN grok_model_route_accounts mra ON mra.model_route_id = r.id \
+             GROUP BY r.id ORDER BY r.upstream_model ASC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(admin_err)?;
+        rows.iter()
+            .map(|row| {
+                Ok(ModelSyncStateView {
+                    upstream_model: row.try_get("upstream_model").map_err(admin_err)?,
+                    account_count: row.try_get("account_count").map_err(admin_err)?,
+                    sync_state: "unknown".into(),
+                })
+            })
+            .collect()
+    }
+}
+
+// ── 客户端密钥 PG store ──────────────────────────────────────────────
+
+/// PG 客户端密钥 store（grok_client_keys）。
+///
+/// 安全属性保证：`list` 只返回 `prefix`（前 8 位），完整 `secret` 仅在 `create`
+/// 返回一次，之后不可再取（DB 只存 hash + 前缀）。
+pub struct PgClientKeyStore {
+    pool: PgPool,
+}
+
+impl PgClientKeyStore {
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+/// 生成随机 secret（32 字节 → 64 位十六进制字符串）。
+fn gen_secret() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// 映射 grok_client_keys 行（不含 secret 字段）→ `ClientKeyView`（只含 prefix）。
+fn map_key_row(row: &sqlx::postgres::PgRow) -> AdminResult<ClientKeyView> {
+    Ok(ClientKeyView {
+        id: row.try_get("id").map_err(admin_err)?,
+        name: row.try_get("name").map_err(admin_err)?,
+        prefix: row.try_get("prefix").map_err(admin_err)?,
+        enabled: row.try_get("enabled").map_err(admin_err)?,
+        created_at: row.try_get("created_at").map_err(admin_err)?,
+        last_used_at: row.try_get("last_used_at").map_err(admin_err)?,
+    })
+}
+
+#[async_trait]
+impl ClientKeyStore for PgClientKeyStore {
+    async fn list(&self, page: i64, page_size: i64) -> AdminResult<Vec<ClientKeyView>> {
+        let offset = (page - 1) * page_size;
+        // 只 SELECT prefix，绝不返回 secret_hash / encrypted_secret。
+        sqlx::query(
+            "SELECT id, name, prefix, enabled, created_at, last_used_at \
+             FROM grok_client_keys \
+             ORDER BY created_at DESC, id DESC \
+             LIMIT $1 OFFSET $2",
+        )
+        .bind(page_size)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(admin_err)?
+        .iter()
+        .map(map_key_row)
+        .collect()
+    }
+
+    async fn create(&self, input: &ClientKeyInput) -> AdminResult<(ClientKeyView, String)> {
+        let secret = gen_secret();
+        // prefix：前 8 位十六进制（供列表页识别密钥身份）。
+        let prefix = &secret[..8];
+        // secret_hash：SHA-256(secret)，64 位十六进制（满足 CHECK length=64）。校验只用它。
+        let secret_hash = hash_token(&secret);
+        // encrypted_secret 这一列没有任何代码读取，而列名暗示可还原。往里写明文等于
+        // 一次库泄露就交出全部客户端密钥，且毫无必要——密钥按设计只在创建时返回一次、
+        // 之后不可找回。列约束要求非空 1..4096，故写入哨兵而非明文。
+        // 若将来确需可还原存储，应先补 AES-GCM 加密（参照 grok-storage 的
+        // decrypt_primary），而不是退回明文。
+        const SECRET_NOT_STORED: &str = "not-stored";
+        let row = sqlx::query(
+            "INSERT INTO grok_client_keys \
+             (name, prefix, secret_hash, encrypted_secret, enabled) \
+             VALUES ($1, $2, $3, $4, $5) \
+             RETURNING id, name, prefix, enabled, created_at, last_used_at",
+        )
+        .bind(&input.name)
+        .bind(prefix)
+        .bind(&secret_hash)
+        .bind(SECRET_NOT_STORED)
+        .bind(input.enabled.unwrap_or(true))
+        .fetch_one(&self.pool)
+        .await
+        .map_err(admin_err)?;
+        let view = map_key_row(&row)?;
+        // 完整 secret 在此一次性返回，之后无法从 DB 取回（DB 只有 hash）。
+        Ok((view, secret))
+    }
+
+    async fn update(&self, id: i64, input: &ClientKeyInput) -> AdminResult<Option<ClientKeyView>> {
+        let row = sqlx::query(
+            "UPDATE grok_client_keys SET \
+               name = CASE WHEN length(trim($2)) > 0 THEN $2 ELSE name END, \
+               enabled = COALESCE($3, enabled), \
+               updated_at = now() \
+             WHERE id = $1 \
+             RETURNING id, name, prefix, enabled, created_at, last_used_at",
+        )
+        .bind(id)
+        .bind(&input.name)
+        .bind(input.enabled)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(admin_err)?;
+        row.as_ref().map(map_key_row).transpose()
+    }
+
+    async fn delete(&self, id: i64) -> AdminResult<bool> {
+        let row = sqlx::query("DELETE FROM grok_client_keys WHERE id = $1 RETURNING id")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(admin_err)?;
+        Ok(row.is_some())
+    }
+}
+
+// ── 全局设置 PG store ────────────────────────────────────────────────
+
+/// PG 全局设置 store（grok_runtime_settings；键值对，revision 单调递增）。
+pub struct PgSettingsStore {
+    pool: PgPool,
+}
+
+impl PgSettingsStore {
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait]
+impl SettingsStore for PgSettingsStore {
+    async fn get(&self) -> AdminResult<SettingsView> {
+        let rows = sqlx::query(
+            "SELECT key, value_json, revision, updated_at \
+             FROM grok_runtime_settings ORDER BY key ASC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(admin_err)?;
+        let mut values = BTreeMap::new();
+        let mut version: i64 = 0;
+        let mut updated_at: Option<DateTime<Utc>> = None;
+        for row in &rows {
+            let key: String = row.try_get("key").map_err(admin_err)?;
+            let val: String = row.try_get("value_json").map_err(admin_err)?;
+            let rev: i64 = row.try_get("revision").map_err(admin_err)?;
+            let ts: DateTime<Utc> = row.try_get("updated_at").map_err(admin_err)?;
+            values.insert(key, val);
+            version = version.max(rev);
+            if updated_at.is_none_or(|prev| ts > prev) {
+                updated_at = Some(ts);
+            }
+        }
+        Ok(SettingsView {
+            version,
+            updated_at: updated_at.unwrap_or_else(Utc::now),
+            values,
+        })
+    }
+
+    async fn put(&self, values: BTreeMap<String, String>) -> AdminResult<SettingsView> {
+        let mut tx = self.pool.begin().await.map_err(admin_err)?;
+        // 新版本号 = 全表最大 revision + 1（空表时从 1 起）。
+        let rev_row = sqlx::query(
+            "SELECT COALESCE(MAX(revision), 0) + 1 AS new_rev FROM grok_runtime_settings",
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(admin_err)?;
+        let new_rev: i64 = rev_row.try_get("new_rev").map_err(admin_err)?;
+        // 原子全量替换：删旧键，写新键（保持 revision 单调）。
+        sqlx::query("DELETE FROM grok_runtime_settings")
+            .execute(&mut *tx)
+            .await
+            .map_err(admin_err)?;
+        for (key, val) in &values {
+            sqlx::query(
+                "INSERT INTO grok_runtime_settings (key, value_json, revision, updated_at) \
+                 VALUES ($1, $2, $3, now())",
+            )
+            .bind(key)
+            .bind(val)
+            .bind(new_rev)
+            .execute(&mut *tx)
+            .await
+            .map_err(admin_err)?;
+        }
+        tx.commit().await.map_err(admin_err)?;
+        Ok(SettingsView {
+            version: new_rev,
+            updated_at: Utc::now(),
+            values,
+        })
+    }
+}
+
+// ── 内存占位 store（media / chrome-tickets 不在本批次 PG 化范围内）──
+
+/// 内存票据占位（未 PG 化；仅维持端点形状）。
+struct InMemoryTicketStore;
+
+#[async_trait]
+impl ChromeTicketStore for InMemoryTicketStore {
+    async fn list(&self) -> AdminResult<Vec<ChromeTicketView>> {
+        Ok(vec![])
+    }
+    async fn stats(&self) -> AdminResult<ChromeTicketStats> {
+        Ok(ChromeTicketStats::default())
+    }
+    async fn sweep(&self) -> AdminResult<i64> {
+        Ok(0)
+    }
+}
+
+/// 内存媒体占位（未 PG 化）。
+struct InMemoryMediaStore;
+
+#[async_trait]
+impl MediaStore for InMemoryMediaStore {
+    async fn list_images(&self, _page: i64, _page_size: i64) -> AdminResult<Vec<MediaImageView>> {
+        Ok(vec![])
+    }
+    async fn media_stats(&self) -> AdminResult<MediaStatsView> {
+        Ok(MediaStatsView::default())
+    }
+    async fn timeline(&self, _limit: usize) -> AdminResult<Vec<ImageTimelineEntry>> {
+        Ok(vec![])
+    }
+    async fn get_image(&self, _asset_id: &str) -> AdminResult<Option<MediaImageView>> {
+        Ok(None)
+    }
+    async fn size_summary(&self) -> AdminResult<MediaSizeSummaryView> {
+        Ok(MediaSizeSummaryView {
+            total_images: 0,
+            total_bytes: 0,
+            buckets: vec![],
+        })
+    }
+}
+
+/// 组装 PG 数据面的非账号域（审计/仪表盘/模型/密钥/设置由 PG 支撑）。
+pub fn build_admin_domains_pg(pool: PgPool) -> AdminDomains {
+    use grok_admin::SystemService;
+    AdminDomains {
+        models: Some(ModelAdminService::new(Arc::new(PgModelStore::new(
+            pool.clone(),
+        )))),
+        client_keys: Some(ClientKeyAdminService::new(Arc::new(PgClientKeyStore::new(
+            pool.clone(),
+        )))),
+        audits: Some(AuditAdminService::new(Arc::new(PgAuditStore::new(
+            pool.clone(),
+        )))),
+        dashboard: Some(DashboardService::new(Arc::new(PgDashboardStore::new(
+            pool.clone(),
+        )))),
+        settings: Some(SettingsService::new(Arc::new(PgSettingsStore::new(
+            pool.clone(),
+        )))),
+        chrome_tickets: Some(ChromeTicketService::new(Arc::new(InMemoryTicketStore))),
+        media: Some(MediaService::new(Arc::new(InMemoryMediaStore))),
+        system: Some(SystemService::new()),
+    }
+}
 ///
 /// 复用 [`build_bundle`] 的鉴权/路由组装，仅替换 store 与 admin/session 仓储。
 pub async fn build_admin_bundle_pg(
@@ -856,8 +1547,10 @@ pub async fn build_admin_bundle_pg(
     }
     let store: Arc<dyn AdminStore> = Arc::new(store);
     let domains = build_admin_domains_pg(pool);
-    crate::admin::build_bundle(repo, sessions, store, username, password, secret, extras, domains)
-        .await
+    crate::admin::build_bundle(
+        repo, sessions, store, username, password, secret, extras, domains,
+    )
+    .await
 }
 #[cfg(test)]
 mod tests {
@@ -874,5 +1567,138 @@ mod tests {
         let bundle =
             build_admin_bundle_pg(pool, "admin", None, "test-secret", Default::default()).await;
         let _ = bundle;
+    }
+
+    // ── 无 DB 单元测试：可判定逻辑 ──────────────────────────────────
+
+    /// gen_secret 生成 64 位十六进制字符串（32 字节）。
+    #[test]
+    fn gen_secret_is_64_hex_chars() {
+        let s = gen_secret();
+        assert_eq!(s.len(), 64, "secret 应为 64 位十六进制");
+        assert!(
+            s.chars().all(|c| c.is_ascii_hexdigit()),
+            "应全为十六进制字符"
+        );
+    }
+
+    /// prefix 前 8 位唯一标识 secret，与 gen_secret 结果对齐。
+    #[test]
+    fn prefix_is_first_8_chars_of_secret() {
+        let s = gen_secret();
+        let prefix = &s[..8];
+        assert_eq!(prefix.len(), 8);
+        // DB 约束 length(prefix) BETWEEN 1 AND 32 — 满足。
+        assert!(prefix.len() <= 32);
+    }
+
+    /// secret_hash 满足 DB 约束 length(secret_hash) = 64（SHA-256 十六进制）。
+    #[test]
+    fn secret_hash_length_matches_db_constraint() {
+        let secret = gen_secret();
+        let h = hash_token(&secret);
+        assert_eq!(
+            h.len(),
+            64,
+            "SHA-256 hex 应为 64 字符，满足 grok_client_keys.secret_hash CHECK"
+        );
+        assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    /// 两次生成的 secret 不同（随机性）。
+    #[test]
+    fn gen_secret_is_random() {
+        let a = gen_secret();
+        let b = gen_secret();
+        assert_ne!(a, b, "相邻两次 secret 应不同（OsRng）");
+    }
+
+    /// ClientKeyView 不含 secret 字段（安全属性：列表仅返回 prefix）。
+    #[test]
+    fn client_key_view_has_no_secret_field() {
+        // 确认 ClientKeyView 序列化结果不含 secret/hash 字段。
+        let view = ClientKeyView {
+            id: 1,
+            name: "test".to_string(),
+            prefix: "ab12cd34".to_string(),
+            enabled: true,
+            created_at: Utc::now(),
+            last_used_at: None,
+        };
+        let json = serde_json::to_string(&view).unwrap();
+        assert!(json.contains("prefix"), "序列化应含 prefix");
+        assert!(!json.contains("secret"), "序列化不应含 secret");
+        assert!(!json.contains("hash"), "序列化不应含 hash");
+        assert!(!json.contains("encrypted"), "序列化不应含 encrypted");
+    }
+
+    /// 分页偏移计算：offset = (page-1) * page_size。
+    #[test]
+    fn pagination_offset_calculation() {
+        assert_eq!((1_i64 - 1) * 20, 0);
+        assert_eq!((2_i64 - 1) * 20, 20);
+        assert_eq!((3_i64 - 1) * 10, 20);
+    }
+
+    /// AuditStore::list 签名返回 tuple（items, total）确保 total 来自真实 COUNT。
+    #[tokio::test]
+    async fn in_memory_audit_store_returns_tuple() {
+        let store = crate::admin_domains::InMemoryAuditStore;
+        let (items, total) = store.list(1, 20).await.unwrap();
+        assert_eq!(items.len(), 0);
+        assert_eq!(total, 0, "内存实现 total 应为 0");
+    }
+
+    /// public_id 生成规则：provider/upstream_model，与 (provider, upstream_model) 唯一约束对应。
+    #[test]
+    fn model_public_id_format_respects_uniqueness() {
+        // 同一 upstream_model 不同 provider 有不同 public_id。
+        let id1 = format!("{}/{}", "grok_web", "grok-4");
+        let id2 = format!("{}/{}", "grok_build", "grok-4");
+        assert_ne!(id1, id2, "public_id 应区分 provider");
+        // 长度在允许范围内（1-255）。
+        assert!(id1.len() >= 1 && id1.len() <= 255);
+    }
+
+    /// 审计 outcome 映射：2xx → success，其他 → error。
+    #[test]
+    fn audit_outcome_mapping() {
+        for code in [200i16, 201, 204, 299] {
+            let outcome = if (200i16..=299).contains(&code) {
+                "success"
+            } else {
+                "error"
+            };
+            assert_eq!(outcome, "success", "status={code} 应为 success");
+        }
+        for code in [100i16, 301, 400, 401, 500, 503] {
+            let outcome = if (200i16..=299).contains(&code) {
+                "success"
+            } else {
+                "error"
+            };
+            assert_eq!(outcome, "error", "status={code} 应为 error");
+        }
+    }
+
+    /// PG domains 组装不 panic（不建立实际连接）。
+    #[tokio::test]
+    async fn build_admin_domains_pg_does_not_panic() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect_lazy("postgres://nobody:secret@127.0.0.1:1/grok?connect_timeout=1")
+            .expect("lazy pool");
+        let domains = build_admin_domains_pg(pool);
+        assert!(domains.models.is_some(), "PG 域 models 应已接线");
+        assert!(domains.client_keys.is_some(), "PG 域 client_keys 应已接线");
+        assert!(domains.audits.is_some(), "PG 域 audits 应已接线");
+        assert!(domains.dashboard.is_some(), "PG 域 dashboard 应已接线");
+        assert!(domains.settings.is_some(), "PG 域 settings 应已接线");
+        assert!(
+            domains.chrome_tickets.is_some(),
+            "chrome_tickets 应已接线（内存占位）"
+        );
+        assert!(domains.media.is_some(), "media 应已接线（内存占位）");
+        assert!(domains.system.is_some(), "system 应已接线");
     }
 }

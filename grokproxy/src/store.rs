@@ -11,6 +11,38 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 
 use crate::model::{Account, AccountImport, Health, ImportOutcome, Provider};
 
+/// What one upstream call consumed, as reported by the upstream itself.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Usage {
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub total_tokens: i64,
+    /// `cost_in_usd_ticks` from the response; 1e7 ticks = 1 USD.
+    pub cost_ticks: i64,
+}
+
+impl Usage {
+    /// Pull usage out of an OpenAI-shaped response body.
+    pub fn from_response(body: &serde_json::Value) -> Self {
+        let usage = match body.get("usage") {
+            Some(value) => value,
+            None => return Usage::default(),
+        };
+        let get = |key: &str| {
+            usage
+                .get(key)
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(0)
+        };
+        Usage {
+            prompt_tokens: get("prompt_tokens"),
+            completion_tokens: get("completion_tokens"),
+            total_tokens: get("total_tokens"),
+            cost_ticks: get("cost_in_usd_ticks"),
+        }
+    }
+}
+
 /// Filters for one page of the admin account list.
 #[derive(Debug, Clone)]
 pub struct AccountQuery {
@@ -88,9 +120,33 @@ impl Store {
         conn.pragma_update(None, "synchronous", "NORMAL").ok();
         conn.pragma_update(None, "busy_timeout", 5_000).ok();
         conn.execute_batch(SCHEMA).context("apply schema")?;
+        Self::migrate(&conn);
         Ok(Store {
             conn: Arc::new(Mutex::new(conn)),
         })
+    }
+
+    /// Additive column migrations, safe to re-run.
+    ///
+    /// SQLite has no `ADD COLUMN IF NOT EXISTS`, and an existing column is the
+    /// normal case on every restart, so a duplicate-column error is expected
+    /// rather than exceptional.
+    fn migrate(conn: &Connection) {
+        // Usage accounting: the upstream exposes no quota endpoint (/usage,
+        // /credits, /quota all 404), so "remaining" is unknowable. Chat
+        // responses do carry token counts and a cost tick, which is enough to
+        // show consumption per account.
+        for column in [
+            "prompt_tokens INTEGER NOT NULL DEFAULT 0",
+            "completion_tokens INTEGER NOT NULL DEFAULT 0",
+            "total_tokens INTEGER NOT NULL DEFAULT 0",
+            "cost_ticks INTEGER NOT NULL DEFAULT 0",
+            // Proven to have served a request. Distinct from `active`, which is
+            // merely the state a freshly imported account starts in.
+            "verified_at INTEGER NOT NULL DEFAULT 0",
+        ] {
+            let _ = conn.execute(&format!("ALTER TABLE accounts ADD COLUMN {column}"), []);
+        }
     }
 
     fn row_to_account(row: &Row<'_>) -> rusqlite::Result<Account> {
@@ -115,6 +171,11 @@ impl Store {
             last_error: row.get("last_error")?,
             created_at: row.get("created_at")?,
             updated_at: row.get("updated_at")?,
+            prompt_tokens: row.get("prompt_tokens").unwrap_or(0),
+            completion_tokens: row.get("completion_tokens").unwrap_or(0),
+            total_tokens: row.get("total_tokens").unwrap_or(0),
+            cost_ticks: row.get("cost_ticks").unwrap_or(0),
+            verified_at: row.get("verified_at").unwrap_or(0),
         })
     }
 
@@ -349,18 +410,42 @@ impl Store {
     }
 
     pub fn record_success(&self, id: i64, model: &str, now: i64) -> Result<()> {
+        self.record_success_with_usage(id, model, now, &Usage::default())
+    }
+
+    /// Success plus whatever the upstream reported it cost.
+    pub fn record_success_with_usage(
+        &self,
+        id: i64,
+        model: &str,
+        now: i64,
+        usage: &Usage,
+    ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "UPDATE accounts SET
-                success_count = success_count + 1,
-                last_used_at  = ?1,
-                last_model    = CASE WHEN ?2 <> '' THEN ?2 ELSE last_model END,
-                health        = 'active',
-                cooling_until = 0,
-                last_error    = '',
-                updated_at    = ?1
+                success_count     = success_count + 1,
+                last_used_at      = ?1,
+                verified_at       = ?1,
+                last_model        = CASE WHEN ?2 <> '' THEN ?2 ELSE last_model END,
+                health            = 'active',
+                cooling_until     = 0,
+                last_error        = '',
+                prompt_tokens     = prompt_tokens + ?4,
+                completion_tokens = completion_tokens + ?5,
+                total_tokens      = total_tokens + ?6,
+                cost_ticks        = cost_ticks + ?7,
+                updated_at        = ?1
              WHERE id = ?3",
-            params![now, model, id],
+            params![
+                now,
+                model,
+                id,
+                usage.prompt_tokens,
+                usage.completion_tokens,
+                usage.total_tokens,
+                usage.cost_ticks
+            ],
         )?;
         Ok(())
     }
@@ -390,6 +475,13 @@ impl Store {
 
     /// Least-recently-used available account, claimed atomically.
     ///
+    /// Proven accounts come first. A bulk import marks everything `active`
+    /// without checking, so a pool can be mostly dead credentials; ordering by
+    /// last_used_at alone then hands every request a string of corpses and it
+    /// fails after exhausting its attempt budget. Accounts that have actually
+    /// served a request sort ahead of never-verified ones, and within each
+    /// group it is still least-recently-used.
+    ///
     /// The claim bumps `last_used_at` inside the same lock so two concurrent
     /// requests cannot pick the same account and double its rate.
     pub fn claim_next(&self, provider: Provider, now: i64) -> Result<Option<Account>> {
@@ -399,7 +491,7 @@ impl Store {
                 "SELECT id FROM accounts
                  WHERE provider = ?1
                    AND (health = 'active' OR (health = 'cooling' AND cooling_until > 0 AND cooling_until <= ?2))
-                 ORDER BY last_used_at ASC, id ASC
+                 ORDER BY (verified_at = 0), last_used_at ASC, id ASC
                  LIMIT 1",
                 params![provider.as_str(), now],
                 |row| row.get(0),
@@ -635,6 +727,79 @@ mod tests {
         assert_eq!(account.last_model, "grok-4.6");
         assert_eq!(account.success_count, 1);
         assert_eq!(account.failure_count, 1);
+    }
+
+    #[test]
+    fn usage_is_parsed_from_a_real_response_shape() {
+        let body = serde_json::json!({
+            "usage": {
+                "prompt_tokens": 208,
+                "completion_tokens": 4,
+                "total_tokens": 437,
+                "cost_in_usd_ticks": 15020000
+            }
+        });
+        let usage = Usage::from_response(&body);
+        assert_eq!(usage.prompt_tokens, 208);
+        assert_eq!(usage.total_tokens, 437);
+        assert_eq!(usage.cost_ticks, 15020000);
+    }
+
+    #[test]
+    fn missing_usage_is_zero_not_an_error() {
+        let usage = Usage::from_response(&serde_json::json!({"choices": []}));
+        assert_eq!(usage.total_tokens, 0);
+    }
+
+    #[test]
+    fn usage_accumulates_across_calls() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .import(Some(Provider::Build), &[build_item("a@b.c", "r1")], 1)
+            .unwrap();
+        let id = store.list(None).unwrap()[0].id;
+        let usage = Usage {
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            total_tokens: 20,
+            cost_ticks: 1_000_000,
+        };
+        store
+            .record_success_with_usage(id, "grok-4.6", 5, &usage)
+            .unwrap();
+        store
+            .record_success_with_usage(id, "grok-4.6", 6, &usage)
+            .unwrap();
+
+        let account = store.get(id).unwrap().unwrap();
+        assert_eq!(account.total_tokens, 40);
+        assert_eq!(account.cost_ticks, 2_000_000);
+        assert_eq!(account.success_count, 2);
+    }
+
+    #[test]
+    fn proven_accounts_are_scheduled_before_never_verified_ones() {
+        // A bulk import marks everything active without checking. Ordering by
+        // last_used_at alone would hand a request a string of dead credentials.
+        let store = Store::open_in_memory().unwrap();
+        store
+            .import(
+                Some(Provider::Build),
+                &[
+                    build_item("never@b.c", "r1"),
+                    build_item("proven@b.c", "r2"),
+                ],
+                1,
+            )
+            .unwrap();
+        let accounts = store.list(None).unwrap();
+        let proven = accounts.iter().find(|a| a.email == "proven@b.c").unwrap();
+        // Mark it proven, and make it the *most* recently used so plain LRU
+        // ordering would put it last.
+        store.record_success(proven.id, "grok-4.6", 9_999).unwrap();
+
+        let picked = store.claim_next(Provider::Build, 10_000).unwrap().unwrap();
+        assert_eq!(picked.email, "proven@b.c");
     }
 
     #[test]

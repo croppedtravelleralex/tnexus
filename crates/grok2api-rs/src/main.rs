@@ -186,12 +186,28 @@ async fn main() -> anyhow::Result<()> {
         _ => None,
     };
 
+    // 审计 sink：PG 有效时启动后台 worker，fire-and-forget 写 grok_request_audits；
+    // DB 不可达时 batch 失败只记 dropped 计数，绝不阻塞/panic 推理路径。
+    let audit_sink: Option<Arc<grok_audit::AuditSink>> = if cfg.database_url.trim().is_empty() {
+        None
+    } else {
+        let repo = grok_audit::PgAuditRepository::new(pool.clone());
+        let sink = grok_audit::AuditSink::spawn(repo, 1024);
+        tracing::info!("audit sink 已启动（PG, capacity=1024）");
+        Some(Arc::new(sink))
+    };
+
     let chat_engine = Arc::new(
-        ChatEngine::new(shared_pool.clone(), lease.clone(), bridge.clone(), None)
-            .with_sso_opt(sso.clone())
-            .with_health_sink(Arc::new(PgHealthSink(Arc::new(PgAccountRepository::new(
-                pool.clone(),
-            ))))),
+        ChatEngine::new(
+            shared_pool.clone(),
+            lease.clone(),
+            bridge.clone(),
+            audit_sink,
+        )
+        .with_sso_opt(sso.clone())
+        .with_health_sink(Arc::new(PgHealthSink(Arc::new(PgAccountRepository::new(
+            pool.clone(),
+        ))))),
     );
 
     let nurture_ops = Arc::new(grok_nurture_ops::GrokNurtureOps::new());

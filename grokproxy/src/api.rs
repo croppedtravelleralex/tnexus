@@ -135,7 +135,9 @@ async fn chat_completions(
             .await
         {
             Ok(body) => {
-                let _ = state.pool.report_success(&account, &model);
+                let _ = state
+                    .pool
+                    .report_success_with_usage(&account, &model, &body);
                 return Json(body).into_response();
             }
             Err(err) => {
@@ -185,7 +187,9 @@ async fn responses(
             .await
         {
             Ok(body) => {
-                let _ = state.pool.report_success(&account, &model);
+                let _ = state
+                    .pool
+                    .report_success_with_usage(&account, &model, &body);
                 return Json(body).into_response();
             }
             Err(err) => {

@@ -93,6 +93,19 @@ impl Pool {
         Ok(())
     }
 
+    /// Success plus the token/cost accounting the upstream returned.
+    pub fn report_success_with_usage(
+        &self,
+        account: &Account,
+        model: &str,
+        body: &serde_json::Value,
+    ) -> Result<()> {
+        let usage = crate::store::Usage::from_response(body);
+        self.store
+            .record_success_with_usage(account.id, model, crate::now(), &usage)?;
+        Ok(())
+    }
+
     pub fn report_failure(&self, account: &Account, failure: &Failure, error: &str) -> Result<()> {
         let now = crate::now();
         let cooling_until = match failure.cooling_secs() {

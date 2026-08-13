@@ -53,11 +53,7 @@ impl AuditAdminService {
         Self { store }
     }
 
-    pub async fn list(
-        &self,
-        page: i64,
-        page_size: i64,
-    ) -> AdminResult<(Vec<AuditEntryView>, i64)> {
+    pub async fn list(&self, page: i64, page_size: i64) -> AdminResult<(Vec<AuditEntryView>, i64)> {
         self.store.list(page.max(1), page_size.clamp(1, 100)).await
     }
 

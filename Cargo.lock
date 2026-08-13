@@ -2210,6 +2210,7 @@ dependencies = [
  "chrono",
  "dotenvy",
  "grok-admin",
+ "grok-audit",
  "grok-domain",
  "grok-egress",
  "grok-gateway",

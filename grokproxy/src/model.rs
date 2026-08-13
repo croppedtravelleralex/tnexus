@@ -8,9 +8,10 @@ use serde::{Deserialize, Serialize};
 /// promo model through `cli-chat-proxy`. `Web` accounts hold a grok.com SSO
 /// cookie; they are stored and scheduled here but their chat path needs the
 /// request signer, which this service does not implement yet.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum Provider {
+    #[default]
     Build,
     Web,
 }
@@ -38,10 +39,11 @@ impl Provider {
 /// a human or the register pipeline supplies new credentials, while `Cooling`
 /// resolves on its own. Conflating them is what makes a pool look dead when it
 /// is merely throttled.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum Health {
     /// Ready to serve.
+    #[default]
     Active,
     /// Temporarily withheld (rate limit, quota window, transient upstream error).
     Cooling,
@@ -75,7 +77,7 @@ impl Health {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Account {
     pub id: i64,
     pub provider: Provider,
@@ -102,6 +104,13 @@ pub struct Account {
     pub last_error: String,
     pub created_at: i64,
     pub updated_at: i64,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub total_tokens: i64,
+    /// `cost_in_usd_ticks` accumulated; 1e7 ticks = 1 USD.
+    pub cost_ticks: i64,
+    /// Last time this account actually served a request; 0 = never proven.
+    pub verified_at: i64,
 }
 
 impl Account {
@@ -216,7 +225,18 @@ pub struct AccountView {
     pub success_count: i64,
     pub failure_count: i64,
     pub last_error: String,
+    pub total_tokens: i64,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    /// Accumulated spend in USD, derived from the upstream's cost ticks.
+    pub cost_usd: f64,
+    /// False when the account has never served a request — `active` alone only
+    /// means "imported", not "known good".
+    pub verified: bool,
 }
+
+/// The upstream reports cost in ten-millionths of a dollar.
+const COST_TICKS_PER_USD: f64 = 1e7;
 
 impl From<&Account> for AccountView {
     fn from(account: &Account) -> Self {
@@ -233,6 +253,11 @@ impl From<&Account> for AccountView {
             success_count: account.success_count,
             failure_count: account.failure_count,
             last_error: account.last_error.clone(),
+            total_tokens: account.total_tokens,
+            prompt_tokens: account.prompt_tokens,
+            completion_tokens: account.completion_tokens,
+            cost_usd: (account.cost_ticks as f64 / COST_TICKS_PER_USD * 1e6).round() / 1e6,
+            verified: account.verified_at > 0,
         }
     }
 }
@@ -261,6 +286,7 @@ mod tests {
             last_error: String::new(),
             created_at: 0,
             updated_at: 0,
+            ..Default::default()
         }
     }
 

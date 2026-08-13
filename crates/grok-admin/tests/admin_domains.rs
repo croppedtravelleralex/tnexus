@@ -308,10 +308,11 @@ impl AuditStoreFake {
 }
 #[async_trait::async_trait]
 impl AuditStore for AuditStoreFake {
-    async fn list(&self, _p: i64, _n: i64) -> AdminResult<Vec<AuditEntryView>> {
+    async fn list(&self, _p: i64, _n: i64) -> AdminResult<(Vec<AuditEntryView>, i64)> {
         let mut entries = self.entries.lock().unwrap().clone();
         entries.sort_by_key(|e| std::cmp::Reverse(e.created_at));
-        Ok(entries)
+        let total = entries.len() as i64;
+        Ok((entries, total))
     }
     async fn summary(&self) -> AdminResult<AuditSummaryView> {
         let entries = self.entries.lock().unwrap();

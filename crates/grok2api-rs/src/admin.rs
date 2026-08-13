@@ -261,7 +261,10 @@ pub async fn build_admin_bundle(
     let sessions = Arc::new(InMemorySessionRepo(auth_store));
     let store: Arc<dyn AdminStore> = Arc::new(InMemoryAdminStore::default());
     let domains = crate::admin_domains::build_admin_domains();
-    build_bundle(repo, sessions, store, username, password, secret, extras, domains).await
+    build_bundle(
+        repo, sessions, store, username, password, secret, extras, domains,
+    )
+    .await
 }
 
 /// 共享组装：鉴权 service（guard 与 login/refresh 各一份但共享同一底层存储）+
