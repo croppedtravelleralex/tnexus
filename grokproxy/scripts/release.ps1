@@ -25,11 +25,18 @@ finally {
     Pop-Location
 }
 
-# Push from here: WSL cannot use the Windows credential helper and its TLS to
-# github.com drops often enough to fail a release that already succeeded.
+# Push from here: WSL cannot use the Windows credential helper. TLS to
+# github.com from this network drops regularly, so retry rather than fail a
+# release whose only remaining step is publishing the commit.
 Write-Host "`n=== git push (Windows side) ===" -ForegroundColor Cyan
-git -C $repo push origin main
-if ($LASTEXITCODE -ne 0) { throw "git push failed" }
+$pushed = $false
+foreach ($attempt in 1..5) {
+    git -C $repo push origin main
+    if ($LASTEXITCODE -eq 0) { $pushed = $true; break }
+    Write-Host "push attempt $attempt failed, retrying..." -ForegroundColor Yellow
+    Start-Sleep -Seconds ($attempt * 4)
+}
+if (-not $pushed) { throw "git push failed after 5 attempts" }
 
 Write-Host "`n=== handing off to WSL for build + push + deploy ===" -ForegroundColor Cyan
 $script = '/mnt/d/SelfMadeTool/TNexus/grokproxy/scripts/release.sh'
