@@ -154,16 +154,32 @@ impl AccountsStore {
         })
     }
 
+    /// 从后端重读号池到内存。
+    ///
+    /// 复用已持有的 `self.db`，而不是 `Self::from_env()` 重建：后者以 `pool = None`
+    /// 走 `AccountsBackend::from_env`，在 `ACCOUNTS_BACKEND=postgres` 下必然报
+    /// 「requires DATABASE_URL pool」，等于 reload 在 Postgres 后端上永远不可用——
+    /// 而 ETL 刷新 token 后正是靠它把新 token 载入内存。
     pub async fn reload(&self) -> Result<usize> {
-        let fresh = Self::from_env()?;
-        let n = fresh.inner.read().await.len();
+        let mut map = HashMap::new();
+        for value in self.db.list_account_values()? {
+            if let Some(row) = AccountFile::from_value(&value) {
+                map.insert(row.email.to_lowercase(), row);
+            }
+        }
+        if let Ok(path) = std::env::var("PIN_ACCOUNT_FILE") {
+            let row = load_single(PathBuf::from(path))?;
+            map.insert(row.email.to_lowercase(), row);
+        }
+        let scheduling = load_scheduling_state(&self.scheduling_path)?;
+        let n = map.len();
         {
             let mut accounts = self.inner.write().await;
-            *accounts = fresh.inner.read().await.clone();
+            *accounts = map;
         }
         {
-            let mut scheduling = self.scheduling.write().await;
-            *scheduling = fresh.scheduling.read().await.clone();
+            let mut guard = self.scheduling.write().await;
+            *guard = scheduling;
         }
         Ok(n)
     }
