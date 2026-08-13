@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>grokProxy</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0f1115; --panel: #171a21; --line: #262b36;
+    --text: #e6e8ee; --muted: #9aa3b2;
+    --ok: #3fb950; --warn: #d29922; --bad: #f85149; --dim: #6e7681;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 ui-sans-serif, system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; }
+  header { padding: 20px 24px; border-bottom: 1px solid var(--line);
+    display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+  h1 { font-size: 17px; margin: 0; font-weight: 600; letter-spacing: .3px; }
+  main { padding: 20px 24px; max-width: 1180px; }
+  input, button { font: inherit; border-radius: 6px; border: 1px solid var(--line);
+    background: var(--panel); color: var(--text); padding: 7px 11px; }
+  button { cursor: pointer; }
+  button:hover { border-color: #3d4452; }
+  .cards { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); margin-bottom: 22px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .card .n { font-size: 26px; font-weight: 650; }
+  .card .k { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .6px; }
+  table { width: 100%; border-collapse: collapse; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; font-size: 12px;
+    text-transform: uppercase; letter-spacing: .5px; }
+  tr:last-child td { border-bottom: none; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .pill { padding: 2px 9px; border-radius: 999px; font-size: 12px; border: 1px solid transparent; }
+  .active { color: var(--ok); border-color: #1f6f2e; }
+  .cooling { color: var(--warn); border-color: #6b4c10; }
+  .needs_reauth, .forbidden { color: var(--bad); border-color: #7a2620; }
+  .disabled { color: var(--dim); border-color: #3a3f4a; }
+  .err { color: var(--muted); font-size: 12px; max-width: 340px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .note { color: var(--muted); margin: 14px 0 0; font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>grokProxy</h1>
+  <input id="key" type="password" placeholder="admin key" size="26">
+  <button id="load">刷新</button>
+  <span id="status" class="note"></span>
+</header>
+<main>
+  <div class="cards" id="cards"></div>
+  <table>
+    <thead>
+      <tr>
+        <th>邮箱</th><th>通道</th><th>状态</th><th>模型</th>
+        <th class="num">成功</th><th class="num">失败</th>
+        <th>最近使用</th><th>最近错误</th>
+      </tr>
+    </thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <p class="note">admin key 只存在本页内存里，刷新页面即丢弃。</p>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+
+function when(ts) {
+  if (!ts) return '—';
+  const delta = Math.floor(Date.now() / 1000) - ts;
+  if (delta < 60) return delta + ' 秒前';
+  if (delta < 3600) return Math.floor(delta / 60) + ' 分钟前';
+  if (delta < 86400) return Math.floor(delta / 3600) + ' 小时前';
+  return Math.floor(delta / 86400) + ' 天前';
+}
+
+async function load() {
+  const key = $('key').value.trim();
+  const headers = key ? { Authorization: 'Bearer ' + key } : {};
+  $('status').textContent = '加载中…';
+  try {
+    const response = await fetch('/api/v1/accounts', { headers });
+    if (!response.ok) {
+      $('status').textContent = response.status === 401 ? 'admin key 不正确' : '请求失败 ' + response.status;
+      return;
+    }
+    const payload = await response.json();
+    render(payload.accounts || []);
+    $('status').textContent = '共 ' + (payload.count || 0) + ' 个账号 · ' + new Date().toLocaleTimeString();
+  } catch (err) {
+    $('status').textContent = '请求异常: ' + err;
+  }
+}
+
+function render(accounts) {
+  const tally = {};
+  for (const account of accounts) {
+    tally[account.health] = (tally[account.health] || 0) + 1;
+  }
+  const order = ['active', 'cooling', 'needs_reauth', 'forbidden', 'disabled'];
+  const label = { active: '可用', cooling: '冷却中', needs_reauth: '需重新授权',
+                  forbidden: '权益拒绝', disabled: '已停用' };
+  $('cards').innerHTML = order.map((state) =>
+    `<div class="card"><div class="n ${state}">${tally[state] || 0}</div>` +
+    `<div class="k">${label[state]}</div></div>`).join('');
+
+  $('rows').innerHTML = accounts.map((account) => `
+    <tr>
+      <td>${account.email}</td>
+      <td>${account.provider}</td>
+      <td><span class="pill ${account.health}">${label[account.health] || account.health}</span></td>
+      <td>${account.last_model || '—'}</td>
+      <td class="num">${account.success_count}</td>
+      <td class="num">${account.failure_count}</td>
+      <td>${when(account.last_used_at)}</td>
+      <td class="err" title="${(account.last_error || '').replace(/"/g, '&quot;')}">${account.last_error || ''}</td>
+    </tr>`).join('');
+}
+
+$('load').addEventListener('click', load);
+$('key').addEventListener('keydown', (event) => { if (event.key === 'Enter') load(); });
+load();
+</script>
+</body>
+</html>

@@ -1,0 +1,43 @@
+# grokProxy on Panda.
+# 禁止在 Panda 构建。发布链路：git push → GitHub Actions → GHCR → 本机 pull + up。
+#
+# Port 8110 was picked to avoid the occupied ones on this host
+# (8000 grok2api-rs, 8091 its admin, 8012, 8081, 18000, 18100, 5433, 6380).
+
+services:
+  grokproxy:
+    image: ghcr.io/${GHCR_OWNER:-croppedtravelleralex}/grokproxy:${GROKPROXY_TAG:-latest}
+    container_name: grokproxy
+    restart: unless-stopped
+    # Loopback-only: reach it through the existing gateway, never the open internet.
+    ports:
+      - "127.0.0.1:${GROKPROXY_PORT:-8110}:8110"
+    environment:
+      GROKPROXY_ADDR: 0.0.0.0:8110
+      GROKPROXY_DB: /data/grokproxy.db
+      GROKPROXY_UPSTREAM: ${GROKPROXY_UPSTREAM:-https://cli-chat-proxy.grok.com/v1}
+      GROKPROXY_API_KEY: ${GROKPROXY_API_KEY:?required}
+      GROKPROXY_ADMIN_KEY: ${GROKPROXY_ADMIN_KEY:?required}
+      # Egress for accounts that carry no sticky proxy_url of their own.
+      GROKPROXY_PROXY: ${GROKPROXY_PROXY:-}
+      GROKPROXY_TIMEOUT_SECS: ${GROKPROXY_TIMEOUT_SECS:-120}
+      GROKPROXY_MAX_ATTEMPTS: ${GROKPROXY_MAX_ATTEMPTS:-3}
+      RUST_LOG: ${GROKPROXY_LOG:-info}
+    volumes:
+      - ${GROKPROXY_DATA_DIR:-/opt/grokproxy/data}:/data
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8110/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    # Panda is a small box; keep this service from crowding the others out.
+    mem_limit: 256m
+    cpus: "0.5"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    security_opt:
+      - no-new-privileges:true

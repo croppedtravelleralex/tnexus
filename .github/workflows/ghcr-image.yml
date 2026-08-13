@@ -58,6 +58,46 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/grok2api-rs:latest
             ghcr.io/${{ github.repository_owner }}/grok2api-rs:${{ github.sha }}
 
+  # grokproxy is an excluded standalone package: its own lockfile, its own gate,
+  # so it can never break the main workspace build.
+  grokproxy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: grokproxy
+      - name: Format check
+        working-directory: grokproxy
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        working-directory: grokproxy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Test
+        working-directory: grokproxy
+        run: cargo test --locked
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: grokproxy
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/grokproxy:latest
+            ghcr.io/${{ github.repository_owner }}/grokproxy:${{ github.sha }}
+          cache-from: type=gha,scope=grokproxy
+          cache-to: type=gha,mode=max,scope=grokproxy
+
   grok-gate:
     # Grok migration gate (docs/39c §7 CI): cargo tests for grok crates + gate g0.
     # Graceful when grok crates are absent (pre-G0), matching grok_migration_gate.sh.

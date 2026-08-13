@@ -36,6 +36,10 @@ members = [
     "crates/grok-signer",
     "crates/grok-pure-http",
 ]
+# grokproxy 是自带 Cargo.lock 的独立包，只借这个仓的 Actions 与 GHCR 凭据发布。
+# 排除在 workspace 之外，避免它的 bundled SQLite 拖慢本仓构建、污染 Cargo.lock，
+# 也避免进入 grok-gate 的 cargo test 矩阵。
+exclude = ["grokproxy"]
 
 [workspace.package]
 version = "0.1.0"
