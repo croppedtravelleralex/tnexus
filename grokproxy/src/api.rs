@@ -37,6 +37,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/v1/accounts/{id}/health", post(set_health))
         .route("/api/v1/sweep", post(sweep))
         .route("/api/v1/quota", post(quota))
+        .route("/api/v1/mint", post(mint))
         .with_state(state)
 }
 
@@ -424,6 +425,32 @@ async fn run_probe(
     {
         Ok(report) => Json(json!({"ok": true, "report": report})).into_response(),
         Err(err) => upstream_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
+}
+
+/// Exchange a web SSO cookie for a Build credential and keep it.
+///
+/// The registration machine used to mint to a JSON file and ship it here as a
+/// separate step. Doing the exchange in-process removes that hop entirely: the
+/// browser's only remaining job is to produce the cookie.
+async fn mint(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+    Json(request): Json<crate::xai::mint::MintRequest>,
+) -> Response {
+    if !Config::authorizes(&state.config.admin_key, bearer(&headers)) {
+        return deny();
+    }
+    match crate::xai::mint::mint(state.pool.store(), &request).await {
+        Ok(outcome) => Json(json!({"ok": true, "account": outcome})).into_response(),
+        Err(err) => {
+            warn!(email = %request.email, error = %format!("{err:#}"), "mint failed");
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"ok": false, "error": format!("{err:#}")})),
+            )
+                .into_response()
+        }
     }
 }
 

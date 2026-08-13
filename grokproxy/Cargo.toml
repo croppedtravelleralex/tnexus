@@ -2,7 +2,8 @@
 name = "grokproxy"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.82"
+# wreq (BoringSSL) sets the floor; see src/xai/mod.rs for why it is required.
+rust-version = "1.85"
 description = "Minimal Grok account pool: ingest, refresh, schedule, serve an OpenAI-compatible API"
 license = "MIT"
 
@@ -28,6 +29,8 @@ base64 = "0.22"
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 rand = "0.8"
 time = { version = "0.3", features = ["formatting", "macros"] }
+wreq = { version = "5.3.0", features = ["cookies", "json", "gzip", "brotli"] }
+wreq-util = "2.2.6"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util"] }

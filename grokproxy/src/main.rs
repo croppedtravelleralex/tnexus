@@ -10,6 +10,7 @@ mod pool;
 mod probe;
 mod store;
 mod upstream;
+mod xai;
 
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};

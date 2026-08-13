@@ -2,12 +2,15 @@
 # grokProxy — built by CI, pulled on Panda. Never build this on Panda.
 FROM rust:1-bookworm AS builder
 WORKDIR /app
+# clang and cmake build BoringSSL, which wreq needs: accounts.x.ai answers a
+# browser TLS signature with 307 and refuses reqwest's with 403, so the mint
+# flow cannot be driven by a plain client.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends pkg-config \
+    && apt-get install -y --no-install-recommends pkg-config clang cmake \
     && rm -rf /var/lib/apt/lists/*
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
-RUN cargo build --release --locked
+RUN cargo build --release --locked --bin grokproxy
 
 FROM debian:bookworm-slim
 RUN apt-get update \
