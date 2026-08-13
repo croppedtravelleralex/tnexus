@@ -1,6 +1,24 @@
 # HANDOFF — TNexus（含 gateway-rs 合并）
 
-最后更新：**2026-08-02（`1ab5d25`：出图元数据 + 全量同步额度 + gateway edits 已部署 Panda）**
+最后更新：**2026-08-13（`1b56596`：号池调度重做 + 生图链路修复 + OCR 接入 NewAPI，三镜像已部署）**
+
+## 2026-08-13 这批改动（读代码前先看这段，能省掉重复排查）
+
+线上跑的镜像：`tnexus` `1d50dc43`、`tnexus-gateway` `bf56b422`、`grok2api-rs` `a6addd38`。
+
+| 症状 | 真因 | 现状 |
+|------|------|------|
+| 号池额度全显示「未知」 | `GET /admin/accounts/:id/quota` 返回 `{items}`，前端当数组取 `[0]` | 已修，含总额度面板 |
+| 「冷却至 2026/7/27」像时空回溯 | `cooldown_until` 写入后从不清除，UI 直接渲染历史时间戳 | 过期显示「已恢复」；刷新成功自动清 |
+| 219 个 active 账号一天不刷新 | 轮换按 `grok_accounts.updated_at` 排序，但刷新只写 `grok_quota_windows`，排序键永不推进；该列又被 ETL 压平成同一时刻 | 改按 `synced_at` 排序，实测 219→14 |
+| Grok 对话 429 直接抛给调用方 | 随机选号 + 2s 冷却 + 失败不换号 | LRU 选号 + 跨账号重试 + 60→300s 退避 |
+| 生图选 16:9 仍出方图 | `imagine.rs` 的 **Lite 分支函数签名不接收 `aspect_ratio`**，参数在分叉处丢弃 | 写进提示词（Lite 唯一通道） |
+| 生图偶发 7 分钟超时 | 轮询终止判定被「会话存在 image_gen 节点」永久屏蔽，该条件任务一启动就恒真 | 读 `/backend-api/tasks` 的 status 判终态 |
+| 内容审查拒绝拉低渠道成功率 | 归 `upstream` → 502，NewAPI 记渠道故障 | 改判 `client` → 400 |
+
+**「最近错误」列是死数据**：当前 Rust 栈原本完全不写 `grok_accounts.last_error`，
+线上那 93 条是 2026-08-12 11:06 一次 ETL 在 16 毫秒内批量导入的 Go 时代遗留。
+现已接上健康回写 + 刷新成功自愈，之后再出现的才是真故障。
 
 ## 本地构建 → GHCR → Panda pull（合规发布）
 

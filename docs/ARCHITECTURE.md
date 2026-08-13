@@ -13,23 +13,56 @@
 
 ## 2. 部署拓扑图
 
-```text
-tnexus.relai.asia (nginx, host)
-  ├─ /v1/*            → 127.0.0.1:8014   gateway（生图/对话 OpenAI 兼容）
-  ├─ /api/backend/*   → 127.0.0.1:8014   gateway 号池管理 API
-  └─ /*               → 127.0.0.1:9000   tnexus-api（控制面 API + 静态 UI 托管）
+> ⚠️ **「gateway」在本项目里指三个不同的东西**，这是排查时最常见的误解来源。
+> 说到 gateway 必须带端口号。
 
-网关侧服务（均为 host 网络）
-  api       :9000    tnexus-api      控制面 + 静态渲染
-  worker    —        tnexus-worker   异步任务消费者
-  gateway   :8014    gateway         /v1/ + /api/backend/ 数据面（DATA_PLANE=upstream）
-  account-ops :9011  Rust 养号/OAuth/refresh/outlook 执行面
+| 端口 | 进程 | 管什么 | 谁调它 | 公网可达 |
+|------|------|--------|--------|----------|
+| `:8014` | `tnexus-gateway`（`crates/gateway`） | **GPT** 生图 / 对话 | NewAPI ch114/115、nginx `/v1/` | 是 |
+| `:8000` | `grok2api-rs`（`crates/grok-gateway`） | **Grok** 对话 / OCR / 生图 | tnexus-api 代理、NewAPI ch117 | 否 |
+| `:8091` | grok-admin（与上同进程） | Grok 号池管理 `/admin/*` | tnexus-api 代理 | 否 |
+| `:9000` | `tnexus-api` | 控制面 + 静态 UI + 上面两者的代理 | nginx `/*` | 是 |
+| `:9011` | `account-ops` | GPT 养号/OAuth/refresh | tnexus-api 委托 | 否 |
+
+```text
+tnexus.relai.asia (nginx, host)   ← 唯一公网入口
+  ├─ /v1/*            → 127.0.0.1:8014   tnexus-gateway（GPT 生图 OpenAI 兼容）
+  ├─ /api/backend/*   → 127.0.0.1:8014   gateway 号池管理 API
+  └─ /*               → 127.0.0.1:9000   tnexus-api（控制面 + 静态 UI）
+                            ├─ /api/grok/v1/*  → 127.0.0.1:8000  grok2api-rs
+                            └─ /api/grok/*     → 127.0.0.1:8091  grok-admin
+
+服务（均为 host 网络）
+  api        :9000   tnexus-api      控制面 + 静态渲染 + Grok 双向代理
+  worker     —       tnexus-worker   异步任务消费者
+  gateway    :8014   gateway         GPT 数据面（DATA_PLANE=upstream）
+  grok2api-rs :8000/:8091            Grok 数据面 + 管理面
+  account-ops :9011                  GPT 养号/OAuth/refresh/outlook 执行面
 
 外部依赖（回环端口，仅本机可达）
   postgres  127.0.0.1:5433  (容器内 5432)
   redis     127.0.0.1:6380  (容器内 6379)
   Cloudflare R2       媒体面（原图/预览/缩略图三级 + 签名 URL）
 ```
+
+**浏览器永远到不了 `:8000`/`:8091`**，前端一切 Grok 请求都经 tnexus-api 用 cookie 鉴权后转发。
+任何写着「直连 grok 网关（:8000）」的说明都是错的。
+
+### 2.1 同机容器回连宿主端口需要 UFW 放行
+
+NewAPI 等容器经 `host.docker.internal`（→ docker0 `172.17.0.1`）回连宿主端口，
+而 UFW 默认策略是 DROP。症状是**容器侧 `connect: connection timed out`，宿主本地
+`curl` 却完全正常**，极易误判成服务故障（`:8000` 上线时实测卡 133 秒）。
+
+放行按来源网段，不要图省事对全网开放（`:8014` 早期的 `ALLOW Anywhere` 是反面教材）：
+
+```bash
+ufw allow from 172.19.0.0/16 to any port 8000 proto tcp comment 'newapi to grok2api-rs 8000'
+ufw allow from 172.17.0.0/16 to any port 8000 proto tcp comment 'docker0 to grok2api-rs 8000'
+```
+
+容器可能同时挂多个网络，需逐个放行；`deploy/panda/newapi_tnexus_ocr.sh` 的 `apply`
+已内置预检，失败时直接打印所需命令。
 
 - nginx 分流：`deploy/nginx/tnexus.relai.asia.conf` — `/v1/`(:30)、`/api/backend/`(:42) → 8014；其余(:59) → 9000；`proxy_buffering off` + 900s 超时支持长 SSE。
 - 三容器（api/worker/account-ops）`network_mode: host`（`deploy/panda/docker-compose.yml`）；gateway 由独立镜像 `panda-gateway-1` 运行。
@@ -191,4 +224,38 @@ upstream 全部模块已接线（lib.rs:6-19 共 14 模块：tls/pow/turnstile/s
 
 > ⚠️ `docs/24-gap-inventory.md`（2026-07-26）已过期——`run_image_edit` 已实现，编辑生图已支持。
 
-> 注：另有 grok provider 演进在开发中（grok-provider-web / grok-image-pipeline / docs/38-41 / migration 017 等），见 docs/38-41，本文不展开。
+---
+
+## 13. Grok 子系统现状（2026-08-13 核实，已在生产）
+
+Grok 不再是「开发中的平行主线」，它在生产承载对话与 OCR。
+
+| 项 | 现状 |
+|----|------|
+| 号池 | PG `grok_accounts` 707 行 / 546 启用 grok_web；额度在 `grok_quota_windows` |
+| 额度刷新 | 后台任务 `web_quota_refresh`，60s 一批 32 个，按 fast 窗口 `synced_at` 升序轮换，全池约 17 分钟一轮 |
+| 选号 | `SimplifiedPool` **LRU**（`last_selected_seq`），非随机；`Selector` 全量能力仍未接生产 |
+| 失败处理 | 429/403 跨账号重试（`GROK_CHAT_RETRY_MAX`，默认 4）；限速退避 60s→300s；健康状态回写 PG |
+| OCR | `:8000` `/v1/chat/completions`，model `grok-vision-ocr` 或 messages 含 `image_url` |
+| 计费 | NewAPI ch117 分组 `tnexus-ocr` 倍率 1.0，`ModelPrice` 0.01/次（= 5000 配额点） |
+
+### 13.1 额度语义（读 `grok_quota_windows` 前必看）
+
+| mode | 含义 | 陷阱 |
+|------|------|------|
+| `fast` | 24h 对话额度，来自 `POST /rest/rate-limits` | 唯一持续刷新的窗口，判断账号可用性看它 |
+| `auto` | 历史遗留 | 无任务刷新它，时间戳会一直陈旧 |
+| `imagine` | 生图额度 | `total ≈ 1.155e10` 是**「不限」哨兵值**，不是真实张数 |
+| `console` | Console 账号 | `source='default'` = 从未探测过的占位值，不可当真 |
+
+`source='upstream'` 才是上游真实回包；判断新鲜度看 `synced_at` 而非 `updated_at`。
+
+### 13.2 长期约束：单一代理出口
+
+`GROK2API_PROXY_LIST` 目前只有 1 个可用出口，698 个账号共用。宿主自身 IP 已被
+grok.com 硬封（403）。廉价端点（`/rest/rate-limits`）能过，昂贵端点（chat/imagine）
+按 IP 限流 → 这是 429 的**根因，代码层无法根治**，跨账号重试只能缓解。
+
+采购新代理前用 `scripts/grok_proxy_probe.sh` 筛选：它会拿当前生产代理做对照组，
+只有 `grok=200` 的才可用。2026-08-13 实测 20 个 webshare 静态住宅代理（`82.25/26/27/29.x`）
+**全部被边缘 403**（45ms 级 IP 封禁），整段被封，不可用。
