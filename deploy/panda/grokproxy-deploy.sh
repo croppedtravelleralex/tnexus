@@ -11,14 +11,22 @@
 #   ./deploy.sh status                 # 查看状态
 set -euo pipefail
 
+# Compose lives in the TNexus checkout that already exists on this box; only the
+# runtime state (env + sqlite) sits under /opt/grokproxy.
+TNEXUS_ROOT="${TNEXUS_ROOT:-/root/TNexus}"
 ROOT="${GROKPROXY_ROOT:-/opt/grokproxy}"
-COMPOSE_FILE="${COMPOSE_FILE:-$ROOT/repo/deploy/panda/grokproxy-compose.yml}"
+COMPOSE_FILE="${COMPOSE_FILE:-$TNEXUS_ROOT/deploy/panda/grokproxy-compose.yml}"
 ENV_FILE="${ENV_FILE:-$ROOT/.env}"
 last_tag_file="$ROOT/.last-deploy"
 prev_tag_file="$ROOT/.prev-deploy"
 
-[[ -f "$COMPOSE_FILE" ]] || { echo "missing $COMPOSE_FILE — git pull first" >&2; exit 1; }
-[[ -f "$ENV_FILE" ]] || { echo "missing $ENV_FILE — copy from deploy/panda/.env.example" >&2; exit 1; }
+[[ -f "$COMPOSE_FILE" ]] || { echo "missing $COMPOSE_FILE — git -C $TNEXUS_ROOT pull first" >&2; exit 1; }
+[[ -f "$ENV_FILE" ]] || {
+  echo "missing $ENV_FILE — bootstrap it first:" >&2
+  echo "  mkdir -p $ROOT/data" >&2
+  echo "  cp $TNEXUS_ROOT/grokproxy/deploy-env.example $ENV_FILE && edit it" >&2
+  exit 1
+}
 
 compose() {
   docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"

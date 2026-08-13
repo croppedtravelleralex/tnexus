@@ -1,0 +1,26 @@
+# grokProxy on Panda — copy to /opt/grokproxy/.env and fill in.
+# 生成随机 key：openssl rand -hex 32
+
+# GHCR owner + tag (tag=latest 或某个 commit sha)
+GHCR_OWNER=croppedtravelleralex
+GROKPROXY_TAG=latest
+
+# Loopback port on the host. 8110 avoids grok2api-rs (8000/8091) and the rest.
+GROKPROXY_PORT=8110
+
+# SQLite lives here; back this up, it is the whole account pool.
+GROKPROXY_DATA_DIR=/opt/grokproxy/data
+
+# Bearer key for /v1/* (what clients send as an OpenAI API key).
+GROKPROXY_API_KEY=
+
+# Bearer key for /api/v1/* and the status page. The register pipeline uses this.
+GROKPROXY_ADMIN_KEY=
+
+# Egress for accounts with no sticky proxy_url. Leave empty for direct.
+GROKPROXY_PROXY=
+
+GROKPROXY_UPSTREAM=https://cli-chat-proxy.grok.com/v1
+GROKPROXY_TIMEOUT_SECS=120
+GROKPROXY_MAX_ATTEMPTS=3
+GROKPROXY_LOG=info
