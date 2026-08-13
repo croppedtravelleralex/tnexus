@@ -16,9 +16,10 @@ if [[ -z "${email:-}" ]]; then
   echo "no web account with an sso token to test with" >&2
   exit 1
 fi
-# Stored proxies point at whatever address grokProxy rewrites to the relay.
-relay="${GROKPROXY_STICKY_RELAY:-}"
-if [[ -n "$proxy" && -n "$relay" ]]; then
+
+relay="${GROKPROXY_STICKY_RELAY:-127.0.0.1:18100}"
+if [[ -n "$proxy" ]]; then
+  # Stored proxies name whatever address grokProxy rewrites to the relay.
   proxy="$(python3 - "$proxy" "$relay" <<'PY'
 import sys
 from urllib.parse import urlsplit, urlunsplit
@@ -28,6 +29,12 @@ creds = p.netloc.rsplit('@', 1)[0] if '@' in p.netloc else ''
 print(urlunsplit((p.scheme, f"{creds}@{relay}" if creds else relay, p.path, p.query, p.fragment)))
 PY
 )"
+else
+  # Web accounts carry no egress of their own, but consent refuses a datacenter
+  # address outright, so borrow the residential relay with a session pinned to
+  # this email — the flow spans several requests that must share an exit IP.
+  session="mint$(printf '%s' "$email" | md5sum | cut -c1-10)"
+  proxy="http://${session}:sticky@${relay}"
 fi
 
 echo "minting for ${email}  egress=${proxy:0:34}..."
