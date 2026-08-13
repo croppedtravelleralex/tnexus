@@ -271,12 +271,18 @@ async fn main() -> anyhow::Result<()> {
     // （TaskScheduler 包装，panic 续跑）。无 DB → 不启动并日志提示。
     let task_cfg = tasks::TaskConfig::from_env();
     let _background = if task_cfg.enabled {
+        // 号池对账用独立 repo：`repo` 已被四池探针接管所有权。
+        let reconcile = tasks::PoolReconcile {
+            pool: shared_pool.clone(),
+            repo: Arc::new(PgAccountRepository::new(pool.clone())),
+        };
         let bt = tasks::spawn_background_tasks(
             &task_cfg,
             repo,
             quota_service.clone(),
             Some(nurture_service),
             web_dispatch_probe,
+            Some(reconcile),
         );
         tracing::info!(
             "后台任务已注册: {:?}",

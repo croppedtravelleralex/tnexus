@@ -582,11 +582,16 @@ impl Store {
         .map_err(Into::into)
     }
 
+    /// Per-provider health mix plus the token budget behind it.
+    ///
+    /// Build and Web are separate pools with separate quota models, so they are
+    /// never summed: a combined total would only ever mislead.
     pub fn stats(&self) -> Result<serde_json::Value> {
         let conn = self.conn.lock().unwrap();
+
+        let mut out = serde_json::Map::new();
         let mut stmt = conn
             .prepare("SELECT provider, health, COUNT(*) FROM accounts GROUP BY provider, health")?;
-        let mut out = serde_json::Map::new();
         let rows = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -598,10 +603,45 @@ impl Store {
             let (provider, health, count) = row?;
             let entry = out
                 .entry(provider)
-                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-            if let Some(map) = entry.as_object_mut() {
+                .or_insert_with(|| serde_json::json!({"health": {}, "quota": {}}));
+            if let Some(map) = entry.pointer_mut("/health").and_then(|v| v.as_object_mut()) {
                 map.insert(health, serde_json::Value::from(count));
             }
+        }
+
+        // Entitlement is only known once an account has served a request, so
+        // report the unknown share rather than implying the pool is empty.
+        let mut stmt = conn.prepare(
+            "SELECT provider,
+                    SUM(CASE WHEN limit_tokens > 0 THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN limit_tokens > 0 THEN limit_tokens ELSE 0 END),
+                    SUM(CASE WHEN limit_tokens > 0 THEN MIN(total_tokens, limit_tokens) ELSE 0 END),
+                    SUM(total_tokens),
+                    SUM(cost_ticks)
+             FROM accounts GROUP BY provider",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+            ))
+        })?;
+        for row in rows {
+            let (provider, measured, entitled, counted_spend, spent, ticks) = row?;
+            let Some(entry) = out.get_mut(&provider) else {
+                continue;
+            };
+            entry["quota"] = serde_json::json!({
+                "measured_accounts": measured,
+                "entitled_tokens": entitled,
+                "remaining_tokens": (entitled - counted_spend).max(0),
+                "spent_tokens": spent,
+                "cost_usd": ticks as f64 / crate::model::COST_TICKS_PER_USD,
+            });
         }
         Ok(serde_json::Value::Object(out))
     }
@@ -1036,6 +1076,79 @@ mod tests {
             .import(Some(Provider::Build), &[build_item("a@b.c", "r1")], 1)
             .unwrap();
         let stats = store.stats().unwrap();
-        assert_eq!(stats["build"]["active"], 1);
+        assert_eq!(stats["build"]["health"]["active"], 1);
+    }
+
+    #[test]
+    fn stats_report_the_budget_only_for_measured_accounts() {
+        // A freshly imported account has no entitlement yet, and counting it as
+        // zero would make the pool look empty when it is merely unmeasured.
+        let store = Store::open_in_memory().unwrap();
+        store
+            .import(
+                Some(Provider::Build),
+                &[
+                    build_item("measured@b.c", "r1"),
+                    build_item("fresh@b.c", "r2"),
+                ],
+                1,
+            )
+            .unwrap();
+        let id = store
+            .list(None)
+            .unwrap()
+            .into_iter()
+            .find(|a| a.email == "measured@b.c")
+            .unwrap()
+            .id;
+        let quota = crate::upstream::RateLimit {
+            limit_tokens: 1_000,
+            remaining_tokens: 1_000,
+            limit_requests: 21,
+            remaining_requests: 21,
+        };
+        let usage = Usage {
+            prompt_tokens: 100,
+            completion_tokens: 150,
+            total_tokens: 250,
+            cost_ticks: 0,
+        };
+        store
+            .record_success_with_usage(id, "grok-4.6", 5, &usage, Some(&quota))
+            .unwrap();
+
+        let stats = store.stats().unwrap();
+        let build = &stats["build"]["quota"];
+        assert_eq!(build["measured_accounts"], 1, "only one has been probed");
+        assert_eq!(build["entitled_tokens"], 1_000);
+        assert_eq!(build["remaining_tokens"], 750);
+        assert_eq!(build["spent_tokens"], 250);
+    }
+
+    #[test]
+    fn overspend_never_reports_negative_remaining() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .import(Some(Provider::Build), &[build_item("a@b.c", "r1")], 1)
+            .unwrap();
+        let id = store.list(None).unwrap()[0].id;
+        let quota = crate::upstream::RateLimit {
+            limit_tokens: 100,
+            remaining_tokens: 100,
+            limit_requests: 21,
+            remaining_requests: 21,
+        };
+        let usage = Usage {
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 500,
+            cost_ticks: 0,
+        };
+        store
+            .record_success_with_usage(id, "grok-4.6", 5, &usage, Some(&quota))
+            .unwrap();
+
+        let stats = store.stats().unwrap();
+        assert_eq!(stats["build"]["quota"]["remaining_tokens"], 0);
     }
 }

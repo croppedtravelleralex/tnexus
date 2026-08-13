@@ -247,7 +247,7 @@ pub struct AccountView {
 }
 
 /// The upstream reports cost in ten-millionths of a dollar.
-const COST_TICKS_PER_USD: f64 = 1e7;
+pub const COST_TICKS_PER_USD: f64 = 1e7;
 
 impl From<&Account> for AccountView {
     fn from(account: &Account) -> Self {

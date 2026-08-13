@@ -27,6 +27,7 @@ use std::time::Duration;
 use grok_ops::four_pool::BuildFourPool;
 use grok_ops::pg_ops::{NotWiredTransport, PgBuildProbeOps};
 use grok_ops::scheduler::{AsyncRun, TaskScheduler};
+use grok_pool::SimplifiedPool;
 use grok_storage::repo::account::PgAccountRepository;
 use tokio::task::AbortHandle;
 
@@ -48,6 +49,8 @@ pub struct TaskConfig {
     pub quota_interval: Duration,
     /// pin 同步 interval（默认 120s；未接线，仅保留语义）。
     pub pin_interval: Duration,
+    /// 号池与 PG 增量对账 interval（默认 60s）。
+    pub pool_reconcile_interval: Duration,
 }
 
 impl TaskConfig {
@@ -67,6 +70,10 @@ impl TaskConfig {
             probe_interval: Duration::from_millis(ms("GROK_PROBE_INTERVAL_MS", 30_000)),
             quota_interval: Duration::from_millis(ms("GROK_QUOTA_INTERVAL_MS", 60_000)),
             pin_interval: Duration::from_millis(ms("GROK_PIN_INTERVAL_MS", 120_000)),
+            pool_reconcile_interval: Duration::from_millis(ms(
+                "GROK_POOL_RECONCILE_INTERVAL_MS",
+                60_000,
+            )),
         }
     }
 
@@ -78,6 +85,7 @@ impl TaskConfig {
             probe_interval,
             quota_interval: Duration::from_secs(60),
             pin_interval: Duration::from_secs(120),
+            pool_reconcile_interval: Duration::from_secs(60),
         }
     }
 }
@@ -124,6 +132,15 @@ pub fn build_four_pool(cfg: &TaskConfig, repo: PgAccountRepository) -> Option<Ar
     Some(four_pool)
 }
 
+/// 号池增量对账任务的依赖。
+///
+/// 内存号池只在启动时 `load` 一次，PG 里的启停与冷却传不到选号器；
+/// 这个任务负责把两边拉齐（见 `SimplifiedPool::reconcile`）。
+pub struct PoolReconcile {
+    pub pool: Arc<SimplifiedPool>,
+    pub repo: Arc<PgAccountRepository>,
+}
+
 /// 注册后台任务到 scheduler。
 ///
 /// - `four_pool` 为 None（无 DB / 未启用）时不注册任何任务。
@@ -135,6 +152,7 @@ pub fn register_tasks(
     quota: Option<Arc<WebQuotaService>>,
     nurture: Option<Arc<GrokNurtureService>>,
     web_probe: Option<Arc<WebDispatchProbe>>,
+    pool_reconcile: Option<PoolReconcile>,
 ) {
     if !cfg.enabled {
         tracing::info!("GROK_TASKS_ENABLED 未设置：后台任务未注册");
@@ -152,6 +170,38 @@ pub fn register_tasks(
         cfg.probe_interval,
         probe_run(four_pool),
     );
+
+    if let Some(PoolReconcile { pool, repo }) = pool_reconcile {
+        scheduler.add_task("grok_pool_reconcile", cfg.pool_reconcile_interval, {
+            Arc::new(move || {
+                let pool = pool.clone();
+                let repo = repo.clone();
+                Box::pin(async move {
+                    match pool.reconcile(repo.as_ref()).await {
+                        Ok(report) => {
+                            if report.changed() {
+                                tracing::info!(
+                                    "grok_pool_reconcile total={} added={} removed={} pg_cooldowns={}",
+                                    report.total,
+                                    report.added,
+                                    report.removed,
+                                    report.cooldowns_applied
+                                );
+                            }
+                            Ok(())
+                        }
+                        Err(e) => Err(grok_ops::OpsError::Probe(e.to_string())),
+                    }
+                })
+            })
+        });
+        tracing::info!(
+            "grok_pool_reconcile enabled interval={:?}",
+            cfg.pool_reconcile_interval
+        );
+    } else {
+        tracing::warn!("grok_pool_reconcile 未接线：号池启停与 PG 冷却不会进入选号器");
+    }
 
     if web_nurture::nurture_enabled() {
         let base = std::env::var("GROK_NURTURE_BASE_URL")
@@ -293,10 +343,19 @@ pub fn spawn_background_tasks(
     quota: Option<Arc<WebQuotaService>>,
     nurture: Option<Arc<GrokNurtureService>>,
     web_probe: Option<Arc<WebDispatchProbe>>,
+    pool_reconcile: Option<PoolReconcile>,
 ) -> BackgroundTasks {
     let mut scheduler = TaskScheduler::new();
     let four_pool = build_four_pool(cfg, repo);
-    register_tasks(&mut scheduler, cfg, four_pool, quota, nurture, web_probe);
+    register_tasks(
+        &mut scheduler,
+        cfg,
+        four_pool,
+        quota,
+        nurture,
+        web_probe,
+        pool_reconcile,
+    );
     let handles = scheduler.spawn_all();
     tracing::info!(
         "后台任务已启动: {}",
@@ -444,6 +503,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(scheduler.status_snapshot().is_empty());
     }
@@ -452,7 +512,7 @@ mod tests {
     fn register_without_db_registers_nothing() {
         let mut scheduler = TaskScheduler::new();
         let cfg = TaskConfig::new(true, Duration::from_secs(10));
-        register_tasks(&mut scheduler, &cfg, None, None, None, None);
+        register_tasks(&mut scheduler, &cfg, None, None, None, None, None);
         assert!(scheduler.status_snapshot().is_empty());
     }
 
@@ -464,6 +524,7 @@ mod tests {
             &mut scheduler,
             &cfg,
             Some(fake_four_pool()),
+            None,
             None,
             None,
             None,
@@ -489,7 +550,7 @@ mod tests {
         let four_pool = Arc::new(BuildFourPool::new(ops.clone()));
         let mut scheduler = TaskScheduler::new();
         let cfg = TaskConfig::new(true, Duration::from_millis(20));
-        register_tasks(&mut scheduler, &cfg, Some(four_pool), None, None, None);
+        register_tasks(&mut scheduler, &cfg, Some(four_pool), None, None, None, None);
         let handles = scheduler.spawn_all();
 
         // 等至少一轮：maintenance_tick 调 list_build_accounts（fake 计数）。

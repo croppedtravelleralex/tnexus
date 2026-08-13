@@ -191,11 +191,18 @@ impl Pool {
     pub async fn probe_quota(&self, limit: usize, concurrency: usize) -> Result<QuotaReport> {
         let accounts = self.store.list(Some(Provider::Build))?;
         let now = crate::now();
-        let candidates: Vec<Account> = accounts
+        let mut candidates: Vec<Account> = accounts
             .into_iter()
             .filter(|account| account.is_available(now))
-            .take(if limit == 0 { usize::MAX } else { limit })
             .collect();
+        // Accounts whose entitlement is still unknown first: re-probing a known
+        // one only spends its budget to relearn a number we already have.
+        candidates.sort_by_key(|account| account.limit_tokens > 0);
+        candidates.truncate(if limit == 0 {
+            usize::MAX
+        } else {
+            limit.min(candidates.len())
+        });
 
         let mut report = QuotaReport {
             checked: 0,

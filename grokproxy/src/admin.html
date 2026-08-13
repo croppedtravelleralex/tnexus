@@ -40,6 +40,20 @@
   #gate .row{display:flex;gap:10px}
   #gate input{flex:1}
 
+  .tabs{display:flex;gap:2px;margin-bottom:16px;border-bottom:1px solid var(--line)}
+  .tab{padding:9px 20px;cursor:pointer;color:var(--muted);border:none;background:none;
+    border-bottom:2px solid transparent;border-radius:0;font-weight:500}
+  .tab:hover{color:var(--text);background:none;border-color:transparent}
+  .tab.sel{color:var(--text);border-bottom-color:var(--accent)}
+  .tab .n{color:var(--dim);font-variant-numeric:tabular-nums;margin-left:6px;font-size:13px}
+  .tab.sel .n{color:var(--accent)}
+
+  .budget{display:flex;gap:26px;align-items:baseline;flex-wrap:wrap;
+    background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    padding:14px 18px;margin-bottom:14px}
+  .budget b{font-size:20px;font-weight:650;font-variant-numeric:tabular-nums}
+  .budget .lab{color:var(--muted);font-size:12px;margin-right:6px}
+
   .cards{display:grid;gap:12px;margin-bottom:18px;
     grid-template-columns:repeat(auto-fit,minmax(132px,1fr))}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
@@ -116,21 +130,13 @@
   </header>
 
   <main>
-    <div class="note">
-      「可用」只表示导入后未被判死，<b>不等于能用</b>；带「未验证」标记的号从未成功服务过请求。
-      点「体检」批量刷新 token 清掉吊销号，点「额度探测」真发 chat 确认权益。
-      上游没有配额接口（<code>/usage</code>、<code>/credits</code>、<code>/quota</code> 均 404），
-      所以只能统计<b>已用</b> token 与花费，无法显示剩余额度。
-    </div>
+    <div class="tabs" id="tabs"></div>
+    <div class="note" id="note"></div>
+    <div class="budget" id="budget"></div>
     <div class="cards" id="cards"></div>
 
     <div class="toolbar">
       <input type="search" id="search" placeholder="搜索邮箱…">
-      <select id="provider">
-        <option value="">全部通道</option>
-        <option value="build">Build</option>
-        <option value="web">Web</option>
-      </select>
       <select id="pageSize">
         <option value="50">每页 50</option>
         <option value="100">每页 100</option>
@@ -141,7 +147,7 @@
 
     <table>
       <thead><tr>
-        <th>邮箱</th><th>通道</th><th>状态</th><th>模型</th>
+        <th>邮箱</th><th>状态</th><th>模型</th>
         <th class="num">成功</th><th class="num">失败</th>
         <th class="num">剩余额度</th><th class="num">已用 token</th><th class="num">花费 $</th>
         <th>最近使用</th><th>最近错误</th><th></th>
@@ -165,7 +171,11 @@ const LABEL = {active:'可用', cooling:'冷却中', needs_reauth:'需重新授�
                forbidden:'权益拒绝', disabled:'已停用'};
 const ORDER = ['active','cooling','needs_reauth','forbidden','disabled'];
 
-const state = { key:'', offset:0, limit:50, health:'', provider:'', search:'', total:0 };
+// Build and Web are separate pools with separate quota models, so the page
+// always shows exactly one of them. A combined count was only ever confusing.
+const PROVIDERS = ['build', 'web'];
+const state = { key:'', offset:0, limit:50, health:'', provider:'build', search:'', total:0,
+                stats:{} };
 let searchTimer = null;
 
 function toast(message, kind) {
@@ -195,21 +205,69 @@ function when(ts) {
   return Math.floor(d / 86400) + ' 天前';
 }
 
+const NOTE = {
+  build: '每个 Build 号有独立 token 授权额度（上游在 chat 响应头里报，通常 100 万）。'
+       + '该头<b>不会递减</b>，所以剩余额度由「授权额度 − 本地累计已用」算出，'
+       + '账号跑过至少一次请求后才有数——没跑过的显示「未探测」，点「额度探测」可批量补上。',
+  web:  'Web 号走 grok.com 的 SSO cookie，<b>没有 token 授权额度这一说</b>，'
+       + '上游按对话次数在自己的窗口内限流，因此这里不显示剩余额度，只统计实际用量。',
+};
+
+function fmt(n) {
+  if (n >= 1e8) return (n / 1e8).toFixed(2) + ' 亿';
+  if (n >= 1e4) return (n / 1e4).toFixed(1) + ' 万';
+  return n.toLocaleString();
+}
+
 async function loadStats() {
-  const stats = await api('/api/v1/stats');
-  const totals = {};
-  let grand = 0;
-  for (const provider of Object.keys(stats)) {
-    for (const [health, n] of Object.entries(stats[provider] || {})) {
-      totals[health] = (totals[health] || 0) + n;
-      grand += n;
-    }
+  state.stats = await api('/api/v1/stats');
+  const mine = state.stats[state.provider] || {};
+  const health = mine.health || {};
+  const quota = mine.quota || {};
+  const total = Object.values(health).reduce((a, b) => a + b, 0);
+
+  $('tabs').innerHTML = PROVIDERS.map((p) => {
+    const n = Object.values(state.stats[p]?.health || {}).reduce((a, b) => a + b, 0);
+    const label = p === 'build' ? 'Build' : 'Web';
+    return `<button class="tab ${p === state.provider ? 'sel' : ''}" data-p="${p}">`
+         + `${label}<span class="n">${n}</span></button>`;
+  }).join('');
+  for (const tab of $('tabs').querySelectorAll('.tab')) {
+    tab.onclick = () => {
+      if (tab.dataset.p === state.provider) return;
+      state.provider = tab.dataset.p;
+      state.health = ''; state.offset = 0;
+      refresh();
+    };
   }
-  $('poolLine').textContent =
-    `build ${sum(stats.build)} · web ${sum(stats.web)} · 合计 ${grand}`;
+
+  $('note').innerHTML = NOTE[state.provider];
+  $('poolLine').textContent = `${state.provider} · ${total} 个号 · 可调度 ${health.active || 0}`;
+
+  // Only Build has an entitlement to report against.
+  if (state.provider === 'build') {
+    const measured = quota.measured_accounts || 0;
+    const unmeasured = total - measured;
+    $('budget').classList.remove('hidden');
+    $('budget').innerHTML = `
+      <div><span class="lab">剩余额度</span><b style="color:var(--ok)">${fmt(quota.remaining_tokens || 0)}</b>
+        <span class="muted"> token</span></div>
+      <div><span class="lab">已授权</span><b>${fmt(quota.entitled_tokens || 0)}</b>
+        <span class="muted"> token · 来自 ${measured} 个已探测的号</span></div>
+      <div><span class="lab">已用</span><b>${fmt(quota.spent_tokens || 0)}</b>
+        <span class="muted"> token · $${(quota.cost_usd || 0).toFixed(2)}</span></div>
+      ${unmeasured > 0 ? `<div class="muted">还有 ${unmeasured} 个号未探测额度，
+        实际盘子比上面大</div>` : ''}`;
+  } else {
+    $('budget').innerHTML = `
+      <div><span class="lab">已用</span><b>${fmt(quota.spent_tokens || 0)}</b>
+        <span class="muted"> token · $${(quota.cost_usd || 0).toFixed(2)}</span></div>
+      <div class="muted">Web 通道没有可查询的额度上限</div>`;
+  }
+
   $('cards').innerHTML = ORDER.map((h) => `
     <div class="card ${state.health === h ? 'sel' : ''}" data-health="${h}">
-      <div class="n ${h}">${totals[h] || 0}</div>
+      <div class="n ${h}">${health[h] || 0}</div>
       <div class="k">${LABEL[h]}</div>
     </div>`).join('');
   for (const card of document.querySelectorAll('.card')) {
@@ -221,21 +279,21 @@ async function loadStats() {
   }
 }
 
-function sum(group) {
-  return Object.values(group || {}).reduce((a, b) => a + b, 0);
-}
-
-// The upstream advertises an entitlement in its response headers but never
-// counts it down, so remaining = entitlement − what we have spent locally.
-// Both halves only exist once the account has served at least one request.
-function quota(a) {
+// Remaining = entitlement − local spend. The upstream advertises the
+// entitlement in a response header but never counts it down, and only does so
+// on a real chat call, so an account that has never run shows as unmeasured.
+function quotaCell(a) {
+  if (a.provider !== 'build') return '<span class="muted" title="Web 号没有 token 授权额度">—</span>';
   const total = a.limit_tokens;
-  if (!total) return '<span class="muted" title="上游只在响应头里报额度，账号跑过请求后才知道">未知</span>';
+  if (!total) {
+    return '<span class="muted" title="该号还没跑过请求，上游只在 chat 响应头里报额度；'
+         + '点顶部「额度探测」可批量补上">未探测</span>';
+  }
   const left = Math.max(0, total - (a.total_tokens || 0));
   const pct = Math.round((left / total) * 100);
-  const colour = left === 0 ? '#dc2626' : pct < 20 ? '#d97706' : '#16a34a';
+  const colour = left === 0 ? 'var(--bad)' : pct < 20 ? 'var(--warn)' : 'var(--ok)';
   return `<span style="color:${colour}" title="剩余 ${left.toLocaleString()} / 授权 ${total.toLocaleString()} token">`
-    + `${(left / 1000).toFixed(0)}k <span class="muted">(${pct}%)</span></span>`;
+    + `${fmt(left)} <span class="muted">(${pct}%)</span></span>`;
 }
 
 async function loadRows() {
@@ -251,19 +309,18 @@ async function loadRows() {
       <td class="email" title="${a.email}">
         ${a.verified ? '' : '<span class="unverified" title="从未成功服务过请求，仅是导入状态">未验证</span> '}${a.email}
       </td>
-      <td>${a.provider}</td>
       <td><span class="pill ${a.health}">${LABEL[a.health] || a.health}</span></td>
       <td>${a.last_model || '—'}</td>
       <td class="num">${a.success_count}</td>
       <td class="num">${a.failure_count}</td>
-      <td class="num">${quota(a)}</td>
+      <td class="num">${quotaCell(a)}</td>
       <td class="num">${a.total_tokens ? a.total_tokens.toLocaleString() : '—'}</td>
       <td class="num">${a.cost_usd ? a.cost_usd.toFixed(4) : '—'}</td>
       <td>${when(a.last_used_at)}</td>
       <td class="err" title="${(a.last_error || '').replace(/"/g, '&quot;')}">${a.last_error || ''}</td>
       <td><button data-id="${a.id}" data-to="${a.health === 'disabled' ? 'active' : 'disabled'}">
         ${a.health === 'disabled' ? '启用' : '停用'}</button></td>
-    </tr>`).join('') || '<tr><td colspan="12" class="muted">没有匹配的账号</td></tr>';
+    </tr>`).join('') || '<tr><td colspan="11" class="muted">没有匹配的账号</td></tr>';
 
   for (const button of $('rows').querySelectorAll('button[data-id]')) {
     button.onclick = async () => {
@@ -354,7 +411,7 @@ $('btnLogout').onclick = () => logout();
 $('btnSweep').onclick = (e) =>
   runJob(e.currentTarget, '体检', '/api/v1/sweep?limit=200&concurrency=8');
 $('btnQuota').onclick = (e) =>
-  runJob(e.currentTarget, '额度探测', '/api/v1/quota?limit=40&concurrency=4');
+  runJob(e.currentTarget, '额度探测', '/api/v1/quota?limit=200&concurrency=8');
 
 $('search').oninput = (e) => {
   clearTimeout(searchTimer);
@@ -364,7 +421,6 @@ $('search').oninput = (e) => {
     refresh();
   }, 300);
 };
-$('provider').onchange = (e) => { state.provider = e.target.value; state.offset = 0; refresh(); };
 $('pageSize').onchange = (e) => { state.limit = +e.target.value; state.offset = 0; refresh(); };
 $('prev').onclick = () => { state.offset = Math.max(0, state.offset - state.limit); refresh(); };
 $('next').onclick = () => { state.offset += state.limit; refresh(); };
