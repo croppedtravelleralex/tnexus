@@ -209,8 +209,12 @@ pub struct InMemoryAuditStore;
 
 #[async_trait::async_trait]
 impl AuditStore for InMemoryAuditStore {
-    async fn list(&self, _page: i64, _page_size: i64) -> AdminResult<Vec<AuditEntryView>> {
-        Ok(vec![])
+    async fn list(
+        &self,
+        _page: i64,
+        _page_size: i64,
+    ) -> AdminResult<(Vec<AuditEntryView>, i64)> {
+        Ok((vec![], 0))
     }
     async fn summary(&self) -> AdminResult<AuditSummaryView> {
         Ok(AuditSummaryView::default())

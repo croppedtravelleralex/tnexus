@@ -38,8 +38,8 @@ pub struct AuditSummaryView {
 /// 审计存储抽象（读侧）。
 #[async_trait]
 pub trait AuditStore: Send + Sync {
-    /// 分页列表（按时间倒序）。
-    async fn list(&self, page: i64, page_size: i64) -> AdminResult<Vec<AuditEntryView>>;
+    /// 分页列表（按时间倒序）；第二个返回值为全表总行数（用于前端分页 total）。
+    async fn list(&self, page: i64, page_size: i64) -> AdminResult<(Vec<AuditEntryView>, i64)>;
     async fn summary(&self) -> AdminResult<AuditSummaryView>;
 }
 
@@ -53,7 +53,11 @@ impl AuditAdminService {
         Self { store }
     }
 
-    pub async fn list(&self, page: i64, page_size: i64) -> AdminResult<Vec<AuditEntryView>> {
+    pub async fn list(
+        &self,
+        page: i64,
+        page_size: i64,
+    ) -> AdminResult<(Vec<AuditEntryView>, i64)> {
         self.store.list(page.max(1), page_size.clamp(1, 100)).await
     }
 

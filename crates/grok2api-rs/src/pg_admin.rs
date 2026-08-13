@@ -12,15 +12,22 @@
 //! 注：`grok-storage` 的行映射辅助均为 `pub(crate)`，本 crate 无法复用，故此处
 //! 内联最小映射（provider / auth_status / quota_source / model_status 字符串 ↔ 枚举）。
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use grok_admin::{
     AccountAnalytics, AccountListFilter, AccountPage, AccountSummary, AccountView, Admin,
-    AdminError, AdminRepository, AdminResult, AdminSessionRepository, AdminStore,
-    ImportAccountInput, ImportError, ImportResult, QuotaModeSummary, Session, TimeseriesPoint,
-    TopAccountView, UpdateAccountInput,
+    AdminDomains, AdminError, AdminRepository, AdminResult, AdminSessionRepository, AdminStore,
+    AuditAdminService, AuditEntryView, AuditStore, AuditSummaryView, ChromeTicketService,
+    ChromeTicketStats, ChromeTicketStore, ChromeTicketView, ClientKeyAdminService, ClientKeyInput,
+    ClientKeyStore, ClientKeyView, DashboardService, DashboardStore, DashboardView,
+    ImageTimelineEntry, ImportAccountInput, ImportError, ImportResult, MediaImageView,
+    MediaService, MediaSizeSummaryView, MediaStatsView, MediaStore, ModelAdminService,
+    ModelAliasView, ModelBindingView, ModelRoute, ModelRouteInput, ModelStore, ModelSyncStateView,
+    QuotaModeSummary, Session, SettingsService, SettingsStore, SettingsView, TimeseriesPoint,
+    TopAccountView, UpdateAccountInput, hash_token,
 };
 use grok_domain::{
     Account, AuthStatus, ModelState, ModelStatus, Provider, QuotaSource, QuotaWindow,
@@ -843,12 +850,14 @@ pub async fn build_admin_bundle_pg(
 ) -> crate::admin::AdminHttpBundle {
     let repo = Arc::new(PgAdminRepo::new(pool.clone()));
     let sessions = Arc::new(PgSessionRepo::new(pool.clone()));
-    let mut store = PgAdminStore::new(pool);
+    let mut store = PgAdminStore::new(pool.clone());
     if let Some(q) = extras.quota.clone() {
         store = store.with_quota_service(q);
     }
     let store: Arc<dyn AdminStore> = Arc::new(store);
-    crate::admin::build_bundle(repo, sessions, store, username, password, secret, extras).await
+    let domains = build_admin_domains_pg(pool);
+    crate::admin::build_bundle(repo, sessions, store, username, password, secret, extras, domains)
+        .await
 }
 #[cfg(test)]
 mod tests {

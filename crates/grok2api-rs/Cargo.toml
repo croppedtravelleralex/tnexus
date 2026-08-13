@@ -32,6 +32,7 @@ grok-ops = { path = "../grok-ops" }
 grok-provider-web = { path = "../grok-provider-web" }
 grok-image-pipeline = { path = "../grok-image-pipeline" }
 grok-admin = { path = "../grok-admin" }
+grok-audit = { path = "../grok-audit" }
 rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
 reqwest = { workspace = true }
 

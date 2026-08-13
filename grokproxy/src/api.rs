@@ -225,10 +225,18 @@ async fn resolve_model(state: &Shared, account: &crate::model::Account, requeste
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct ListQuery {
     #[serde(default)]
     provider: Option<String>,
+    #[serde(default)]
+    health: Option<String>,
+    #[serde(default)]
+    search: Option<String>,
+    #[serde(default)]
+    limit: Option<i64>,
+    #[serde(default)]
+    offset: Option<i64>,
 }
 
 async fn list_accounts(
@@ -239,11 +247,28 @@ async fn list_accounts(
     if !Config::authorizes(&state.config.admin_key, bearer(&headers)) {
         return deny();
     }
-    let provider = query.provider.as_deref().and_then(Provider::parse);
-    match state.pool.store().list(provider) {
-        Ok(accounts) => {
+    let filter = crate::store::AccountQuery {
+        provider: query.provider.as_deref().and_then(Provider::parse),
+        health: query
+            .health
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(Health::parse),
+        search: query.search.filter(|value| !value.trim().is_empty()),
+        limit: query.limit.unwrap_or(50),
+        offset: query.offset.unwrap_or(0),
+    };
+    match state.pool.store().query(&filter) {
+        Ok((accounts, total)) => {
             let views: Vec<AccountView> = accounts.iter().map(AccountView::from).collect();
-            Json(json!({"accounts": views, "count": views.len()})).into_response()
+            Json(json!({
+                "accounts": views,
+                "count": views.len(),
+                "total": total,
+                "offset": filter.offset,
+                "limit": filter.limit,
+            }))
+            .into_response()
         }
         Err(err) => upstream_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
     }
@@ -404,7 +429,7 @@ mod tests {
         let response = list_accounts(
             State(state()),
             HeaderMap::new(),
-            Query(ListQuery { provider: None }),
+            Query(ListQuery::default()),
         )
         .await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
@@ -424,12 +449,8 @@ mod tests {
         let response = import_accounts(State(shared.clone()), headers.clone(), Json(body)).await;
         assert_eq!(response.status(), StatusCode::OK);
 
-        let listed = list_accounts(
-            State(shared.clone()),
-            headers,
-            Query(ListQuery { provider: None }),
-        )
-        .await;
+        let listed =
+            list_accounts(State(shared.clone()), headers, Query(ListQuery::default())).await;
         assert_eq!(listed.status(), StatusCode::OK);
         assert_eq!(shared.pool.store().list(None).unwrap().len(), 1);
     }

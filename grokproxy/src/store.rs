@@ -11,6 +11,28 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 
 use crate::model::{Account, AccountImport, Health, ImportOutcome, Provider};
 
+/// Filters for one page of the admin account list.
+#[derive(Debug, Clone)]
+pub struct AccountQuery {
+    pub provider: Option<Provider>,
+    pub health: Option<Health>,
+    pub search: Option<String>,
+    pub limit: i64,
+    pub offset: i64,
+}
+
+impl Default for AccountQuery {
+    fn default() -> Self {
+        AccountQuery {
+            provider: None,
+            health: None,
+            search: None,
+            limit: 50,
+            offset: 0,
+        }
+    }
+}
+
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS accounts (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -94,6 +116,49 @@ impl Store {
             created_at: row.get("created_at")?,
             updated_at: row.get("updated_at")?,
         })
+    }
+
+    /// Page of accounts matching optional provider / health / email filters.
+    ///
+    /// The pool runs to thousands of rows, so the admin surface must never pull
+    /// the whole table to render one screen.
+    pub fn query(&self, filter: &AccountQuery) -> Result<(Vec<Account>, i64)> {
+        let conn = self.conn.lock().unwrap();
+        let provider = filter.provider.map(|p| p.as_str().to_string());
+        let health = filter.health.map(|h| h.as_str().to_string());
+        let search = filter
+            .search
+            .as_ref()
+            .map(|value| format!("%{}%", value.trim().to_ascii_lowercase()));
+
+        let where_sql = "WHERE (?1 IS NULL OR provider = ?1)
+                           AND (?2 IS NULL OR health = ?2)
+                           AND (?3 IS NULL OR email LIKE ?3)";
+
+        let total: i64 = conn.query_row(
+            &format!("SELECT COUNT(*) FROM accounts {where_sql}"),
+            params![provider, health, search],
+            |row| row.get(0),
+        )?;
+
+        let mut stmt = conn.prepare(&format!(
+            "SELECT * FROM accounts {where_sql}
+             ORDER BY
+               CASE health WHEN 'active' THEN 0 WHEN 'cooling' THEN 1 ELSE 2 END,
+               last_used_at DESC, id
+             LIMIT ?4 OFFSET ?5"
+        ))?;
+        let rows = stmt.query_map(
+            params![
+                provider,
+                health,
+                search,
+                filter.limit.clamp(1, 500),
+                filter.offset.max(0)
+            ],
+            Self::row_to_account,
+        )?;
+        Ok((rows.collect::<rusqlite::Result<Vec<_>>>()?, total))
     }
 
     pub fn list(&self, provider: Option<Provider>) -> Result<Vec<Account>> {
@@ -570,6 +635,87 @@ mod tests {
         assert_eq!(account.last_model, "grok-4.6");
         assert_eq!(account.success_count, 1);
         assert_eq!(account.failure_count, 1);
+    }
+
+    #[test]
+    fn query_pages_without_loading_everything() {
+        let store = Store::open_in_memory().unwrap();
+        let items: Vec<AccountImport> = (0..30)
+            .map(|i| build_item(&format!("u{i:02}@b.c"), "r"))
+            .collect();
+        store.import(Some(Provider::Build), &items, 1).unwrap();
+
+        let (page, total) = store
+            .query(&AccountQuery {
+                limit: 10,
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(page.len(), 10);
+        assert_eq!(total, 30);
+
+        let (page2, _) = store
+            .query(&AccountQuery {
+                limit: 10,
+                offset: 25,
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(page2.len(), 5);
+    }
+
+    #[test]
+    fn query_filters_by_health_and_email() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .import(
+                Some(Provider::Build),
+                &[build_item("alpha@b.c", "r"), build_item("beta@b.c", "r")],
+                1,
+            )
+            .unwrap();
+        let id = store.list(None).unwrap()[0].id;
+        store
+            .mark_health(id, Health::NeedsReauth, 0, "dead", 2)
+            .unwrap();
+
+        let (dead, total) = store
+            .query(&AccountQuery {
+                health: Some(Health::NeedsReauth),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(total, 1);
+        assert_eq!(dead.len(), 1);
+
+        let (found, _) = store
+            .query(&AccountQuery {
+                search: Some("BET".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].email, "beta@b.c");
+    }
+
+    #[test]
+    fn query_puts_usable_accounts_first() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .import(
+                Some(Provider::Build),
+                &[build_item("a@b.c", "r"), build_item("b@b.c", "r")],
+                1,
+            )
+            .unwrap();
+        let first = store.list(None).unwrap()[0].id;
+        store
+            .mark_health(first, Health::NeedsReauth, 0, "dead", 2)
+            .unwrap();
+
+        let (page, _) = store.query(&AccountQuery::default()).unwrap();
+        // An operator opening the page cares about what is serving traffic.
+        assert_eq!(page[0].health, Health::Active);
     }
 
     #[test]

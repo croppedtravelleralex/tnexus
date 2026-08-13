@@ -3,125 +3,347 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>grokProxy</title>
+<title>grokProxy 号池</title>
 <style>
   :root {
     color-scheme: dark;
-    --bg: #0f1115; --panel: #171a21; --line: #262b36;
-    --text: #e6e8ee; --muted: #9aa3b2;
-    --ok: #3fb950; --warn: #d29922; --bad: #f85149; --dim: #6e7681;
+    --bg:#0b0d12; --panel:#141821; --panel2:#1a1f2b; --line:#252b38;
+    --text:#e8eaf0; --muted:#8b93a5; --dim:#5d6675;
+    --ok:#3fb950; --warn:#d29922; --bad:#f85149; --info:#58a6ff; --accent:#7c5cff;
   }
-  * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text);
-    font: 14px/1.5 ui-sans-serif, system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; }
-  header { padding: 20px 24px; border-bottom: 1px solid var(--line);
-    display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
-  h1 { font-size: 17px; margin: 0; font-weight: 600; letter-spacing: .3px; }
-  main { padding: 20px 24px; max-width: 1180px; }
-  input, button { font: inherit; border-radius: 6px; border: 1px solid var(--line);
-    background: var(--panel); color: var(--text); padding: 7px 11px; }
-  button { cursor: pointer; }
-  button:hover { border-color: #3d4452; }
-  .cards { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); margin-bottom: 22px; }
-  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
-  .card .n { font-size: 26px; font-weight: 650; }
-  .card .k { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .6px; }
-  table { width: 100%; border-collapse: collapse; background: var(--panel);
-    border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
-  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); }
-  th { color: var(--muted); font-weight: 500; font-size: 12px;
-    text-transform: uppercase; letter-spacing: .5px; }
-  tr:last-child td { border-bottom: none; }
-  td.num { text-align: right; font-variant-numeric: tabular-nums; }
-  .pill { padding: 2px 9px; border-radius: 999px; font-size: 12px; border: 1px solid transparent; }
-  .active { color: var(--ok); border-color: #1f6f2e; }
-  .cooling { color: var(--warn); border-color: #6b4c10; }
-  .needs_reauth, .forbidden { color: var(--bad); border-color: #7a2620; }
-  .disabled { color: var(--dim); border-color: #3a3f4a; }
-  .err { color: var(--muted); font-size: 12px; max-width: 340px;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .note { color: var(--muted); margin: 14px 0 0; font-size: 13px; }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font:14px/1.55 ui-sans-serif,system-ui,"Segoe UI","Microsoft YaHei",sans-serif}
+  button,input,select{font:inherit;border-radius:8px;border:1px solid var(--line);
+    background:var(--panel2);color:var(--text);padding:8px 12px;outline:none}
+  input:focus,select:focus{border-color:var(--accent)}
+  button{cursor:pointer;transition:border-color .12s,background .12s}
+  button:hover:not(:disabled){border-color:#3d4657;background:#212736}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  button.primary:hover:not(:disabled){background:#6b4ce6}
+
+  header{display:flex;gap:14px;align-items:center;flex-wrap:wrap;
+    padding:16px 24px;border-bottom:1px solid var(--line);background:var(--panel)}
+  .logo{font-size:16px;font-weight:650;letter-spacing:.4px}
+  .logo span{color:var(--accent)}
+  .spacer{flex:1}
+  .muted{color:var(--muted);font-size:13px}
+
+  main{padding:20px 24px;max-width:1400px;margin:0 auto}
+
+  /* gate */
+  #gate{max-width:420px;margin:14vh auto;background:var(--panel);
+    border:1px solid var(--line);border-radius:14px;padding:28px}
+  #gate h2{margin:0 0 6px;font-size:17px}
+  #gate p{margin:0 0 18px;color:var(--muted);font-size:13px}
+  #gate .row{display:flex;gap:10px}
+  #gate input{flex:1}
+
+  .cards{display:grid;gap:12px;margin-bottom:18px;
+    grid-template-columns:repeat(auto-fit,minmax(132px,1fr))}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    padding:14px 16px;cursor:pointer;transition:border-color .12s}
+  .card:hover{border-color:#39415260}
+  .card.sel{border-color:var(--accent)}
+  .card .n{font-size:25px;font-weight:650;font-variant-numeric:tabular-nums}
+  .card .k{color:var(--muted);font-size:12px;margin-top:2px}
+
+  .toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
+  .toolbar input[type=search]{min-width:230px}
+
+  table{width:100%;border-collapse:collapse;background:var(--panel);
+    border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  th,td{text-align:left;padding:10px 13px;border-bottom:1px solid var(--line);
+    white-space:nowrap}
+  th{color:var(--muted);font-weight:500;font-size:12px;letter-spacing:.5px;
+    text-transform:uppercase;background:var(--panel2)}
+  tr:last-child td{border-bottom:none}
+  tbody tr:hover{background:#171c26}
+  td.num{text-align:right;font-variant-numeric:tabular-nums}
+  td.email{max-width:280px;overflow:hidden;text-overflow:ellipsis}
+  td.err{max-width:320px;overflow:hidden;text-overflow:ellipsis;
+    color:var(--muted);font-size:12px}
+
+  .pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;
+    border:1px solid transparent}
+  .active{color:var(--ok);border-color:#1f6f2e;background:#0f2a15}
+  .cooling{color:var(--warn);border-color:#6b4c10;background:#2a1f08}
+  .needs_reauth{color:var(--bad);border-color:#7a2620;background:#2a1210}
+  .forbidden{color:#ff9d7a;border-color:#7a4020;background:#2a1a10}
+  .disabled{color:var(--dim);border-color:#3a4150;background:#1a1e27}
+
+  .pager{display:flex;gap:10px;align-items:center;justify-content:flex-end;
+    margin-top:14px;color:var(--muted);font-size:13px}
+  .toast{position:fixed;right:20px;bottom:20px;background:var(--panel);
+    border:1px solid var(--line);border-left:3px solid var(--accent);
+    border-radius:10px;padding:12px 16px;max-width:440px;font-size:13px;
+    box-shadow:0 8px 28px #0008;white-space:pre-line}
+  .toast.err{border-left-color:var(--bad)}
+  .toast.ok{border-left-color:var(--ok)}
+  .hidden{display:none!important}
+  .spin{display:inline-block;width:12px;height:12px;border:2px solid #ffffff40;
+    border-top-color:#fff;border-radius:50%;animation:sp .7s linear infinite;
+    vertical-align:-1px;margin-right:6px}
+  @keyframes sp{to{transform:rotate(360deg)}}
 </style>
 </head>
 <body>
-<header>
-  <h1>grokProxy</h1>
-  <input id="key" type="password" placeholder="admin key" size="26">
-  <button id="load">刷新</button>
-  <span id="status" class="note"></span>
-</header>
-<main>
-  <div class="cards" id="cards"></div>
-  <table>
-    <thead>
-      <tr>
+
+<div id="gate">
+  <h2>grokProxy 号池</h2>
+  <p>输入 admin key。仅保存在本页会话中，关闭标签即失效。</p>
+  <div class="row">
+    <input id="gateKey" type="password" placeholder="admin key" autocomplete="off">
+    <button class="primary" id="gateGo">进入</button>
+  </div>
+  <p id="gateMsg" class="muted" style="margin-top:12px"></p>
+</div>
+
+<div id="app" class="hidden">
+  <header>
+    <div class="logo">grok<span>Proxy</span></div>
+    <span class="muted" id="poolLine">—</span>
+    <div class="spacer"></div>
+    <button id="btnRefresh">刷新</button>
+    <button id="btnSweep" title="批量刷新 token，把已吊销的号移出调度">体检</button>
+    <button id="btnQuota" title="真发一次 chat，看哪些号还有额度">额度探测</button>
+    <button id="btnLogout">退出</button>
+  </header>
+
+  <main>
+    <div class="cards" id="cards"></div>
+
+    <div class="toolbar">
+      <input type="search" id="search" placeholder="搜索邮箱…">
+      <select id="provider">
+        <option value="">全部通道</option>
+        <option value="build">Build</option>
+        <option value="web">Web</option>
+      </select>
+      <select id="pageSize">
+        <option value="50">每页 50</option>
+        <option value="100">每页 100</option>
+        <option value="200">每页 200</option>
+      </select>
+      <span class="muted" id="filterHint"></span>
+    </div>
+
+    <table>
+      <thead><tr>
         <th>邮箱</th><th>通道</th><th>状态</th><th>模型</th>
         <th class="num">成功</th><th class="num">失败</th>
-        <th>最近使用</th><th>最近错误</th>
-      </tr>
-    </thead>
-    <tbody id="rows"></tbody>
-  </table>
-  <p class="note">admin key 只存在本页内存里，刷新页面即丢弃。</p>
-</main>
+        <th>最近使用</th><th>最近错误</th><th></th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+
+    <div class="pager">
+      <span id="pageInfo">—</span>
+      <button id="prev">上一页</button>
+      <button id="next">下一页</button>
+    </div>
+  </main>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
 <script>
 const $ = (id) => document.getElementById(id);
+const LABEL = {active:'可用', cooling:'冷却中', needs_reauth:'需重新授权',
+               forbidden:'权益拒绝', disabled:'已停用'};
+const ORDER = ['active','cooling','needs_reauth','forbidden','disabled'];
+
+const state = { key:'', offset:0, limit:50, health:'', provider:'', search:'', total:0 };
+let searchTimer = null;
+
+function toast(message, kind) {
+  const el = $('toast');
+  el.textContent = message;
+  el.className = 'toast' + (kind ? ' ' + kind : '');
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.classList.add('hidden'), kind === 'err' ? 9000 : 5000);
+}
+
+async function api(path, options) {
+  const response = await fetch(path, {
+    ...options,
+    headers: { Authorization: 'Bearer ' + state.key, ...(options?.headers || {}) },
+  });
+  if (response.status === 401) throw new Error('admin key 不正确');
+  if (!response.ok) throw new Error('HTTP ' + response.status);
+  return response.json();
+}
 
 function when(ts) {
   if (!ts) return '—';
-  const delta = Math.floor(Date.now() / 1000) - ts;
-  if (delta < 60) return delta + ' 秒前';
-  if (delta < 3600) return Math.floor(delta / 60) + ' 分钟前';
-  if (delta < 86400) return Math.floor(delta / 3600) + ' 小时前';
-  return Math.floor(delta / 86400) + ' 天前';
+  const d = Math.floor(Date.now() / 1000) - ts;
+  if (d < 60) return d + ' 秒前';
+  if (d < 3600) return Math.floor(d / 60) + ' 分钟前';
+  if (d < 86400) return Math.floor(d / 3600) + ' 小时前';
+  return Math.floor(d / 86400) + ' 天前';
 }
 
-async function load() {
-  const key = $('key').value.trim();
-  const headers = key ? { Authorization: 'Bearer ' + key } : {};
-  $('status').textContent = '加载中…';
-  try {
-    const response = await fetch('/api/v1/accounts', { headers });
-    if (!response.ok) {
-      $('status').textContent = response.status === 401 ? 'admin key 不正确' : '请求失败 ' + response.status;
-      return;
+async function loadStats() {
+  const stats = await api('/api/v1/stats');
+  const totals = {};
+  let grand = 0;
+  for (const provider of Object.keys(stats)) {
+    for (const [health, n] of Object.entries(stats[provider] || {})) {
+      totals[health] = (totals[health] || 0) + n;
+      grand += n;
     }
-    const payload = await response.json();
-    render(payload.accounts || []);
-    $('status').textContent = '共 ' + (payload.count || 0) + ' 个账号 · ' + new Date().toLocaleTimeString();
-  } catch (err) {
-    $('status').textContent = '请求异常: ' + err;
+  }
+  $('poolLine').textContent =
+    `build ${sum(stats.build)} · web ${sum(stats.web)} · 合计 ${grand}`;
+  $('cards').innerHTML = ORDER.map((h) => `
+    <div class="card ${state.health === h ? 'sel' : ''}" data-health="${h}">
+      <div class="n ${h}">${totals[h] || 0}</div>
+      <div class="k">${LABEL[h]}</div>
+    </div>`).join('');
+  for (const card of document.querySelectorAll('.card')) {
+    card.onclick = () => {
+      state.health = state.health === card.dataset.health ? '' : card.dataset.health;
+      state.offset = 0;
+      refresh();
+    };
   }
 }
 
-function render(accounts) {
-  const tally = {};
-  for (const account of accounts) {
-    tally[account.health] = (tally[account.health] || 0) + 1;
-  }
-  const order = ['active', 'cooling', 'needs_reauth', 'forbidden', 'disabled'];
-  const label = { active: '可用', cooling: '冷却中', needs_reauth: '需重新授权',
-                  forbidden: '权益拒绝', disabled: '已停用' };
-  $('cards').innerHTML = order.map((state) =>
-    `<div class="card"><div class="n ${state}">${tally[state] || 0}</div>` +
-    `<div class="k">${label[state]}</div></div>`).join('');
+function sum(group) {
+  return Object.values(group || {}).reduce((a, b) => a + b, 0);
+}
 
-  $('rows').innerHTML = accounts.map((account) => `
+async function loadRows() {
+  const params = new URLSearchParams({ limit: state.limit, offset: state.offset });
+  if (state.health) params.set('health', state.health);
+  if (state.provider) params.set('provider', state.provider);
+  if (state.search) params.set('search', state.search);
+  const data = await api('/api/v1/accounts?' + params);
+  state.total = data.total;
+
+  $('rows').innerHTML = data.accounts.map((a) => `
     <tr>
-      <td>${account.email}</td>
-      <td>${account.provider}</td>
-      <td><span class="pill ${account.health}">${label[account.health] || account.health}</span></td>
-      <td>${account.last_model || '—'}</td>
-      <td class="num">${account.success_count}</td>
-      <td class="num">${account.failure_count}</td>
-      <td>${when(account.last_used_at)}</td>
-      <td class="err" title="${(account.last_error || '').replace(/"/g, '&quot;')}">${account.last_error || ''}</td>
-    </tr>`).join('');
+      <td class="email" title="${a.email}">${a.email}</td>
+      <td>${a.provider}</td>
+      <td><span class="pill ${a.health}">${LABEL[a.health] || a.health}</span></td>
+      <td>${a.last_model || '—'}</td>
+      <td class="num">${a.success_count}</td>
+      <td class="num">${a.failure_count}</td>
+      <td>${when(a.last_used_at)}</td>
+      <td class="err" title="${(a.last_error || '').replace(/"/g, '&quot;')}">${a.last_error || ''}</td>
+      <td><button data-id="${a.id}" data-to="${a.health === 'disabled' ? 'active' : 'disabled'}">
+        ${a.health === 'disabled' ? '启用' : '停用'}</button></td>
+    </tr>`).join('') || '<tr><td colspan="9" class="muted">没有匹配的账号</td></tr>';
+
+  for (const button of $('rows').querySelectorAll('button[data-id]')) {
+    button.onclick = async () => {
+      button.disabled = true;
+      try {
+        await api(`/api/v1/accounts/${button.dataset.id}/health`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ health: button.dataset.to }),
+        });
+        await refresh();
+      } catch (err) { toast(String(err.message || err), 'err'); button.disabled = false; }
+    };
+  }
+
+  const from = state.total ? state.offset + 1 : 0;
+  const to = Math.min(state.offset + state.limit, state.total);
+  $('pageInfo').textContent = `${from}–${to} / ${state.total}`;
+  $('prev').disabled = state.offset <= 0;
+  $('next').disabled = to >= state.total;
+  $('filterHint').textContent = state.health ? `已筛选：${LABEL[state.health]}（点卡片取消）` : '';
 }
 
-$('load').addEventListener('click', load);
-$('key').addEventListener('keydown', (event) => { if (event.key === 'Enter') load(); });
-load();
+async function refresh() {
+  try {
+    await Promise.all([loadStats(), loadRows()]);
+  } catch (err) {
+    toast(String(err.message || err), 'err');
+    if (String(err.message).includes('admin key')) logout();
+  }
+}
+
+async function runJob(button, label, path) {
+  const original = button.textContent;
+  button.disabled = true;
+  button.innerHTML = '<span class="spin"></span>' + label + '中';
+  toast(label + '已开始，账号多时可能要几分钟…');
+  try {
+    const data = await api(path, { method: 'POST' });
+    const r = data.report || {};
+    const parts = Object.entries(r)
+      .filter(([, v]) => typeof v === 'number' ? v > 0 : Boolean(v))
+      .map(([k, v]) => `${k}=${v}`);
+    toast(label + '完成\n' + (parts.join('  ') || '无变化'), 'ok');
+    await refresh();
+  } catch (err) {
+    toast(label + '失败：' + (err.message || err), 'err');
+  } finally {
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
+function enter(key) {
+  state.key = key;
+  sessionStorage.setItem('gp_key', key);
+  $('gate').classList.add('hidden');
+  $('app').classList.remove('hidden');
+  refresh();
+}
+
+function logout() {
+  state.key = '';
+  sessionStorage.removeItem('gp_key');
+  $('app').classList.add('hidden');
+  $('gate').classList.remove('hidden');
+}
+
+$('gateGo').onclick = async () => {
+  const key = $('gateKey').value.trim();
+  if (!key) { $('gateMsg').textContent = '请输入 admin key'; return; }
+  $('gateMsg').textContent = '校验中…';
+  // Validate before entering so a wrong key never lands on an empty dashboard.
+  try {
+    const response = await fetch('/api/v1/stats', { headers: { Authorization: 'Bearer ' + key } });
+    if (response.status === 401) { $('gateMsg').textContent = 'admin key 不正确'; return; }
+    if (!response.ok) { $('gateMsg').textContent = '服务异常 HTTP ' + response.status; return; }
+    $('gateMsg').textContent = '';
+    enter(key);
+  } catch (err) {
+    $('gateMsg').textContent = '无法连接服务：' + err;
+  }
+};
+$('gateKey').onkeydown = (e) => { if (e.key === 'Enter') $('gateGo').click(); };
+
+$('btnRefresh').onclick = () => refresh();
+$('btnLogout').onclick = () => logout();
+$('btnSweep').onclick = (e) =>
+  runJob(e.currentTarget, '体检', '/api/v1/sweep?limit=200&concurrency=8');
+$('btnQuota').onclick = (e) =>
+  runJob(e.currentTarget, '额度探测', '/api/v1/quota?limit=40&concurrency=4');
+
+$('search').oninput = (e) => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    state.search = e.target.value.trim();
+    state.offset = 0;
+    refresh();
+  }, 300);
+};
+$('provider').onchange = (e) => { state.provider = e.target.value; state.offset = 0; refresh(); };
+$('pageSize').onchange = (e) => { state.limit = +e.target.value; state.offset = 0; refresh(); };
+$('prev').onclick = () => { state.offset = Math.max(0, state.offset - state.limit); refresh(); };
+$('next').onclick = () => { state.offset += state.limit; refresh(); };
+
+// Restore a key from this tab's session; never auto-fire an unauthenticated
+// request, which is what made the old page open on an error message.
+const saved = sessionStorage.getItem('gp_key');
+if (saved) enter(saved); else $('gateKey').focus();
 </script>
 </body>
 </html>

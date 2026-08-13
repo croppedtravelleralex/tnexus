@@ -260,7 +260,8 @@ pub async fn build_admin_bundle(
     let repo = Arc::new(InMemoryAdminRepo(auth_store.clone()));
     let sessions = Arc::new(InMemorySessionRepo(auth_store));
     let store: Arc<dyn AdminStore> = Arc::new(InMemoryAdminStore::default());
-    build_bundle(repo, sessions, store, username, password, secret, extras).await
+    let domains = crate::admin_domains::build_admin_domains();
+    build_bundle(repo, sessions, store, username, password, secret, extras, domains).await
 }
 
 /// 共享组装：鉴权 service（guard 与 login/refresh 各一份但共享同一底层存储）+
@@ -273,6 +274,7 @@ pub(crate) async fn build_bundle(
     password: Option<&str>,
     secret: &str,
     extras: AdminExtras,
+    domains: grok_admin::AdminDomains,
 ) -> AdminHttpBundle {
     let ttl = (chrono::Duration::hours(1), chrono::Duration::days(7));
     // guard 与 login/refresh 各持一个 AdminAuthService，但共享同一底层存储
@@ -304,7 +306,7 @@ pub(crate) async fn build_bundle(
     }
     AdminHttpBundle {
         router: AdminRouter::new(router_auth, grok_admin::AccountAdminService::new(store))
-            .with_domains(crate::admin_domains::build_admin_domains()),
+            .with_domains(domains),
         auth: login_auth,
         nurture: extras.nurture,
         quota: extras.quota,

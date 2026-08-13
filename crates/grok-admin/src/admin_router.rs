@@ -654,8 +654,8 @@ impl AdminRouter {
             return domain_not_wired("request-audits");
         };
         match service.list(page, page_size).await {
-            Ok(items) => AdminHttpResponse::ok(
-                json!({ "items": items, "page": page, "pageSize": page_size, "total": items.len() as i64 }),
+            Ok((items, total)) => AdminHttpResponse::ok(
+                json!({ "items": items, "page": page, "pageSize": page_size, "total": total }),
             ),
             Err(e) => map_error(e),
         }
