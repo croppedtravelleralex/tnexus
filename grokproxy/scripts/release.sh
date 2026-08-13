@@ -40,9 +40,19 @@ sha="$(git -C "$REPO" rev-parse HEAD)"
 echo "commit ${sha}"
 
 step "gates (same as CI would run)"
-cargo fmt --all -- --check
-cargo clippy --all-targets -- -D warnings
-cargo test --locked
+# The Rust toolchain lives on the Windows side; WSL here only has docker.
+# SKIP_GATES=1 is for when the caller already ran them (release.ps1 does).
+if [[ "${SKIP_GATES:-0}" == "1" ]]; then
+  echo "skipped (caller ran them)"
+elif command -v cargo >/dev/null 2>&1; then
+  cargo fmt --all -- --check
+  cargo clippy --all-targets -- -D warnings
+  cargo test --locked
+else
+  echo "cargo not found in this environment; run scripts/release.ps1 instead" >&2
+  echo "(it runs fmt/clippy/test on the Windows toolchain first)" >&2
+  exit 1
+fi
 
 step "build"
 docker build -q -t "${IMAGE}:${sha}" -t "${IMAGE}:latest" . >/dev/null

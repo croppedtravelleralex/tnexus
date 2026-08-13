@@ -324,9 +324,18 @@ export function GrokChatPanel({
             ))}
           </select>
           {activeAccountId != null && (
-            <span className="rounded-full bg-[var(--neo-surface-muted)] px-2 py-0.5 text-xs text-[var(--neo-muted)]">
-              账号 #{activeAccountId}
-            </span>
+            user?.role === "admin" ? (
+              <a
+                href="/grok/accounts/"
+                className="rounded-full bg-[var(--neo-surface-muted)] px-2 py-0.5 text-xs text-[var(--neo-muted)] hover:text-[var(--neo-primary)] hover:underline"
+              >
+                账号 #{activeAccountId}
+              </a>
+            ) : (
+              <span className="rounded-full bg-[var(--neo-surface-muted)] px-2 py-0.5 text-xs text-[var(--neo-muted)]">
+                账号 #{activeAccountId}
+              </span>
+            )
           )}
         </div>
         <Button variant="ghost" size="sm" onClick={clear} disabled={sending || imagining || messages.length === 0}>

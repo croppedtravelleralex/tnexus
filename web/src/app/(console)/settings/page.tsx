@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { LoaderCircle, RefreshCw } from "lucide-react";
 import { ElevatedCard, PageShell } from "@/components/admin/page-shell";
 import { Button } from "@/components/ui/button";
@@ -32,6 +32,7 @@ export default function SettingsPage() {
   const [users, setUsers] = useState<User[]>([]);
   const [adminBusy, setAdminBusy] = useState<string | null>(null);
   const [tab, setTab] = useState<"system" | "account">("system");
+  const tabDefaultedRef = useRef(false);
   const [proxyRuntime, setProxyRuntime] = useState<Record<string, unknown>>({});
   const [proxyUrl, setProxyUrl] = useState("");
   const [proxyBusy, setProxyBusy] = useState(false);
@@ -47,6 +48,13 @@ export default function SettingsPage() {
   useEffect(() => {
     void getClientCacheConfig().then(setCacheCfg);
   }, []);
+
+  // 非管理员首次加载时落在「账户」标签，隐藏无权限的运维控件。
+  useEffect(() => {
+    if (!user || tabDefaultedRef.current) return;
+    tabDefaultedRef.current = true;
+    if (user.role !== "admin") setTab("account");
+  }, [user]);
 
   const loadProxy = useCallback(async () => {
     if (user?.role !== "admin") return;

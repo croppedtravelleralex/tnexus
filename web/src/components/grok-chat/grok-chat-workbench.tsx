@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { conversationsApi } from "@/lib/api";
 import type { Conversation } from "@/lib/conversations";
 import { GrokChatPanel } from "@/components/grok-chat/grok-chat-panel";
+import { useAuth } from "@/lib/auth";
 import {
   EMPTY_GROK_CHAT_STATE,
   GROK_CHAT_ACTIVE_SESSION_KEY,
@@ -31,6 +32,7 @@ function toPanelMessages(messages: GrokChatMessage[]) {
 }
 
 export function GrokChatWorkbench() {
+  const { user } = useAuth();
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [panelState, setPanelState] = useState<GrokChatConversationState>(EMPTY_GROK_CHAT_STATE);
@@ -279,7 +281,16 @@ export function GrokChatWorkbench() {
             {sidebarOpen ? <ChevronLeft className="size-4" /> : <ChevronRight className="size-4" />}
           </Button>
           {panelState.lastAccountId != null && (
-            <span className="text-xs text-[var(--neo-muted)]">调度账号 #{panelState.lastAccountId}</span>
+            user?.role === "admin" ? (
+              <a
+                href="/grok/accounts/"
+                className="text-xs text-[var(--neo-muted)] hover:text-[var(--neo-primary)] hover:underline"
+              >
+                调度账号 #{panelState.lastAccountId}
+              </a>
+            ) : (
+              <span className="text-xs text-[var(--neo-muted)]">调度账号 #{panelState.lastAccountId}</span>
+            )
           )}
           <div className="ml-auto flex items-center gap-1">
             <Button
