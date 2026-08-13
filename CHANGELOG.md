@@ -2,7 +2,11 @@
 
 ## 2026-08-13
 
-### 新增：OCR 以按次 $0.01 接入 NewAPI
+### 新增：OCR 以按次 $0.01 接入 NewAPI（已上线验证）
+
+- 实测：经 NewAPI 调用 `grok-vision-ocr` 返回 200 / 4s，识别正确，`logs.quota = 5000`（0.01 × 1.0 × 500000）。
+- **上线时踩到的坑**：UFW 默认 DROP，`:8014` 当初是 `ALLOW Anywhere` 放行的，而 `:8000` 从未放行 docker 网段。表现为 NewAPI 侧 `connect: connection timed out`（耗时 133s），宿主本地 curl 却完全正常，极易误判成 OCR 故障。已按来源网段放行（不对公网开放），并在 `apply` 前加连通性预检，失败时直接打印所需 `ufw` 命令。
+
 
 - `deploy/panda/newapi_tnexus_ocr.sh`（`apply|sync-key|status|rollback`）：注册 `tnexus-ocr` 分组、渠道指向 `grok2api-rs :8000`、模型 `grok-vision-ocr`、`ModelPrice` 按次 0.01。
 - 与生图渠道隔离的两点：key 用**静态** `GROK_GATEWAY_AUTH_KEY`（不受每日轮换的 `GATEWAY_AUTH_KEY` JWT 影响）；分组倍率固定 **1.0**，因为 `tnexus` 组是 0.1，复用会让实收变成 $0.001。

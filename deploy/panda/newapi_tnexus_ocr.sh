@@ -195,11 +195,37 @@ upsert_token() {
   TOKEN_KEY="$token_key"
 }
 
+# NewAPI 经 host.docker.internal 回连宿主端口，而 UFW 默认 DROP：:8000 若没按来源
+# 网段放行，表现是 NewAPI 侧「do request failed / connect: connection timed out」，
+# 而宿主本地 curl 一切正常——极易误判成 OCR 服务故障。此处提前拦下。
+preflight_container_reachability() {
+  local nets subnet
+  if ! docker ps --format '{{.Names}}' | grep -qx 'new-api'; then
+    echo "==> skip 连通性预检（new-api 容器不在本机）"
+    return 0
+  fi
+  if docker exec new-api sh -c "wget -q -T 8 -O- ${BASE_URL}/readyz" >/dev/null 2>&1; then
+    echo "==> 预检通过：new-api 容器可达 ${BASE_URL}"
+    return 0
+  fi
+
+  echo "new-api 容器无法连到 ${BASE_URL}（UFW 未放行 docker 网段 → :8000）" >&2
+  echo "在本机执行以下命令后重试：" >&2
+  nets=$(docker inspect new-api --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}')
+  for n in $nets; do
+    subnet=$(docker network inspect "$n" --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}' 2>/dev/null)
+    [[ -n "$subnet" ]] && echo "  ufw allow from ${subnet} to any port 8000 proto tcp comment 'newapi to grok2api-rs 8000'" >&2
+  done
+  echo "  ufw allow from 172.17.0.0/16 to any port 8000 proto tcp comment 'docker0 to grok2api-rs 8000'" >&2
+  exit 1
+}
+
 apply_ocr() {
   if ! curl -fsS -o /dev/null --max-time 5 "$OCR_HEALTH_URL"; then
     echo "grok2api-rs :8000 not healthy ($OCR_HEALTH_URL) — abort" >&2
     exit 1
   fi
+  preflight_container_reachability
 
   echo "==> register group ${OCR_GROUP} (ratio ${GROUP_RATIO})"
   merge_option_json "UserUsableGroups" "$OCR_GROUP" "$MODELS"
