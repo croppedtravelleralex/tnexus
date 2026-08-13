@@ -1,1 +1,0 @@
-ALTER TABLE job_results ADD COLUMN IF NOT EXISTS generation_ms BIGINT;
