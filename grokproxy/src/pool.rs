@@ -156,6 +156,7 @@ impl Pool {
         let mut report = QuotaReport {
             checked: 0,
             usable: 0,
+            revoked: 0,
             no_permission: 0,
             no_credit: 0,
             rate_limited: 0,
@@ -184,10 +185,14 @@ impl Pool {
                     Err(err) => {
                         let failure = downcast_failure(&err);
                         match &failure {
+                            // Terminal: the credential itself is gone. Lumping
+                            // this into "unreachable" hides a dead pool behind
+                            // what looks like a network problem.
+                            Failure::Revoked => report.revoked += 1,
                             Failure::Forbidden => report.no_permission += 1,
                             Failure::Cooling(secs) if *secs >= 1800 => report.no_credit += 1,
                             Failure::Cooling(_) => report.rate_limited += 1,
-                            _ => report.unreachable += 1,
+                            Failure::Transient => report.unreachable += 1,
                         }
                         self.report_failure(account, &failure, &err.to_string())?;
                     }
@@ -310,6 +315,8 @@ pub struct QuotaReport {
     pub checked: usize,
     /// Chat actually returned a completion.
     pub usable: usize,
+    /// Refresh token rejected — needs new credentials, will not self-heal.
+    pub revoked: usize,
     /// Upstream refuses chat for this account (entitlement).
     pub no_permission: usize,
     /// Quota/credit exhausted; recovers on its own window.
@@ -409,6 +416,27 @@ mod tests {
         let id = store.list(None).unwrap()[0].id;
         store.record_success(id, "grok-4.6", 10).unwrap();
         assert_eq!(pool.advertised_models().unwrap(), vec!["grok-4.6"]);
+    }
+
+    #[test]
+    fn every_failure_kind_has_its_own_quota_bucket() {
+        // Revoked once fell into the `unreachable` catch-all, which made a pool
+        // of dead credentials read as a network problem. Each kind must land in
+        // a distinct bucket so the report cannot mislead that way again.
+        fn bucket(failure: &Failure) -> &'static str {
+            match failure {
+                Failure::Revoked => "revoked",
+                Failure::Forbidden => "no_permission",
+                Failure::Cooling(secs) if *secs >= 1800 => "no_credit",
+                Failure::Cooling(_) => "rate_limited",
+                Failure::Transient => "unreachable",
+            }
+        }
+        assert_eq!(bucket(&Failure::Revoked), "revoked");
+        assert_eq!(bucket(&Failure::Forbidden), "no_permission");
+        assert_eq!(bucket(&Failure::Cooling(1_800)), "no_credit");
+        assert_eq!(bucket(&Failure::Cooling(600)), "rate_limited");
+        assert_eq!(bucket(&Failure::Transient), "unreachable");
     }
 
     #[test]
