@@ -195,10 +195,21 @@ where
         Ok(_) => {
             stats.flushed.fetch_add(n, Ordering::Relaxed);
         }
-        Err(_) => {
-            // DB 不可达：丢弃本批并计数，继续下一批，绝不阻塞/panic。
-            stats.batch_failures.fetch_add(1, Ordering::Relaxed);
+        Err(e) => {
+            // DB 不可达或违反约束：丢弃本批并计数，继续下一批，绝不阻塞/panic。
+            //
+            // 必须打日志：只加计数器而计数器又没有暴露出口，等于审计整条链路静默失效——
+            // 线上出现过 sink 已启动、record_audit 已调用，但 grok_request_audits 一行
+            // 不增，且无任何线索可查。
+            let failures = stats.batch_failures.fetch_add(1, Ordering::Relaxed) + 1;
             stats.dropped.fetch_add(n, Ordering::Relaxed);
+            tracing::warn!(
+                dropped_in_batch = n,
+                total_batch_failures = failures,
+                error = %e,
+                sample_request_id = taken.first().map(|a| a.request_id.as_str()).unwrap_or(""),
+                "audit batch 写入失败，本批丢弃"
+            );
         }
     }
 }
