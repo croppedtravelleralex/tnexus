@@ -11,10 +11,14 @@ services:
     restart: unless-stopped
     # Host networking, same as grok2api-rs: the per-account sticky relay listens
     # on the host's 127.0.0.1:18100, which a bridge container cannot reach.
-    # Binding GROKPROXY_ADDR to loopback keeps the service off the public IP.
+    #
+    # Binds 0.0.0.0 so newapi (and other bridge containers) can reach it via the
+    # docker gateway; the cloud security group already blocks these ports from
+    # the internet, which is how 8012/8081 on this host are exposed too. Both
+    # /v1 and /api/v1 additionally require a bearer key.
     network_mode: host
     environment:
-      GROKPROXY_ADDR: 127.0.0.1:${GROKPROXY_PORT:-8110}
+      GROKPROXY_ADDR: ${GROKPROXY_BIND:-0.0.0.0}:${GROKPROXY_PORT:-8110}
       GROKPROXY_DB: /data/grokproxy.db
       GROKPROXY_UPSTREAM: ${GROKPROXY_UPSTREAM:-https://cli-chat-proxy.grok.com/v1}
       GROKPROXY_API_KEY: ${GROKPROXY_API_KEY:?required}
