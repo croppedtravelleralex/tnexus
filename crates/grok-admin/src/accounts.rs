@@ -205,6 +205,21 @@ pub trait AdminStore: Send + Sync {
     async fn top_accounts(&self, limit: i64) -> AdminResult<Vec<TopAccountView>>;
 }
 
+/// 单 mode 的额度聚合（号池总额度可视化）。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct QuotaModeSummary {
+    pub mode: String,
+    pub accounts: i64,
+    pub remaining: i64,
+    pub total: i64,
+    /// remaining=0 且 total>0。
+    pub exhausted: i64,
+    /// synced_at 为空或早于 24h。
+    pub stale: i64,
+    pub oldest_synced_at: Option<DateTime<Utc>>,
+    pub newest_synced_at: Option<DateTime<Utc>>,
+}
+
 /// 池规模汇总（对齐 Go `accounts/summary`；按 provider × 池态计数）。
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct AccountSummary {
@@ -224,6 +239,8 @@ pub struct AccountSummary {
     pub quota_exhausted: i64,
     /// 各 provider 明细。
     pub by_provider: HashMap<String, ProviderSummary>,
+    /// 各 mode 的额度聚合（号池总额度可视化）。
+    pub quota: Vec<QuotaModeSummary>,
 }
 
 /// 单 provider 明细（对齐 Go summary 的 provider 分组）。

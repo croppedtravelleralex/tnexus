@@ -21,11 +21,7 @@ async fn proxy_grok_gateway(
     _user: AuthUser,
     req: Request,
 ) -> Result<Response, (StatusCode, String)> {
-    let base = st
-        .config
-        .grok2api_base
-        .trim_end_matches('/')
-        .to_string();
+    let base = st.config.grok2api_base.trim_end_matches('/').to_string();
     let key = st.config.grok_gateway_auth_key.as_ref().ok_or((
         StatusCode::SERVICE_UNAVAILABLE,
         "Grok 网关未配置（需 GROK_GATEWAY_AUTH_KEY）".into(),
@@ -71,9 +67,9 @@ async fn proxy_grok_gateway(
         }
     }
 
-    let stream = upstream.bytes_stream().map(|r| {
-        r.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
-    });
+    let stream = upstream
+        .bytes_stream()
+        .map(|r| r.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)));
     Ok(resp
         .body(Body::from_stream(stream))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()))

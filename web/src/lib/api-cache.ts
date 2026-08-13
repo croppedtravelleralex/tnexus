@@ -23,6 +23,10 @@ export function invalidateCache(prefix?: string) {
   }
 }
 
+export function deleteCached(key: string) {
+  store.delete(key);
+}
+
 export async function fetchWithCache<T>(
   key: string,
   fetcher: () => Promise<T>,

@@ -26,7 +26,8 @@ pub mod system;
 pub use accounts::{
     AccountAdminService, AccountAnalytics, AccountDetail, AccountListFilter, AccountPage,
     AccountSummary, AccountView, AdminStore, ImportAccountInput, ImportError, ImportResult,
-    ProviderSummary, QuotaWindowInput, TimeseriesPoint, TopAccountView, UpdateAccountInput,
+    ProviderSummary, QuotaModeSummary, QuotaWindowInput, TimeseriesPoint, TopAccountView,
+    UpdateAccountInput,
 };
 pub use admin_router::{AdminDomains, AdminHttpResponse, AdminRouter};
 pub use audits::{AuditAdminService, AuditEntryView, AuditStore, AuditSummaryView};

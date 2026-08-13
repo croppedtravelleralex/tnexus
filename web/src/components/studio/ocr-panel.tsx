@@ -17,7 +17,7 @@ type Props = {
 
 /**
  * Grok OCR 面板（G7-P2）：图片选择/粘贴 → 「提取文字」→ 文本展示（loading/error 态）。
- * 直连 grok 网关（grokApi → :8000 /v1/chat/completions 带图附件 OCR）。
+ * 经 TNexus `/api/grok/v1` 代理到 grok2api-rs 的 `/v1/chat/completions`（带图附件走 OCR 路径）。
  */
 export function OcrPanel({ onClose }: Props) {
   const [dataUrl, setDataUrl] = useState<string | null>(null);

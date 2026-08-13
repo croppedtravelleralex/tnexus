@@ -19,8 +19,8 @@ use chrono::{DateTime, Utc};
 use grok_admin::{
     AccountAnalytics, AccountListFilter, AccountPage, AccountSummary, AccountView, Admin,
     AdminError, AdminRepository, AdminResult, AdminSessionRepository, AdminStore,
-    ImportAccountInput, ImportError, ImportResult, Session, TimeseriesPoint, TopAccountView,
-    UpdateAccountInput,
+    ImportAccountInput, ImportError, ImportResult, QuotaModeSummary, Session, TimeseriesPoint,
+    TopAccountView, UpdateAccountInput,
 };
 use grok_domain::{
     Account, AuthStatus, ModelState, ModelStatus, Provider, QuotaSource, QuotaWindow,
@@ -124,10 +124,7 @@ pub struct PgAdminStore {
 
 impl PgAdminStore {
     pub fn new(pool: PgPool) -> Self {
-        Self {
-            pool,
-            quota: None,
-        }
+        Self { pool, quota: None }
     }
 
     pub fn with_quota_service(mut self, quota: Arc<crate::web_quota::WebQuotaService>) -> Self {
@@ -397,6 +394,40 @@ impl AdminStore for PgAdminStore {
         .await
         .map_err(admin_err)?;
         summary.quota_exhausted = exhausted.try_get("n").map_err(admin_err)?;
+        // 各 mode 额度聚合（仅 enabled 账号；按 mode 分组）。
+        let quota_rows = sqlx::query(
+            "SELECT \
+                 w.mode, \
+                 COUNT(DISTINCT w.account_id)::bigint AS accounts, \
+                 COALESCE(SUM(w.remaining::bigint), 0) AS remaining, \
+                 COALESCE(SUM(w.total::bigint), 0) AS total, \
+                 COUNT(*) FILTER (WHERE w.remaining = 0 AND w.total > 0)::bigint AS exhausted, \
+                 COUNT(*) FILTER (WHERE w.synced_at IS NULL \
+                     OR w.synced_at < now() - interval '24 hours')::bigint AS stale, \
+                 MIN(w.synced_at) AS oldest_synced_at, \
+                 MAX(w.synced_at) AS newest_synced_at \
+             FROM grok_quota_windows w \
+             JOIN grok_accounts a ON a.id = w.account_id AND a.enabled = true \
+             GROUP BY w.mode \
+             ORDER BY w.mode ASC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(admin_err)?;
+        let mut quota = Vec::with_capacity(quota_rows.len());
+        for row in &quota_rows {
+            quota.push(QuotaModeSummary {
+                mode: row.try_get("mode").map_err(admin_err)?,
+                accounts: row.try_get("accounts").map_err(admin_err)?,
+                remaining: row.try_get("remaining").map_err(admin_err)?,
+                total: row.try_get("total").map_err(admin_err)?,
+                exhausted: row.try_get("exhausted").map_err(admin_err)?,
+                stale: row.try_get("stale").map_err(admin_err)?,
+                oldest_synced_at: row.try_get("oldest_synced_at").map_err(admin_err)?,
+                newest_synced_at: row.try_get("newest_synced_at").map_err(admin_err)?,
+            });
+        }
+        summary.quota = quota;
         Ok(summary)
     }
 
@@ -831,7 +862,8 @@ mod tests {
             .connect_lazy("postgres://nobody:secret@127.0.0.1:1/grok?connect_timeout=1")
             .expect("lazy pool never connects");
         // password=None → 跳过 bootstrap（不做 DB 查询），仅验证 PG store/repo 组装。
-        let bundle = build_admin_bundle_pg(pool, "admin", None, "test-secret", Default::default()).await;
+        let bundle =
+            build_admin_bundle_pg(pool, "admin", None, "test-secret", Default::default()).await;
         let _ = bundle;
     }
 }

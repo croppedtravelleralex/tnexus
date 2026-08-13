@@ -235,6 +235,24 @@ impl Default for QuotaWindow {
     }
 }
 
+/// 号池列表展示用窗口：优先 `fast`（`/rest/rate-limits` 写入），避免 ORDER BY mode
+/// 把过期的 `auto` / 空的 `imagine` 排到第一位。
+pub fn preferred_display_quota(windows: &[QuotaWindow]) -> Option<&QuotaWindow> {
+    const ORDER: &[&str] = &["fast", "auto", "console", "imagine"];
+    for mode in ORDER {
+        if let Some(w) = windows
+            .iter()
+            .find(|w| w.mode == *mode && (w.total > 0 || w.remaining > 0))
+        {
+            return Some(w);
+        }
+    }
+    windows
+        .iter()
+        .find(|w| w.total > 0 || w.remaining > 0)
+        .or_else(|| windows.first())
+}
+
 /// 配额扣减结果（G1 fast 额度验收用）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuotaDeduction {
@@ -653,5 +671,35 @@ mod tests {
     fn lane_as_str() {
         assert_eq!(WebLane::Image.as_str(), "image");
         assert_eq!(WebLane::Chat.as_str(), "chat");
+    }
+
+    fn qw(mode: &str, remaining: i64, total: i64) -> QuotaWindow {
+        QuotaWindow {
+            account_id: 1,
+            mode: mode.into(),
+            remaining,
+            total,
+            ..QuotaWindow::default()
+        }
+    }
+
+    #[test]
+    fn preferred_display_quota_picks_fast_over_auto_and_empty_imagine() {
+        let windows = [qw("auto", 7, 7), qw("fast", 30, 30), qw("imagine", 0, 0)];
+        let picked = preferred_display_quota(&windows).unwrap();
+        assert_eq!(picked.mode, "fast");
+        assert_eq!(picked.remaining, 30);
+    }
+
+    #[test]
+    fn preferred_display_quota_skips_zeroed_fast() {
+        let windows = [qw("fast", 0, 0), qw("auto", 7, 7)];
+        let picked = preferred_display_quota(&windows).unwrap();
+        assert_eq!(picked.mode, "auto");
+    }
+
+    #[test]
+    fn preferred_display_quota_empty() {
+        assert!(preferred_display_quota(&[]).is_none());
     }
 }

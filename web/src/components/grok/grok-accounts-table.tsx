@@ -28,6 +28,52 @@ function fmtTime(value: string | null | undefined): string {
   return d.toLocaleString("zh-CN", { hour12: false });
 }
 
+export type CooldownState =
+  | { kind: "none" }
+  | { kind: "past"; rawLabel: string }
+  | { kind: "future"; label: string; rawLabel: string; remainingMs: number };
+
+/** 将 cooldown_until 转为可展示状态；纯函数，方便单测。 */
+export function formatCooldown(cooldownUntil: string | null, now = Date.now()): CooldownState {
+  if (!cooldownUntil) return { kind: "none" };
+  const d = new Date(cooldownUntil);
+  if (Number.isNaN(d.getTime())) return { kind: "none" };
+  const rawLabel = d.toLocaleString("zh-CN", { hour12: false });
+  const remainingMs = d.getTime() - now;
+  if (remainingMs <= 0) return { kind: "past", rawLabel };
+
+  let label: string;
+  const totalSec = Math.ceil(remainingMs / 1000);
+  if (totalSec < 60) {
+    label = `${totalSec}s`;
+  } else if (totalSec < 3600) {
+    label = `${Math.ceil(totalSec / 60)}min`;
+  } else if (totalSec < 86400) {
+    label = `${Math.ceil(totalSec / 3600)}h`;
+  } else {
+    label = `${Math.ceil(totalSec / 86400)}d`;
+  }
+  return { kind: "future", label, rawLabel, remainingMs };
+}
+
+function CooldownCell({ value }: { value: string | null }) {
+  const state = formatCooldown(value);
+  if (state.kind === "none") return <span className="text-[var(--neo-muted)]">—</span>;
+  if (state.kind === "past") {
+    return (
+      <span className="text-xs text-[var(--neo-muted)]" title={state.rawLabel}>
+        已恢复
+      </span>
+    );
+  }
+  return (
+    <span className="text-xs" title={state.rawLabel}>
+      冷却至 {state.rawLabel.slice(5, 16)}
+      <span className="ml-1 text-amber-500">（{state.label}后）</span>
+    </span>
+  );
+}
+
 function authBadge(status: string) {
   const variant = AUTH_STATUS_VARIANT[status] ?? "muted";
   return <Badge variant={variant}>{labelAuthStatus(status)}</Badge>;
@@ -43,6 +89,7 @@ export function GrokAccountsTable({
   onEdit,
   onDetail,
   quotaByAccount,
+  quotaErrorByAccount,
   className,
 }: {
   items: GrokAccountView[];
@@ -50,8 +97,10 @@ export function GrokAccountsTable({
   onEdit?: (account: GrokAccountView) => void;
   /** 行点击回调（打开详情对话框）。 */
   onDetail?: (account: GrokAccountView) => void;
-  /** 账号 → 额度窗口（列表接口不带额度，由页面按需并发拉取；缺失显示「未知」）。 */
+  /** 账号 → 额度窗口（GET /quota 的 `{items}` 解包后取 fast）。缺失显示「未知」。 */
   quotaByAccount?: Record<number, GrokQuotaWindow | null | undefined>;
+  /** 账号 → 读取失败消息；有值时额度列渲染「读取失败」。 */
+  quotaErrorByAccount?: Record<number, string>;
   className?: string;
 }) {
   if (items.length === 0) {
@@ -106,11 +155,22 @@ export function GrokAccountsTable({
                 {a.observed_model || "—"}
               </td>
               <td className="px-3 py-2">
-                <GrokQuotaHeatstrip window={quotaByAccount?.[a.id]} />
+                {quotaErrorByAccount?.[a.id] ? (
+                  <span
+                    className="text-xs text-[var(--neo-muted)]"
+                    title={quotaErrorByAccount[a.id]}
+                  >
+                    读取失败
+                  </span>
+                ) : (
+                  <GrokQuotaHeatstrip window={quotaByAccount?.[a.id]} />
+                )}
               </td>
               <td className="px-3 py-2 tabular-nums">{a.max_concurrent}</td>
               <td className="px-3 py-2 tabular-nums">{a.failure_count}</td>
-              <td className="px-3 py-2 whitespace-nowrap text-xs">{fmtTime(a.cooldown_until)}</td>
+              <td className="px-3 py-2 whitespace-nowrap">
+                <CooldownCell value={a.cooldown_until} />
+              </td>
               <td
                 className="max-w-[200px] truncate px-3 py-2 text-xs text-[var(--neo-muted)]"
                 title={a.last_error ?? ""}

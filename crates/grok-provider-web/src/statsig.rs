@@ -196,11 +196,7 @@ pub fn extract_meta_from_html(html: &str) -> Option<String> {
 pub fn meta_content_to_meta48(meta: &str) -> Result<[u8; 48], ProviderError> {
     let raw = if meta.len() > 60 {
         base64::engine::general_purpose::STANDARD
-            .decode(format!(
-                "{}{}",
-                meta,
-                "=".repeat((4 - meta.len() % 4) % 4)
-            ))
+            .decode(format!("{}{}", meta, "=".repeat((4 - meta.len() % 4) % 4)))
             .map_err(|e| ProviderError::Bridge(format!("meta b64 decode: {e}")))?
     } else {
         meta.as_bytes().to_vec()
@@ -363,7 +359,7 @@ mod tests {
 
     #[tokio::test]
     async fn native_signer_uses_fake_home() {
-        let (addr, _guard) = spawn_fake_upstream().await;
+        let (addr, _hits, _guard) = spawn_fake_upstream().await;
         let client = Client::new();
         let signer = NativeSigner::new();
         let id = crate::signer::SignerTrait::sign(
@@ -405,9 +401,9 @@ mod tests {
 
     #[tokio::test]
     async fn sign_parses_statsig_id_from_fake_signer() {
-        HOME_HITS.store(0, std::sync::atomic::Ordering::SeqCst);
         // 用本地 axum 服务模拟 signer + 首页。
-        let (addr, _guard) = spawn_fake_upstream().await;
+        // spawn_fake_upstream 返回独立计数器，避免与其他并发测试的全局计数竞争。
+        let (addr, home_hits, _guard) = spawn_fake_upstream().await;
         let client = Client::new();
         let signer = StatsigSigner::new(format!("http://{addr}/sign"));
         let id = signer
@@ -422,7 +418,7 @@ mod tests {
             .await
             .expect("sign");
         assert_eq!(id, "fake-statsig-id");
-        // 第二次调用命中缓存：fake 首页计数仍为 1。
+        // 第二次调用命中缓存：该服务器的 / 端点计数仍为 1。
         let id2 = signer
             .sign_remote(
                 &client,
@@ -435,7 +431,11 @@ mod tests {
             .await
             .expect("sign 2");
         assert_eq!(id2, "fake-statsig-id");
-        assert_eq!(HOME_HITS.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            home_hits.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "第二次调用应命中缓存，不再抓取首页"
+        );
     }
 
     #[tokio::test]
@@ -461,16 +461,24 @@ mod tests {
 
     use std::sync::atomic::AtomicUsize;
 
-    static HOME_HITS: AtomicUsize = AtomicUsize::new(0);
-
-    async fn spawn_fake_upstream() -> (String, tokio::task::JoinHandle<()>) {
+    /// 每个调用返回一个独立的首页命中计数器，避免全局静态导致的测试并发竞争。
+    async fn spawn_fake_upstream() -> (
+        String,
+        std::sync::Arc<AtomicUsize>,
+        tokio::task::JoinHandle<()>,
+    ) {
         use axum::{routing::get, Router};
+        let hits = std::sync::Arc::new(AtomicUsize::new(0));
+        let hits2 = hits.clone();
         let app = Router::new()
             .route(
                 "/",
-                get(|| async {
-                    HOME_HITS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    "<html><head><meta name=\"gr-site-verification\" content=\"shortmeta\"></head><body>grok fake home</body></html>"
+                get(move || {
+                    let h = hits2.clone();
+                    async move {
+                        h.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        "<html><head><meta name=\"gr-site-verification\" content=\"shortmeta\"></head><body>grok fake home</body></html>"
+                    }
                 }),
             )
             .route(
@@ -487,7 +495,7 @@ mod tests {
         let handle = tokio::spawn(async move {
             axum::serve(listener, app).await.expect("serve");
         });
-        (addr.to_string(), handle)
+        (addr.to_string(), hits, handle)
     }
 
     async fn spawn_big_signer() -> (String, tokio::task::JoinHandle<()>) {

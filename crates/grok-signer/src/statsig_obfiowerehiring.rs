@@ -74,9 +74,19 @@ mod tests {
         let meta48 = (0u8..48).collect::<Vec<_>>();
         let fp = "11669e100f5c28f5";
         let n = 103_252_946u32;
-        let sig = generate_statsig_with_n("GET", "/rest/app-chat/conversations", &meta48, fp, n, None, b"\x03")
+        let sig = generate_statsig_with_n(
+            "GET",
+            "/rest/app-chat/conversations",
+            &meta48,
+            fp,
+            n,
+            None,
+            b"\x03",
+        )
+        .unwrap();
+        let raw = base64::engine::general_purpose::STANDARD
+            .decode(sig + "==")
             .unwrap();
-        let raw = base64::engine::general_purpose::STANDARD.decode(sig + "==").unwrap();
         assert_eq!(raw[0] ^ raw[1], meta48[0]);
     }
 }

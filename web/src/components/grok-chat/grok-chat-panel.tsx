@@ -37,7 +37,8 @@ function makeMessage(role: ChatMessage["role"], content: string): ChatMessage {
   return { id: nextId++, role, content };
 }
 
-/** 流式对话面板：可走外部会话持久化，走 grokApi（直连 :8000 /v1/chat/completions SSE）。 */
+/** 流式对话面板：可走外部会话持久化。走 grokApi，默认经 TNexus `/api/grok/v1` 代理
+ *  转发到 grok2api-rs 的 `/v1/chat/completions`（SSE）；:8000 不对浏览器暴露。 */
 export type GrokChatPanelProps = {
   /** 切换会话时变化，用于重置本地消息 */
   sessionKey?: string | null;
@@ -520,8 +521,8 @@ export function GrokChatPanel({
           <p className="mx-auto mt-2 max-w-3xl text-xs text-rose-600">{error}</p>
         )}
         <p className="mx-auto mt-2 max-w-3xl text-[11px] text-[var(--neo-muted)]">
-          模型下拉为非 OCR 文本通道；直连 grok 网关（:8000）。生图需 gateway 开启
-          GROK_IMAGE_ENABLED=1，否则返回 500/503。
+          模型下拉为文本对话通道，不做识图；提取图片文字请用工作台的 OCR 面板。
+          请求由 TNexus 代理转发到 Grok，无需单独配置密钥。
         </p>
       </div>
     </div>

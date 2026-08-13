@@ -28,7 +28,7 @@ pub use chat::{
     build_web_chat_payload, public_models, ALIAS_OCR, DEFAULT_OCR_SYSTEM_PROMPT, UPSTREAM_OCR_MODEL,
 };
 pub use direct::{DirectConfig, HttpDirectClient, SseChatParse};
-pub use engine::ChatEngine;
+pub use engine::{is_retryable_upstream_error, AccountHealthSink, ChatEngine};
 pub use expand::expand_prompt;
 pub use image::ImageEngine;
 pub use session_store::SessionKeyStore;

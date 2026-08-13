@@ -2,8 +2,15 @@
 /web/node_modules
 /web/.next
 .env
+web/.env.local
+web/.env*.local
 /data/
 *.db
+
+# 排查过程产物
+__pycache__/
+scripts/.tmp/
+crates/grok-signer/assets/access.log
 
 # subagent session artifacts
 .pi-subagents/

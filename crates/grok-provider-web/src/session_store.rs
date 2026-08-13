@@ -67,7 +67,10 @@ impl SessionKeyStore {
                 continue;
             }
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            let Some(id_str) = name.strip_prefix("account_").and_then(|s| s.strip_suffix(".json")) else {
+            let Some(id_str) = name
+                .strip_prefix("account_")
+                .and_then(|s| s.strip_suffix(".json"))
+            else {
                 continue;
             };
             let Ok(id) = id_str.parse::<i64>() else {
@@ -88,16 +91,10 @@ impl SessionKeyStore {
         }
         let keys = self.load_for_account(account_id)?;
         if keys.fingerprint.is_empty() {
-            tracing::debug!(
-                account_id,
-                "session keys 缺 fingerprint，回退 NativeSigner"
-            );
+            tracing::debug!(account_id, "session keys 缺 fingerprint，回退 NativeSigner");
             return None;
         }
-        self.cache
-            .lock()
-            .unwrap()
-            .insert(account_id, keys.clone());
+        self.cache.lock().unwrap().insert(account_id, keys.clone());
         Some(keys)
     }
 
@@ -114,7 +111,8 @@ impl SessionKeyStore {
                 continue;
             }
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if name.starts_with("gate_") || name.starts_with("quota_") || name.starts_with("batch_") {
+            if name.starts_with("gate_") || name.starts_with("quota_") || name.starts_with("batch_")
+            {
                 continue;
             }
             if let Ok(keys) = Self::parse_file(&path, Some(account_id)) {
@@ -155,10 +153,8 @@ mod tests {
 
     #[test]
     fn loads_account_id_file() {
-        let dir = std::env::temp_dir().join(format!(
-            "tnexus_session_keys_test_{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("tnexus_session_keys_test_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("account_42.json");

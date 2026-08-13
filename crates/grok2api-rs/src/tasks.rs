@@ -167,9 +167,9 @@ pub fn register_tasks(
                 let base = base.clone();
                 let auth = auth.clone();
                 Box::pin(async move {
-                    web_nurture::run_once(&client, &base, auth.as_deref()).await.map_err(|e| {
-                        grok_ops::OpsError::Probe(e.to_string())
-                    })
+                    web_nurture::run_once(&client, &base, auth.as_deref())
+                        .await
+                        .map_err(|e| grok_ops::OpsError::Probe(e.to_string()))
                 })
             })
         });
@@ -211,9 +211,10 @@ pub fn register_tasks(
             Arc::new(move || {
                 let probe = probe.clone();
                 Box::pin(async move {
-                    let n = probe.run_once(WebLane::Image).await.map_err(|e| {
-                        grok_ops::OpsError::Probe(e.to_string())
-                    })?;
+                    let n = probe
+                        .run_once(WebLane::Image)
+                        .await
+                        .map_err(|e| grok_ops::OpsError::Probe(e.to_string()))?;
                     if n > 0 {
                         tracing::debug!("web_dispatch_probe probed {n} accounts");
                     }
@@ -295,14 +296,7 @@ pub fn spawn_background_tasks(
 ) -> BackgroundTasks {
     let mut scheduler = TaskScheduler::new();
     let four_pool = build_four_pool(cfg, repo);
-    register_tasks(
-        &mut scheduler,
-        cfg,
-        four_pool,
-        quota,
-        nurture,
-        web_probe,
-    );
+    register_tasks(&mut scheduler, cfg, four_pool, quota, nurture, web_probe);
     let handles = scheduler.spawn_all();
     tracing::info!(
         "后台任务已启动: {}",
@@ -443,7 +437,14 @@ mod tests {
     fn register_disabled_registers_nothing() {
         let mut scheduler = TaskScheduler::new();
         let cfg = TaskConfig::new(false, Duration::from_secs(10));
-        register_tasks(&mut scheduler, &cfg, Some(fake_four_pool()), None, None, None);
+        register_tasks(
+            &mut scheduler,
+            &cfg,
+            Some(fake_four_pool()),
+            None,
+            None,
+            None,
+        );
         assert!(scheduler.status_snapshot().is_empty());
     }
 
@@ -459,7 +460,14 @@ mod tests {
     async fn register_enabled_with_pool_registers_probe_task() {
         let mut scheduler = TaskScheduler::new();
         let cfg = TaskConfig::new(true, Duration::from_secs(10));
-        register_tasks(&mut scheduler, &cfg, Some(fake_four_pool()), None, None, None);
+        register_tasks(
+            &mut scheduler,
+            &cfg,
+            Some(fake_four_pool()),
+            None,
+            None,
+            None,
+        );
         let handles = scheduler.spawn_all();
         // status 由 task_loop 首轮 mark 填充，等一小会再快照。
         tokio::time::sleep(Duration::from_millis(100)).await;

@@ -24,16 +24,18 @@ pub fn nurture_interval() -> Duration {
 }
 
 /// 单轮养号：POST OpenAI 兼容 chat（走号池调度）。
-pub async fn run_once(client: &reqwest::Client, base_url: &str, auth_key: Option<&str>) -> anyhow::Result<()> {
+pub async fn run_once(
+    client: &reqwest::Client,
+    base_url: &str,
+    auth_key: Option<&str>,
+) -> anyhow::Result<()> {
     let prompt = default_nurture_prompt();
     let url = format!("{}/v1/chat/completions", base_url.trim_end_matches('/'));
-    let mut req = client
-        .post(&url)
-        .json(&json!({
-            "model": "grok-chat-fast",
-            "stream": false,
-            "messages": [{"role": "user", "content": prompt}],
-        }));
+    let mut req = client.post(&url).json(&json!({
+        "model": "grok-chat-fast",
+        "stream": false,
+        "messages": [{"role": "user", "content": prompt}],
+    }));
     if let Some(key) = auth_key.filter(|k| !k.trim().is_empty()) {
         req = req.bearer_auth(key.trim());
     }
@@ -46,9 +48,6 @@ pub async fn run_once(client: &reqwest::Client, base_url: &str, auth_key: Option
             body.chars().take(400).collect::<String>()
         );
     }
-    tracing::info!(
-        bytes = body.len(),
-        "grok_web_nurture_ok"
-    );
+    tracing::info!(bytes = body.len(), "grok_web_nurture_ok");
     Ok(())
 }

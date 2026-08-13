@@ -346,14 +346,20 @@ pub async fn chat_completions(
     if let Some(id) = outcome.account_id {
         response.headers_mut().insert(
             header::HeaderName::from_static("x-grok-account-id"),
-            header::HeaderValue::from_str(&id.to_string()).unwrap_or(header::HeaderValue::from_static("0")),
+            header::HeaderValue::from_str(&id.to_string())
+                .unwrap_or(header::HeaderValue::from_static("0")),
         );
     }
     Ok(response)
 }
 
 /// 非流式 OpenAI 兼容 `chat.completion`。
-fn chat_completion_json(id: String, model: &str, content: String, account_id: Option<i64>) -> Value {
+fn chat_completion_json(
+    id: String,
+    model: &str,
+    content: String,
+    account_id: Option<i64>,
+) -> Value {
     json!({
         "id": id,
         "object": "chat.completion",

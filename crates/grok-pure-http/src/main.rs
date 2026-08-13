@@ -149,14 +149,22 @@ async fn main() -> Result<()> {
     if !args.gate {
         let payload = chat_payload(&args.message);
         let turn = client
-            .fetch_chat_turn("/rest/app-chat/conversations/new", &payload, Some(&sso), None)
+            .fetch_chat_turn(
+                "/rest/app-chat/conversations/new",
+                &payload,
+                Some(&sso),
+                None,
+            )
             .await?;
-        println!("{}", serde_json::to_string_pretty(&json!({
-            "ok": !turn.text.is_empty(),
-            "reply": turn.text,
-            "conversation_id": turn.conversation_id,
-            "response_id": turn.response_id,
-        }))?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "ok": !turn.text.is_empty(),
+                "reply": turn.text,
+                "conversation_id": turn.conversation_id,
+                "response_id": turn.response_id,
+            }))?
+        );
         return Ok(());
     }
 
@@ -312,7 +320,12 @@ async fn main() -> Result<()> {
         let mut ocr_payload = chat_payload("提取图中全部可见文字，若无文字则描述画面。");
         ocr_payload["fileAttachments"] = json!([fid]);
         match client
-            .fetch_chat_turn("/rest/app-chat/conversations/new", &ocr_payload, Some(&sso), None)
+            .fetch_chat_turn(
+                "/rest/app-chat/conversations/new",
+                &ocr_payload,
+                Some(&sso),
+                None,
+            )
             .await
         {
             Ok(t) => steps.push(Step {

@@ -44,7 +44,11 @@ impl HttpDirectClient {
         if prompt.is_empty() {
             return Err(ProviderError::Bridge("imagine missing prompt".into()));
         }
-        let n = payload.get("n").and_then(|v| v.as_u64()).unwrap_or(1).max(1) as usize;
+        let n = payload
+            .get("n")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(1)
+            .max(1) as usize;
         let aspect_ratio = payload
             .get("aspect_ratio")
             .and_then(|v| v.as_str())
@@ -63,7 +67,7 @@ impl HttpDirectClient {
             .unwrap_or(false);
 
         let urls = if lite {
-            self.imagine_lite_sse(sso_token, &prompt, n, want_b64, account_id)
+            self.imagine_lite_sse(sso_token, &prompt, n, &aspect_ratio, want_b64, account_id)
                 .await?
         } else {
             self.imagine_pro_ws(&cookie, &prompt, n, &aspect_ratio, want_b64)
@@ -97,9 +101,13 @@ impl HttpDirectClient {
         sso_token: &str,
         prompt: &str,
         n: usize,
+        aspect_ratio: &str,
         want_b64: bool,
         account_id: Option<i64>,
     ) -> Result<Vec<String>, ProviderError> {
+        // Lite 走普通对话接口，payload 没有比例字段，只能把画幅写进提示词。
+        let prompt = apply_aspect_hint(prompt, aspect_ratio);
+        let prompt = prompt.as_str();
         let payload = json!({
             "collectionIds": [],
             "disabledConnectorIds": [],
@@ -272,6 +280,16 @@ fn new_request_id() -> String {
     )
 }
 
+/// 非 1:1 时把画幅要求写进提示词。Lite 分支的上游是对话接口，除了正文没有
+/// 任何结构化通道可以传比例，不写则一律出方图。
+pub fn apply_aspect_hint(prompt: &str, aspect_ratio: &str) -> String {
+    let ratio = aspect_ratio.trim();
+    if ratio.is_empty() || ratio == "1:1" {
+        return prompt.to_string();
+    }
+    format!("{}\n\n输出图片使用 {ratio} 画幅比例。", prompt.trim_end())
+}
+
 fn reset_ws_msg() -> String {
     json!({
         "type": "conversation.item.create",
@@ -345,8 +363,8 @@ async fn connect_imagine_ws(
         return Ok(ws);
     }
 
-    let parsed = url::Url::parse(ws_url)
-        .map_err(|e| ProviderError::Bridge(format!("ws url: {e}")))?;
+    let parsed =
+        url::Url::parse(ws_url).map_err(|e| ProviderError::Bridge(format!("ws url: {e}")))?;
     let host = parsed
         .host_str()
         .ok_or_else(|| ProviderError::Bridge("ws missing host".into()))?;
@@ -377,8 +395,8 @@ async fn connect_via_http_proxy(
     target_host: &str,
     target_port: u16,
 ) -> Result<TcpStream, ProviderError> {
-    let proxy = url::Url::parse(proxy_url)
-        .map_err(|e| ProviderError::Bridge(format!("proxy url: {e}")))?;
+    let proxy =
+        url::Url::parse(proxy_url).map_err(|e| ProviderError::Bridge(format!("proxy url: {e}")))?;
     let proxy_host = proxy
         .host_str()
         .ok_or_else(|| ProviderError::Bridge("proxy missing host".into()))?;
@@ -434,5 +452,21 @@ mod tests {
         let msg = request_ws_msg("cat", "16:9", 2);
         assert!(msg.contains(r#""aspect_ratio":"16:9""#));
         assert!(msg.contains(r#""num_generations":2"#));
+    }
+
+    #[test]
+    fn lite_prompt_carries_non_square_aspect() {
+        let hinted = apply_aspect_hint("a red fox", "16:9");
+        assert!(
+            hinted.contains("16:9"),
+            "Lite 分支没有比例字段，丢了 hint 就只会出方图: {hinted}"
+        );
+        assert!(hinted.starts_with("a red fox"));
+    }
+
+    #[test]
+    fn lite_prompt_untouched_for_square() {
+        assert_eq!(apply_aspect_hint("a red fox", "1:1"), "a red fox");
+        assert_eq!(apply_aspect_hint("a red fox", "  "), "a red fox");
     }
 }

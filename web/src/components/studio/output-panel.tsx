@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { JobResult } from "@/lib/api";
 import { apiAssetUrl } from "@/lib/api";
+import { getClientCachedBlobUrl, isClientCacheReady } from "@/lib/client-image-cache";
 import { formatBytes, formatResolution } from "@/lib/format-bytes";
 import { formatDuration } from "@/lib/format-duration";
 import { Download, Loader2, RotateCcw, ZoomIn } from "lucide-react";
@@ -172,9 +173,37 @@ function SuccessTile({
   generationMs?: number;
   onPreview: (url: string, downloadUrl?: string | null) => void;
 }) {
-  const preview = apiAssetUrl(image.preview_url || image.thumb_url);
+  const [src, setSrc] = useState<string | null>(null);
+  const [cacheError, setCacheError] = useState<string | null>(null);
+  const remotePreview = apiAssetUrl(image.preview_url || image.thumb_url);
   const lightbox = apiAssetUrl(image.download_url || image.preview_url || image.thumb_url);
   const download = apiAssetUrl(image.download_url || image.preview_url);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      if (await isClientCacheReady()) {
+        try {
+          const blobUrl = await getClientCachedBlobUrl(image.id);
+          if (!cancelled) {
+            setSrc(blobUrl);
+            setCacheError(null);
+            return;
+          }
+        } catch (e) {
+          if (!cancelled) {
+            setCacheError(e instanceof Error ? e.message : "端侧缓存缺失");
+          }
+        }
+      }
+      if (!cancelled) setSrc(remotePreview ?? null);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [image.id, remotePreview]);
+
+  const preview = src;
 
   return (
     <div className="group relative h-44 w-44 shrink-0 overflow-hidden rounded-lg border border-zinc-200 bg-zinc-100 shadow-sm">
@@ -193,6 +222,10 @@ function SuccessTile({
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src={preview} alt="" className="h-full w-full object-cover transition group-hover:scale-[1.02]" />
         </button>
+      ) : cacheError ? (
+        <div className="flex h-full items-center justify-center p-2 text-center text-[11px] leading-snug text-rose-600">
+          {cacheError}
+        </div>
       ) : (
         <div className="flex h-full items-center justify-center text-sm text-zinc-400">无预览</div>
       )}

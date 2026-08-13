@@ -6,7 +6,9 @@ import { GenConfigPanel } from "@/components/studio/gen-config-panel";
 import { OcrPanel } from "@/components/studio/ocr-panel";
 import { OutputPanel, type OutputSlot } from "@/components/studio/output-panel";
 import { ResizableStudioLayout, DEFAULT_COLUMN_WIDTHS } from "@/components/studio/resizable-layout";
-import { conversationsApi, jobsApi, type FactorPoint, type JobDetail, type JobListItem, type JobResult } from "@/lib/api";
+import { conversationsApi, jobsApi, apiAssetUrl, type FactorPoint, type JobDetail, type JobListItem, type JobResult } from "@/lib/api";
+import { getJobDetailCached } from "@/lib/job-detail-cache";
+import { isClientCacheReady, saveImageToClientCache } from "@/lib/client-image-cache";
 import { useAuth } from "@/lib/auth";
 import {
   conversationTitle,
@@ -103,6 +105,94 @@ export default function StudioPage() {
   const [error, setError] = useState("");
 
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const jobDetailCacheRef = useRef<Map<string, JobDetail>>(new Map());
+
+  const applyJobDetail = useCallback((d: JobDetail) => {
+    setResult(d);
+    if (d.status === "done" && d.results.length > 0) {
+      setTotalSlotCount(d.results.length);
+      setCompletedSlots(
+        d.results.map((img) => ({
+          id: img.id,
+          status: "success" as const,
+          image: img,
+          generationMs: img.generation_ms ?? undefined,
+        })),
+      );
+      void (async () => {
+        if (!(await isClientCacheReady())) return;
+        for (const img of d.results) {
+          const url = img.download_url || img.preview_url;
+          if (!url) continue;
+          const full = apiAssetUrl(url);
+          if (!full) continue;
+          try {
+            await saveImageToClientCache({
+              jobId: d.id,
+              resultId: img.id,
+              downloadUrl: full,
+            });
+          } catch {
+            // 单张失败不阻断展示
+          }
+        }
+      })();
+    } else if (d.status === "failed") {
+      setJobStatus("failed");
+    }
+  }, []);
+
+  const onSelectJob = (job: JobListItem) => {
+    setActiveJobId(job.id);
+    setPrompt(job.input_prompt);
+    setError("");
+    if (job.status === "done") {
+      setJobStatus("done");
+      setElapsedMs(new Date(job.updated_at).getTime() - new Date(job.created_at).getTime());
+    } else if (job.status === "failed") {
+      setJobStatus("failed");
+      setElapsedMs(new Date(job.updated_at).getTime() - new Date(job.created_at).getTime());
+    } else {
+      setJobStatus("idle");
+    }
+
+    // 乐观渲染：列表已有 thumb_url / result_count，右侧立即出占位+首图
+    if (job.status === "done" && job.result_count > 0) {
+      setTotalSlotCount(job.result_count);
+      const optimistic: OutputSlot[] = Array.from({ length: job.result_count }, (_, i) => {
+        if (i === 0 && job.thumb_url) {
+          return {
+            id: `${job.id}-opt-${i}`,
+            status: "success" as const,
+            image: {
+              id: `${job.id}-opt-0`,
+              provider: "",
+              thumb_url: job.thumb_url,
+              preview_url: job.thumb_url,
+            },
+          };
+        }
+        return { id: `${job.id}-opt-${i}`, status: "pending" as const };
+      });
+      setCompletedSlots(optimistic);
+    } else {
+      setCompletedSlots([]);
+      setTotalSlotCount(0);
+    }
+
+    const cached = jobDetailCacheRef.current.get(job.id);
+    if (cached) {
+      applyJobDetail(cached);
+      return;
+    }
+
+    void getJobDetailCached(job.id)
+      .then(({ data }) => {
+        jobDetailCacheRef.current.set(job.id, data);
+        applyJobDetail(data);
+      })
+      .catch(() => setResult(null));
+  };
 
   useEffect(() => {
     if (!user) return;
@@ -201,40 +291,6 @@ export default function StudioPage() {
     return () => clearInterval(timer);
   }, [busy, startedAt]);
 
-  const onSelectJob = (job: JobListItem) => {
-    setActiveJobId(job.id);
-    setPrompt(job.input_prompt);
-    setError("");
-    setCompletedSlots([]);
-    setTotalSlotCount(0);
-    if (job.status === "done") {
-      setJobStatus("done");
-      setElapsedMs(new Date(job.updated_at).getTime() - new Date(job.created_at).getTime());
-    } else if (job.status === "failed") {
-      setJobStatus("failed");
-      setElapsedMs(new Date(job.updated_at).getTime() - new Date(job.created_at).getTime());
-    } else {
-      setJobStatus("idle");
-    }
-    void jobsApi
-      .get(job.id)
-      .then((d) => {
-        setResult(d);
-        if (d.status === "done" && d.results.length > 0) {
-          setTotalSlotCount(d.results.length);
-          setCompletedSlots(
-            d.results.map((img) => ({
-              id: img.id,
-              status: "success" as const,
-              image: img,
-              generationMs: img.generation_ms ?? undefined,
-            })),
-          );
-        }
-      })
-      .catch(() => setResult(null));
-  };
-
   const onNewConversation = async () => {
     const created = await conversationsApi.create({ state: EMPTY_CONVERSATION_STATE });
     setConversationId(created.id);
@@ -272,6 +328,10 @@ export default function StudioPage() {
 
   const onGenerate = async () => {
     if (!prompt.trim() || !conversationId) return;
+    if (!(await isClientCacheReady())) {
+      setError("请先在「设置 → 端侧缓存」选择生图缓存目录");
+      return;
+    }
     const directorModels = mode === "casting" ? castingModels : [textModel];
     const counts: Record<string, number> = {};
     for (const m of directorModels) counts[m] = actorImageCounts[m] ?? 1;

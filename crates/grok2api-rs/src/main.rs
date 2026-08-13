@@ -187,13 +187,11 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let chat_engine = Arc::new(
-        ChatEngine::new(
-            shared_pool.clone(),
-            lease.clone(),
-            bridge.clone(),
-            None,
-        )
-        .with_sso_opt(sso.clone()),
+        ChatEngine::new(shared_pool.clone(), lease.clone(), bridge.clone(), None)
+            .with_sso_opt(sso.clone())
+            .with_health_sink(Arc::new(PgHealthSink(Arc::new(PgAccountRepository::new(
+                pool.clone(),
+            ))))),
     );
 
     let nurture_ops = Arc::new(grok_nurture_ops::GrokNurtureOps::new());
@@ -203,13 +201,13 @@ async fn main() -> anyhow::Result<()> {
     ));
 
     let web_dispatch_probe = match (&direct_client, &sso) {
-        (Some(direct), Some(provider)) if cfg.direct_enabled => Some(Arc::new(
-            web_probe::build_web_dispatch_probe(
+        (Some(direct), Some(provider)) if cfg.direct_enabled => {
+            Some(Arc::new(web_probe::build_web_dispatch_probe(
                 shared_pool.clone(),
                 direct.clone(),
                 provider.clone(),
-            ),
-        )),
+            )))
+        }
         _ => None,
     };
 
@@ -382,6 +380,37 @@ impl grok_domain::SsoTokenProvider for MissingKeyProvider {
     }
 }
 
+/// PG 账号健康写回：将 429/403 限速失败的冷却状态持久化到 grok_accounts 表，
+/// 成功时清零 failure_count / last_error，供多实例间共享健康状态。
+/// 写回失败仅 warn 日志，不影响 chat 响应（fire-and-forget）。
+struct PgHealthSink(Arc<PgAccountRepository>);
+
+#[async_trait::async_trait]
+impl grok_provider_web::AccountHealthSink for PgHealthSink {
+    async fn record_rate_limit_failure(
+        &self,
+        account_id: i64,
+        cooldown_until: chrono::DateTime<chrono::Utc>,
+        reason: &str,
+    ) {
+        use grok_storage::repo::accounts_ops::AccountOps;
+        if let Err(e) = self
+            .0
+            .update_health(account_id, 1, Some(cooldown_until), reason, false)
+            .await
+        {
+            tracing::warn!(account_id, "PG 限速冷却写回失败: {e}");
+        }
+    }
+
+    async fn record_success(&self, account_id: i64) {
+        use grok_storage::repo::accounts_ops::AccountOps;
+        if let Err(e) = self.0.update_health(account_id, 0, None, "", true).await {
+            tracing::warn!(account_id, "PG 成功状态写回失败: {e}");
+        }
+    }
+}
+
 /// 生产默认：PG 加载号池（调用方已 load）+ 内存/Redis lease + HTTP bridge 侧车。
 /// 测试复用：注入 mock bridge 构建 `/v1` 路由（无鉴权）。
 #[allow(dead_code)]
@@ -391,15 +420,13 @@ fn gateway_app(
     lease: Arc<dyn LeaseManager>,
     bridge: Arc<dyn BridgeClient>,
 ) -> axum::Router {
-    let engine = Arc::new(ChatEngine::new(pool.clone(), lease.clone(), bridge.clone(), None));
-    grok_gateway::build_app(gateway_state(
-        cfg,
-        engine,
-        pool,
-        lease,
-        bridge,
+    let engine = Arc::new(ChatEngine::new(
+        pool.clone(),
+        lease.clone(),
+        bridge.clone(),
         None,
-    ))
+    ));
+    grok_gateway::build_app(gateway_state(cfg, engine, pool, lease, bridge, None))
 }
 
 /// 随机 admin JWT secret（GROK_ADMIN_SECRET 缺省时）。
@@ -499,7 +526,12 @@ mod tests {
             Arc::new(InMemoryLeaseManager::new(&[(Scope::GrokWeb, 4)]));
         let cfg = test_cfg();
         let bridge: Arc<dyn BridgeClient> = Arc::new(mock);
-        let engine = Arc::new(ChatEngine::new(pool.clone(), lease.clone(), bridge.clone(), None));
+        let engine = Arc::new(ChatEngine::new(
+            pool.clone(),
+            lease.clone(),
+            bridge.clone(),
+            None,
+        ));
         grok_gateway::build_app(
             gateway_state(&cfg, engine, pool, lease, bridge, None)
                 .with_gateway_auth_key(Some(key.to_string())),
@@ -801,7 +833,13 @@ mod tests {
     async fn admin_login_disabled_without_password() {
         // GROK_ADMIN_PASSWORD 未配置：无管理员，login 恒 401（不 bootstrap）。
         let cfg = test_cfg();
-        let bundle = build_admin_bundle(&cfg.admin_username, None, &cfg.admin_secret, admin::AdminExtras::default()).await;
+        let bundle = build_admin_bundle(
+            &cfg.admin_username,
+            None,
+            &cfg.admin_secret,
+            admin::AdminExtras::default(),
+        )
+        .await;
         let app = admin::admin_app(bundle);
         let resp = app
             .oneshot(
@@ -831,7 +869,12 @@ mod tests {
             grok_domain::Scope::GrokWeb,
             4,
         )]));
-        let engine = Arc::new(ChatEngine::new(pool.clone(), lease.clone(), bridge.clone(), None));
+        let engine = Arc::new(ChatEngine::new(
+            pool.clone(),
+            lease.clone(),
+            bridge.clone(),
+            None,
+        ));
         // 默认关闭 → None
         let state = gateway_state(
             &cfg,

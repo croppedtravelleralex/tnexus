@@ -1,17 +1,19 @@
+import { apiBase } from "@/lib/api-base";
+
 /**
  * Grok 独立 API client：默认经 TNexus `/api/grok/v1` 代理（cookie 鉴权，无需前端持 key）。
  * 直连：设 NEXT_PUBLIC_GROK_API_BASE=http://host:8000 并配 NEXT_PUBLIC_GROK_API_KEY。
  */
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:9000";
-
 export const GROK_API_VIA_TNEXUS =
   process.env.NEXT_PUBLIC_GROK_API_VIA_TNEXUS !== "0" &&
   !process.env.NEXT_PUBLIC_GROK_API_BASE;
 
-const BASE = GROK_API_VIA_TNEXUS
-  ? `${API_BASE.replace(/\/$/, "")}/api/grok/v1`
-  : (process.env.NEXT_PUBLIC_GROK_API_BASE ?? "/grok/v1").replace(/\/$/, "");
+function grokBase(): string {
+  return GROK_API_VIA_TNEXUS
+    ? `${apiBase()}/api/grok/v1`
+    : (process.env.NEXT_PUBLIC_GROK_API_BASE ?? "/grok/v1").replace(/\/$/, "");
+}
 
 const KEY = process.env.NEXT_PUBLIC_GROK_API_KEY ?? "";
 
@@ -31,9 +33,10 @@ function fetchOpts(init?: RequestInit): RequestInit {
 /** OpenAI 兼容路径：代理模式 BASE 已含 /v1 前缀。 */
 function grokUrl(path: string): string {
   const p = path.startsWith("/") ? path : `/${path}`;
-  if (GROK_API_VIA_TNEXUS) return `${BASE}${p}`;
-  if (BASE.endsWith("/v1")) return `${BASE}${p}`;
-  return `${BASE}/v1${p}`;
+  const base = grokBase();
+  if (GROK_API_VIA_TNEXUS) return `${base}${p}`;
+  if (base.endsWith("/v1")) return `${base}${p}`;
+  return `${base}/v1${p}`;
 }
 
 /** 嗅探 base64 图片 MIME（与 api.ts 同实现；独立拷贝避免耦合 gpt client）。 */
@@ -171,7 +174,7 @@ export const grokApi = {
         // keep raw text
       }
       if (res.status === 500 || res.status === 503) {
-        message = `${message}（需 gateway 开启 GROK_IMAGE_ENABLED=1）`;
+        message = `${message}（Grok 生图服务未就绪，请联系管理员）`;
       }
       throw new Error(message);
     }

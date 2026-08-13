@@ -58,6 +58,14 @@ pub fn classify_fault(fault: Option<&str>, message: Option<&str>) -> ErrorClass 
     {
         return ErrorClass::Client;
     }
+    // Moderation refusals are about the caller's prompt. As `upstream` they became
+    // 502s that dragged down channel success rate and could get the channel demoted.
+    if msg.contains("content_policy_violation")
+        || msg.contains("防护限制")
+        || msg.contains("missing_reference_image")
+    {
+        return ErrorClass::Client;
+    }
     if msg.contains("invalid_request")
         || msg.contains("must include")
         || msg.contains("unsupported")
@@ -150,7 +158,9 @@ mod tests {
         assert_eq!(
             classify_fault(
                 None,
-                Some("upstream image generation failed (image_instant_limit): You've hit the limit")
+                Some(
+                    "upstream image generation failed (image_instant_limit): You've hit the limit"
+                )
             ),
             ErrorClass::Gate
         );
@@ -168,6 +178,29 @@ mod tests {
                 "{msg}"
             );
         }
+    }
+
+    #[test]
+    fn moderation_refusal_is_client() {
+        // 线上真实文案：一种带 code 前缀，一种只有中文正文。
+        for msg in [
+            "upstream image generation failed (content_policy_violation): 抱歉，我不能帮助生成包含强迫性色情行为的图像。",
+            "upstream image generation failed: 非常抱歉，生成的图片可能违反了关于暴力内容的防护限制。",
+        ] {
+            assert_eq!(classify_fault(None, Some(msg)), ErrorClass::Client, "{msg}");
+        }
+    }
+
+    #[test]
+    fn moderation_refusal_does_not_shadow_quota_gate() {
+        assert_eq!(
+            classify_fault(
+                None,
+                Some("upstream image generation failed (image_instant_limit): limit reached")
+            ),
+            ErrorClass::Gate,
+            "额度耗尽仍应记 Gate，不能被内容审查规则抢走"
+        );
     }
 
     #[test]

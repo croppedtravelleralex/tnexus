@@ -39,7 +39,10 @@ build_tnexus() {
   else
     echo ">>> skip cargo (binary newer than grok_gateway.rs; FORCE_REBUILD=1 to override)"
   fi
-  if [[ ! -d "$ROOT/web/out" ]]; then
+  if [[ "${SKIP_WEB:-0}" != "1" ]]; then
+    echo ">>> building web with NEXT_PUBLIC_API_BASE=$API_BASE"
+    (cd "$ROOT/web" && NEXT_PUBLIC_API_BASE="$API_BASE" npm run build)
+  elif [[ ! -d "$ROOT/web/out" ]]; then
     echo "missing $ROOT/web/out — run: cd web && NEXT_PUBLIC_API_BASE=$API_BASE npm run build" >&2
     exit 1
   fi
@@ -49,7 +52,9 @@ build_tnexus() {
   cp "$ROOT/target/release/tnexus-api" "$ROOT/target/release/tnexus-worker" "$stage/"
   cp -a "$ROOT/web/out/." "$stage/web-out/"
   cp -a "$ROOT/migrations/." "$stage/migrations/"
-  docker build -f "$ROOT/Dockerfile.repack" \
+  ensure_runtime_image
+  docker build --network host -f "$ROOT/Dockerfile.repack" \
+    --build-arg "RUNTIME_IMAGE=$RUNTIME_IMAGE" \
     -t "ghcr.io/$OWNER/tnexus:$TAG" \
     -t "ghcr.io/$OWNER/tnexus:$SHA" \
     "$stage"
@@ -59,13 +64,15 @@ build_tnexus() {
 
 build_grok() {
   echo ">>> build grok2api-rs ($TAG + $SHA) in rust:1-bookworm"
+  # 与 tnexus/gateway 共用 build_linux_bins_fast.sh：同一个 ext4 上的增量 target，
+  # 且不会在只读挂载的 /app 里动 rust-toolchain.toml（那会触发联网重下 toolchain）。
   if [[ ! -f "$ROOT/target/release/grok2api-rs" ]] || [[ "${FORCE_REBUILD:-0}" == "1" ]]; then
-    bash "$ROOT/scripts/build_grok_bookworm.sh"
+    bash "$ROOT/scripts/build_linux_bins_fast.sh" grok2api-rs:grok2api-rs
   else
     # 验证二进制能在 bookworm 运行（防止 WSL 直编 glibc 污染）
     if ! docker run --rm -v "$ROOT/target/release/grok2api-rs:/bin/grok:ro" --entrypoint true rust:1-bookworm /bin/grok 2>/dev/null; then
       echo ">>> existing binary incompatible with bookworm, rebuilding"
-      bash "$ROOT/scripts/build_grok_bookworm.sh"
+      bash "$ROOT/scripts/build_linux_bins_fast.sh" grok2api-rs:grok2api-rs
     else
       echo ">>> skip cargo (grok2api-rs exists; FORCE_REBUILD=1 to override)"
     fi

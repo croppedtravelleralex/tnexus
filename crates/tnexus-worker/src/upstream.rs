@@ -227,7 +227,9 @@ impl UpstreamClient {
             } else {
                 ""
             };
-            return Err(anyhow::anyhow!("image generation HTTP {status}: {text}{hint}"));
+            return Err(anyhow::anyhow!(
+                "image generation HTTP {status}: {text}{hint}"
+            ));
         }
         let resp: ImageGenerationResponse =
             serde_json::from_str(&text).context("image generation json")?;

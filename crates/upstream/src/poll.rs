@@ -20,6 +20,21 @@ const GET_BUDGET_OVERSHOOT_FACTOR: u32 = 2;
 const GET_BUDGET_SLACK_ATTEMPTS: u32 = 8;
 const SKIP_FILE_IDS: &[&str] = &["file_upload"];
 
+/// `/backend-api/tasks` 的终态取值。任务全部终结却没有图片 id，说明这次生成已经
+/// 结束且不会再产出，继续轮询只是在空耗整个 wall budget。
+const TERMINAL_TASK_STATUSES: &[&str] = &[
+    "completed",
+    "failed",
+    "cancelled",
+    "canceled",
+    "expired",
+    "error",
+];
+
+/// 连续多少轮观察到「任务全终结且无图」才判定失败，避开任务列表短暂领先于
+/// 会话文档的竞态。
+const TERMINAL_TASK_CONFIRMATIONS: u32 = 2;
+
 const CONTENT_POLICY_KEYWORDS: &[&str] = &[
     "内容政策",
     "防护限制",
@@ -532,6 +547,27 @@ where
         .collect())
 }
 
+/// 任务是否全部进入终态。`None` = 无任务或上游未给 status，不足以判定。
+pub fn tasks_all_terminal(tasks: &[Value]) -> Option<bool> {
+    if tasks.is_empty() {
+        return None;
+    }
+    let mut all_terminal = true;
+    for task in tasks {
+        let status = task.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        if status.is_empty() {
+            return None;
+        }
+        if !TERMINAL_TASK_STATUSES
+            .iter()
+            .any(|s| status.eq_ignore_ascii_case(s))
+        {
+            all_terminal = false;
+        }
+    }
+    Some(all_terminal)
+}
+
 /// Extract image `file_ids` from polled tasks when generation has completed.
 pub fn poll_image_ready_from_tasks(tasks: &[Value]) -> Option<Vec<String>> {
     let mut file_ids = Vec::new();
@@ -608,6 +644,7 @@ where
     let mut last_task_error = String::new();
     let mut last_hit_key: Option<(Vec<String>, Vec<String>)> = None;
     let mut consecutive_errors: u32 = 0;
+    let mut terminal_task_streak: u32 = 0;
 
     if file_ids.is_empty() && sediment_ids.is_empty() && config.initial_wait > Duration::ZERO {
         info!(
@@ -628,6 +665,11 @@ where
                 if let Some(err) = last_task_error_from_tasks(&tasks) {
                     last_task_error = err;
                 }
+                match tasks_all_terminal(&tasks) {
+                    Some(true) => terminal_task_streak += 1,
+                    Some(false) => terminal_task_streak = 0,
+                    None => {}
+                }
                 if let Some(ids) = poll_image_ready_from_tasks(&tasks) {
                     add_unique_file_ids(&mut file_ids, &ids);
                 }
@@ -645,9 +687,13 @@ where
                 add_unique_file_ids(&mut file_ids, &conv_files);
                 add_unique_sediment_ids(&mut sediment_ids, &conv_sediments);
 
+                // 任务已全部终结时也要放行终止判定：`conversation_has_image_gen_activity`
+                // 只看 image_gen 节点是否存在，任务一旦启动它就恒为 true，会把下面的
+                // 失败识别永久屏蔽掉，让失败的生成空转到 wall budget 用尽。
+                let generation_settled = terminal_task_streak >= TERMINAL_TASK_CONFIRMATIONS;
                 if file_ids.is_empty()
                     && sediment_ids.is_empty()
-                    && !conversation_has_image_gen_activity(&conversation)
+                    && (generation_settled || !conversation_has_image_gen_activity(&conversation))
                 {
                     if let Some((code, msg)) =
                         find_terminal_upstream_block_in_conversation(&conversation)
@@ -659,6 +705,17 @@ where
                         {
                             bail!("upstream image generation failed ({code}): {msg}");
                         }
+                    }
+                    if generation_settled {
+                        let detail = if last_task_error.is_empty() {
+                            String::new()
+                        } else {
+                            format!(": {last_task_error}")
+                        };
+                        bail!(
+                            "upstream image generation finished without an image \
+                             (conversation_id={conversation_id}, attempts={attempt}){detail}"
+                        );
                     }
                 }
             }
@@ -858,6 +915,63 @@ mod tests {
             poll_error_backoff("connection reset", 1, interval),
             Duration::from_secs(2)
         );
+    }
+
+    fn tasks_of(json: &str) -> Vec<Value> {
+        serde_json::from_str::<Value>(json)
+            .unwrap()
+            .get("tasks")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn tasks_all_terminal_detects_finished_run() {
+        let tasks = tasks_of(r#"{"tasks":[{"status":"completed"},{"status":"failed"}]}"#);
+        assert_eq!(tasks_all_terminal(&tasks), Some(true));
+    }
+
+    #[test]
+    fn tasks_all_terminal_false_while_running() {
+        let tasks = tasks_of(r#"{"tasks":[{"status":"completed"},{"status":"running"}]}"#);
+        assert_eq!(tasks_all_terminal(&tasks), Some(false));
+    }
+
+    #[test]
+    fn tasks_all_terminal_undecidable_without_status() {
+        assert_eq!(tasks_all_terminal(&[]), None);
+        let tasks = tasks_of(r#"{"tasks":[{"file_ids":[]}]}"#);
+        assert_eq!(
+            tasks_all_terminal(&tasks),
+            None,
+            "上游没给 status 时不得据此判失败"
+        );
+    }
+
+    #[test]
+    fn image_gen_activity_alone_must_not_gate_termination() {
+        // 复现线上 420s 空转：image_gen 节点存在 → 旧逻辑永久跳过终止判定。
+        let data: Value = serde_json::from_str(
+            r#"{
+                "mapping": {
+                    "m1": {
+                        "message": {
+                            "author": { "role": "assistant" },
+                            "metadata": { "async_task_type": "image_gen" },
+                            "content": { "content_type": "text", "parts": ["working"] }
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        assert!(conversation_has_image_gen_activity(&data));
+        let (files, sediments) = extract_image_ids_from_conversation(&data);
+        assert!(files.is_empty() && sediments.is_empty());
+        // 任务侧已终结 → 必须能判定收尾，而不是继续等满 wall budget。
+        let tasks = tasks_of(r#"{"tasks":[{"status":"failed"}]}"#);
+        assert_eq!(tasks_all_terminal(&tasks), Some(true));
     }
 
     #[test]

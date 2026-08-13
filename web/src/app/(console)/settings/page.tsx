@@ -9,6 +9,12 @@ import { Button } from "@/components/ui/button";
 import { ChoiceButton, SegmentGroup } from "@/components/ui/choice-button";
 import { Input } from "@/components/ui/input";
 import { authApi, proxyApi, type User } from "@/lib/api";
+import {
+  getClientCacheConfig,
+  isClientCacheReady,
+  pickClientCacheDirectory,
+  type ClientCacheConfig,
+} from "@/lib/client-image-cache";
 import { useAuth } from "@/lib/auth";
 
 function roleLabel(role: string) {
@@ -34,6 +40,13 @@ export default function SettingsPage() {
   const [newapiUserId, setNewapiUserId] = useState("");
   const [newapiBusy, setNewapiBusy] = useState(false);
   const [newapiMsg, setNewapiMsg] = useState("");
+  const [cacheCfg, setCacheCfg] = useState<ClientCacheConfig>({ directoryName: "", ready: false });
+  const [cacheBusy, setCacheBusy] = useState(false);
+  const [cacheMsg, setCacheMsg] = useState("");
+
+  useEffect(() => {
+    void getClientCacheConfig().then(setCacheCfg);
+  }, []);
 
   const loadProxy = useCallback(async () => {
     if (user?.role !== "admin") return;
@@ -154,6 +167,47 @@ export default function SettingsPage() {
             <div className="mt-3 rounded-lg border border-[var(--neo-border)] bg-[var(--neo-surface-muted)] px-3 py-2 font-mono text-xs text-[var(--neo-muted)]">
               https://tnexus.relai.asia/v1
             </div>
+          </ElevatedCard>
+          <ElevatedCard className="p-5">
+            <h2 className="text-sm font-semibold text-[var(--neo-ink)]">端侧生图缓存目录</h2>
+            <p className="mt-2 text-xs leading-relaxed text-[var(--neo-muted)]">
+              生图工作台生成前必须选择本地缓存目录。缩略图与预览优先读端侧文件；Panda 远端图可能被快速清理，缓存缺失将直接报错。
+            </p>
+            <div className="mt-3 rounded-lg border border-[var(--neo-border)] bg-[var(--neo-surface-muted)] px-3 py-2 text-xs">
+              当前目录：{cacheCfg.ready ? cacheCfg.directoryName : "未设置"}
+            </div>
+            <div className="mt-3 flex gap-2">
+              <Button
+                size="sm"
+                disabled={cacheBusy}
+                onClick={() => {
+                  setCacheBusy(true);
+                  setCacheMsg("");
+                  void pickClientCacheDirectory()
+                    .then((cfg) => {
+                      setCacheCfg(cfg);
+                      setCacheMsg("已选择缓存目录");
+                    })
+                    .catch((e) => setCacheMsg(e instanceof Error ? e.message : "选择失败"))
+                    .finally(() => setCacheBusy(false));
+                }}
+              >
+                选择目录
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={cacheBusy}
+                onClick={() => {
+                  void isClientCacheReady().then((ok) =>
+                    setCacheMsg(ok ? "缓存目录可用" : "缓存未就绪，请重新选择"),
+                  );
+                }}
+              >
+                检测
+              </Button>
+            </div>
+            {cacheMsg ? <p className="mt-2 text-xs text-[var(--neo-muted)]">{cacheMsg}</p> : null}
           </ElevatedCard>
           <ElevatedCard className="p-5">
             <div className="flex items-center justify-between gap-2">

@@ -26,6 +26,9 @@ Studio 生图 `401 invalid session`：**非 Grok 号池**，是 gateway `UPSTREA
 ---
 
 
+0. **[docs/43-standalone-readiness-audit-20260812.md](docs/43-standalone-readiness-audit-20260812.md)** — **独当一面就绪度审计（2026-08-12，必读）**
+   - 结论：**能接管流量，不能无人值守**；号池 token 无自动续期，**2026-08-18 归零**
+   - `docs/24/35/37/40` 的就绪度结论互相矛盾且部分过时，**以该文与代码为准**
 1. **[plan.md](plan.md)** — 合并施工总控与详细待办
 2. **[docs/39f-grok-progress.md](docs/39f-grok-progress.md)** — **grok2api Rust 移植**（Admin/签名/部署脚本已交付）
    - **[docs/39k-pure-http-verification-matrix.md](docs/39k-pure-http-verification-matrix.md)** — **号池×本机/Panda×工具** 验收矩阵（2026-08-10，**必读**）

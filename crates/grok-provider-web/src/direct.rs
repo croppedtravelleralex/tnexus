@@ -16,9 +16,9 @@ use grok_domain::{ProviderError, SsoTokenProvider};
 use serde_json::{json, Value};
 
 use crate::bridge::BridgeClient;
-use crate::statsig::BROWSER_UA;
 use crate::proxy::{proxy_err, ProxyPool};
 use crate::signer::{build_signer, SignerMode, SignerTrait};
+use crate::statsig::BROWSER_UA;
 
 /// 上游总超时（对齐 provider「connect 5s / total 60s」红线语义）。
 const TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
@@ -163,7 +163,10 @@ impl HttpDirectClient {
     }
 
     /// 解析账号 session keys：全局 cfg.session 或按 id 从 store 加载。
-    pub(crate) fn session_for(&self, account_id: Option<i64>) -> Option<crate::signer::SessionKeys> {
+    pub(crate) fn session_for(
+        &self,
+        account_id: Option<i64>,
+    ) -> Option<crate::signer::SessionKeys> {
         if let Some(id) = account_id {
             if let Some(store) = &self.cfg.session_store {
                 if let Some(keys) = store.get(id) {
@@ -423,7 +426,9 @@ impl HttpDirectClient {
                 return Ok(value);
             }
         }
-        Err(ProviderError::Upstream("rate-limits empty or failed".into()))
+        Err(ProviderError::Upstream(
+            "rate-limits empty or failed".into(),
+        ))
     }
 
     /// POST chat 路径并返回原始响应体（lite 生图从 SSE 提取 imageUrl）。

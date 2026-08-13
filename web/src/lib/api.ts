@@ -1,4 +1,8 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:9000";
+import { apiBase, apiBaseLabel, gatewayBase } from "@/lib/api-base";
+import { type ChatConversationState, DEFAULT_CHAT_MODELS } from "@/lib/chat-conversations";
+import type { GrokChatConversationState } from "@/lib/grok-chat-conversations";
+import type { Conversation, ConversationState } from "@/lib/conversations";
+import type { GenConfig } from "@/lib/gen-config";
 
 /** 将 API 相对路径（如 /api/images/thumb/...）转为可加载的完整 URL */
 export function apiAssetUrl(path: string | null | undefined): string | undefined {
@@ -6,14 +10,9 @@ export function apiAssetUrl(path: string | null | undefined): string | undefined
   if (path.startsWith("http://") || path.startsWith("https://") || path.startsWith("data:")) {
     return path;
   }
-  if (path.startsWith("/")) return `${API_BASE}${path}`;
+  if (path.startsWith("/")) return `${apiBase()}${path}`;
   return path;
 }
-
-import { type ChatConversationState, DEFAULT_CHAT_MODELS } from "@/lib/chat-conversations";
-import type { GrokChatConversationState } from "@/lib/grok-chat-conversations";
-import type { Conversation, ConversationState } from "@/lib/conversations";
-import type { GenConfig } from "@/lib/gen-config";
 
 /** 账号级偏好（studio 布局已改为全局固定，不再写入 preferences） */
 export type UserPreferences = Record<string, unknown>;
@@ -236,7 +235,7 @@ export function isApiOfflineError(err: unknown): boolean {
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(`${API_BASE}${path}`, {
+    res = await fetch(`${apiBase()}${path}`, {
       ...init,
       credentials: "include",
       headers: {
@@ -245,7 +244,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
       },
     });
   } catch {
-    throw new Error(`${API_OFFLINE_MESSAGE}（${API_BASE}）`);
+    throw new Error(`${API_OFFLINE_MESSAGE}（${apiBaseLabel()}）`);
   }
   if (!res.ok) {
     const text = await res.text();
@@ -268,9 +267,9 @@ export const healthApi = {
   ping: async () => {
     let res: Response;
     try {
-      res = await fetch(`${API_BASE}/health`, { credentials: "include" });
+      res = await fetch(`${apiBase()}/health`, { credentials: "include" });
     } catch {
-      throw new Error(`${API_OFFLINE_MESSAGE}（${API_BASE}）`);
+      throw new Error(`${API_OFFLINE_MESSAGE}（${apiBaseLabel()}）`);
     }
     if (!res.ok) {
       throw new Error(API_OFFLINE_MESSAGE);
@@ -359,7 +358,7 @@ export const jobsApi = {
   get: (id: string) => api<JobDetail>(`/api/jobs/${id}`),
   getStatus: (id: string) =>
     api<{ status: string; error_message?: string | null; progress: number }>(`/api/jobs/${id}/status`),
-  eventsUrl: (id: string) => `${API_BASE}/api/jobs/${id}/events`,
+  eventsUrl: (id: string) => `${apiBase()}/api/jobs/${id}/events`,
 };
 
 export const accountsApi = {
@@ -406,14 +405,14 @@ export const accountsApi = {
   exportJson: async (accessTokens: string[]) => {
     let res: Response;
     try {
-      res = await fetch(`${API_BASE}/api/accounts/export`, {
+      res = await fetch(`${apiBase()}/api/accounts/export`, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ access_tokens: accessTokens, format: "json" }),
       });
     } catch {
-      throw new Error(`${API_OFFLINE_MESSAGE}（${API_BASE}）`);
+      throw new Error(`${API_OFFLINE_MESSAGE}（${apiBaseLabel()}）`);
     }
     if (!res.ok) {
       const text = await res.text();
@@ -694,7 +693,6 @@ export const proxyApi = {
     }),
 };
 
-const GATEWAY_BASE = (process.env.NEXT_PUBLIC_GATEWAY_BASE ?? "http://localhost:8014").replace(/\/$/, "");
 const GATEWAY_KEY = process.env.NEXT_PUBLIC_GATEWAY_KEY ?? "";
 
 /** 嗅探 base64 图片 MIME：JPEG(FF D8→/9j/)、PNG(89 50 4E 47→iVBOR)、WEBP(RIFF→UklGR)。
@@ -749,8 +747,8 @@ async function readChatStream(
 export const chatApi = {
   listModels: async (): Promise<string[]> => {
     const urls = [
-      `${API_BASE}/api/chat/models`,
-      `${GATEWAY_BASE}/v1/models`,
+      `${apiBase()}/api/chat/models`,
+      `${gatewayBase()}/v1/models`,
     ];
     for (const url of urls) {
       try {
@@ -781,25 +779,21 @@ export const chatApi = {
     const stream = body.stream !== false;
     let res: Response;
     try {
-      res = await fetch(`${API_BASE}/api/chat/completions`, {
+      res = await fetch(`${apiBase()}/api/chat/completions`, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ...body, stream }),
       });
     } catch {
-      if (GATEWAY_BASE) {
-        res = await fetch(`${GATEWAY_BASE}/v1/chat/completions`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            ...(GATEWAY_KEY ? { Authorization: `Bearer ${GATEWAY_KEY}` } : {}),
-          },
-          body: JSON.stringify({ ...body, stream }),
-        });
-      } else {
-        throw new Error("无法连接对话服务");
-      }
+      res = await fetch(`${gatewayBase()}/v1/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(GATEWAY_KEY ? { Authorization: `Bearer ${GATEWAY_KEY}` } : {}),
+        },
+        body: JSON.stringify({ ...body, stream }),
+      });
     }
     if (!res.ok) {
       const text = await res.text();
@@ -836,7 +830,7 @@ export const chatApi = {
   generateImage: async (prompt: string, n: number): Promise<string[]> => {
     let res: Response;
     try {
-      res = await fetch(`${GATEWAY_BASE}/v1/images/generations`, {
+      res = await fetch(`${gatewayBase()}/v1/images/generations`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -892,25 +886,21 @@ export const chatApi = {
     };
     let res: Response;
     try {
-      res = await fetch(`${API_BASE}/api/chat/completions`, {
+      res = await fetch(`${apiBase()}/api/chat/completions`, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
     } catch {
-      if (GATEWAY_BASE) {
-        res = await fetch(`${GATEWAY_BASE}/v1/chat/completions`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            ...(GATEWAY_KEY ? { Authorization: `Bearer ${GATEWAY_KEY}` } : {}),
-          },
-          body: JSON.stringify(body),
-        });
-      } else {
-        throw new Error("无法连接对话服务");
-      }
+      res = await fetch(`${gatewayBase()}/v1/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(GATEWAY_KEY ? { Authorization: `Bearer ${GATEWAY_KEY}` } : {}),
+        },
+        body: JSON.stringify(body),
+      });
     }
     if (!res.ok) {
       const text = await res.text();

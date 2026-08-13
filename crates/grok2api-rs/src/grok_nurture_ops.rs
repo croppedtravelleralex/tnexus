@@ -105,13 +105,13 @@ impl GrokNurtureService {
             images: vec![],
             ocr: false,
             system_prompt: None,
-            request_id: format!("nurture-{}-{}", job.account_id, chrono::Utc::now().timestamp_millis()),
+            request_id: format!(
+                "nurture-{}-{}",
+                job.account_id,
+                chrono::Utc::now().timestamp_millis()
+            ),
         };
-        match self
-            .engine
-            .chat_for_account(job.account_id, &req)
-            .await
-        {
+        match self.engine.chat_for_account(job.account_id, &req).await {
             Ok(outcome) => {
                 self.ops.record_success();
                 record_usage_event(job.account_id, job.email.as_deref());
@@ -129,7 +129,11 @@ impl GrokNurtureService {
         }
     }
 
-    pub async fn process_one(&self, account_id: i64, prompt: Option<String>) -> Result<Value, String> {
+    pub async fn process_one(
+        &self,
+        account_id: i64,
+        prompt: Option<String>,
+    ) -> Result<Value, String> {
         let job = NurtureJob {
             account_id,
             email: None,
@@ -207,7 +211,11 @@ fn record_usage_event(account_id: i64, email: Option<&str>) {
         "account_id": account_id,
         "binding": format!("grok:{account_id}"),
     });
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
         use std::io::Write;
         let _ = writeln!(f, "{}", line);
     }

@@ -446,14 +446,13 @@ async fn admin_handle(
                 .and_then(|v| v.get("limit").and_then(|l| l.as_i64()))
                 .unwrap_or(64);
             let (ok, fail) = quota.refresh_enabled_batch(limit).await;
-            return (
-                StatusCode::OK,
-                Json(json!({ "ok": ok, "fail": fail })),
-            );
+            return (StatusCode::OK, Json(json!({ "ok": ok, "fail": fail })));
         }
         return (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({ "error": "quotaNotWired", "message": "额度刷新未接线（需 GROK2API_DIRECT）" })),
+            Json(
+                json!({ "error": "quotaNotWired", "message": "额度刷新未接线（需 GROK2API_DIRECT）" }),
+            ),
         );
     }
 

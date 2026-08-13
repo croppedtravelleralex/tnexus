@@ -24,6 +24,7 @@ import {
   type GrokAccountView,
   type GrokQuotaWindow,
 } from "@/lib/grok-admin";
+import { pickDisplayQuotaWindow } from "@/lib/grok-quota";
 
 const PAGE_SIZE_OPTIONS = [20, 50, 100, 200] as const;
 
@@ -46,6 +47,7 @@ export default function GrokAccountsPage() {
   const [error, setError] = useState("");
   const [reloadKey, setReloadKey] = useState(0);
   const [quotaByAccount, setQuotaByAccount] = useState<Record<number, GrokQuotaWindow | null>>({});
+  const [quotaErrorByAccount, setQuotaErrorByAccount] = useState<Record<number, string>>({});
 
   const [editTarget, setEditTarget] = useState<GrokAccountView | null>(null);
   const [detailTarget, setDetailTarget] = useState<GrokAccountView | null>(null);
@@ -57,15 +59,26 @@ export default function GrokAccountsPage() {
   const refreshPageQuota = useCallback(async () => {
     if (!token || items.length === 0) return;
     const settled = await Promise.allSettled(
-      items.map(async (a) => {
-        await grokAdminApi.refreshAccount(token, a.id, "quota").catch(() => undefined);
-        return grokAdminApi.getQuotaWindows(token, a.id);
-      }),
+      items.map((a) => grokAdminApi.getQuotaWindows(token, a.id)),
     );
     setQuotaByAccount((prev) => {
       const next: Record<number, GrokQuotaWindow | null> = { ...prev };
       items.forEach((a, i) => {
-        next[a.id] = settled[i].status === "fulfilled" ? (settled[i].value[0] ?? null) : null;
+        if (settled[i].status === "fulfilled") {
+          next[a.id] = pickDisplayQuotaWindow((settled[i] as PromiseFulfilledResult<GrokQuotaWindow[]>).value);
+        }
+      });
+      return next;
+    });
+    setQuotaErrorByAccount((prev) => {
+      const next: Record<number, string> = { ...prev };
+      items.forEach((a, i) => {
+        if (settled[i].status === "rejected") {
+          const reason = (settled[i] as PromiseRejectedResult).reason;
+          next[a.id] = reason instanceof Error ? reason.message : String(reason);
+        } else {
+          delete next[a.id];
+        }
       });
       return next;
     });
@@ -92,15 +105,26 @@ export default function GrokAccountsPage() {
         }
 
         const settled = await Promise.allSettled(
-          rows.map(async (a) => {
-            await grokAdminApi.refreshAccount(currentToken, a.id, "quota").catch(() => undefined);
-            return grokAdminApi.getQuotaWindows(currentToken, a.id);
-          }),
+          rows.map((a) => grokAdminApi.getQuotaWindows(currentToken, a.id)),
         );
         setQuotaByAccount((prev) => {
           const next: Record<number, GrokQuotaWindow | null> = { ...prev };
           rows.forEach((a, i) => {
-            next[a.id] = settled[i].status === "fulfilled" ? (settled[i].value[0] ?? null) : null;
+            if (settled[i].status === "fulfilled") {
+              next[a.id] = pickDisplayQuotaWindow((settled[i] as PromiseFulfilledResult<GrokQuotaWindow[]>).value);
+            }
+          });
+          return next;
+        });
+        setQuotaErrorByAccount((prev) => {
+          const next: Record<number, string> = { ...prev };
+          rows.forEach((a, i) => {
+            if (settled[i].status === "rejected") {
+              const reason = (settled[i] as PromiseRejectedResult).reason;
+              next[a.id] = reason instanceof Error ? reason.message : String(reason);
+            } else {
+              delete next[a.id];
+            }
           });
           return next;
         });
@@ -290,12 +314,25 @@ export default function GrokAccountsPage() {
               <LoaderCircle className="size-4 animate-spin" /> 加载中…
             </div>
           ) : (
-            <GrokAccountsTable
-              items={items}
-              quotaByAccount={quotaByAccount}
-              onEdit={(account) => setEditTarget(account)}
-              onDetail={(account) => setDetailTarget(account)}
-            />
+            <>
+              {Object.keys(quotaErrorByAccount).length > 0 && (
+                <p
+                  className="text-xs text-[var(--neo-muted)]"
+                  title={Object.entries(quotaErrorByAccount)
+                    .map(([id, msg]) => `#${id}: ${msg}`)
+                    .join("\n")}
+                >
+                  {Object.keys(quotaErrorByAccount).length} 个账号额度读取失败
+                </p>
+              )}
+              <GrokAccountsTable
+                items={items}
+                quotaByAccount={quotaByAccount}
+                quotaErrorByAccount={quotaErrorByAccount}
+                onEdit={(account) => setEditTarget(account)}
+                onDetail={(account) => setDetailTarget(account)}
+              />
+            </>
           )}
 
           <div className="flex flex-wrap items-center justify-between gap-2">

@@ -5,6 +5,9 @@
 //!     → build_web_chat_payload(ocr 控制 enableImageGeneration)
 //!     → bridge.fetch_chat → 文本
 //! audit 异步写（`grok-audit`）；dispatch 记账（成功/失败 → 冷却）。
+//!
+//! 跨账号重试（item 1）：`chat_outcome` 在可重试上游错误（429 / 403）时
+//! 自动换账号重试，最多 `retry_max` 次（env `GROK_CHAT_RETRY_MAX`，默认 4，硬上限 8）。
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,6 +26,26 @@ use grok_domain::{ChatBackend, ChatOutcome, ChatRequest};
 
 /// egress lease 获取超时（G1 单槽 web scope；时长可经构造覆盖）。
 const DEFAULT_LEASE_DURATION: Duration = Duration::from_secs(5);
+/// 跨账号重试默认次数（可通过 GROK_CHAT_RETRY_MAX 覆盖）。
+const DEFAULT_RETRY_MAX: usize = 4;
+/// 跨账号重试硬上限（防止失控重试拖垮号池）。
+const HARD_RETRY_CAP: usize = 8;
+
+/// 账号健康写回端口（PG 持久化冷却状态）。
+///
+/// `None` 时跳过写回（单测 / 无 DB 场景）；写回失败仅 warn 日志，不阻断 chat 响应。
+#[async_trait::async_trait]
+pub trait AccountHealthSink: Send + Sync {
+    /// 记录限速/拒绝失败：写入冷却截止时间与最后错误原因。
+    async fn record_rate_limit_failure(
+        &self,
+        account_id: i64,
+        cooldown_until: chrono::DateTime<chrono::Utc>,
+        reason: &str,
+    );
+    /// 记录成功：清零失败计数与最后错误。
+    async fn record_success(&self, account_id: i64);
+}
 
 /// grok Web chat 引擎（依赖池 / lease / bridge 均可注入，便于单测）。
 pub struct ChatEngine {
@@ -33,6 +56,10 @@ pub struct ChatEngine {
     /// 无 chrome 直连路径：按账号取 sso token（bridge 模式为 None）。
     sso: Option<Arc<dyn SsoTokenProvider>>,
     lease_duration: Duration,
+    /// 跨账号重试上限（含首次尝试）。
+    retry_max: usize,
+    /// PG 健康写回（可选；None 时只写内存冷却）。
+    health_sink: Option<Arc<dyn AccountHealthSink>>,
 }
 
 impl ChatEngine {
@@ -43,6 +70,12 @@ impl ChatEngine {
         bridge: Arc<dyn BridgeClient>,
         audit: Option<Arc<AuditSink>>,
     ) -> Self {
+        // 从环境变量读取重试次数（默认 4，硬上限 8）
+        let retry_max = std::env::var("GROK_CHAT_RETRY_MAX")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(DEFAULT_RETRY_MAX)
+            .min(HARD_RETRY_CAP);
         Self {
             pool,
             lease,
@@ -50,6 +83,8 @@ impl ChatEngine {
             audit,
             sso: None,
             lease_duration: DEFAULT_LEASE_DURATION,
+            retry_max,
+            health_sink: None,
         }
     }
 
@@ -71,15 +106,51 @@ impl ChatEngine {
         self
     }
 
+    /// 覆盖跨账号重试上限（最大 `HARD_RETRY_CAP`；主要用于测试）。
+    pub fn with_retry_max(mut self, n: usize) -> Self {
+        self.retry_max = n.min(HARD_RETRY_CAP);
+        self
+    }
+
+    /// 注入 PG 账号健康写回实现（None 时只维护内存冷却）。
+    pub fn with_health_sink(mut self, sink: Arc<dyn AccountHealthSink>) -> Self {
+        self.health_sink = Some(sink);
+        self
+    }
+
     /// 执行一次 chat/OCR，返回上游文本。
     pub async fn chat(&self, req: &ChatRequest) -> Result<String, ProviderError> {
         Ok(self.chat_outcome(req).await?.text)
     }
 
     /// 执行一次 chat/OCR，返回文本与调度账号。
+    ///
+    /// 遭遇可重试上游错误（429 / 403）时自动换账号，最多重试 `retry_max` 次。
+    /// 所有尝试均失败时返回最后一次的真实上游错误，而非通用错误。
     pub async fn chat_outcome(&self, req: &ChatRequest) -> Result<ChatOutcome, ProviderError> {
-        let account_id = self.select_account_with_keys().await?;
-        self.execute_for_account(account_id, req).await
+        let mut tried: Vec<i64> = Vec::new();
+        let mut last_err: Option<ProviderError> = None;
+
+        for attempt in 0..self.retry_max {
+            // 排除已试过的账号，避免重复消耗同一账号
+            let account_id = match self.select_account_with_keys_skip(&tried).await {
+                Ok(id) => id,
+                Err(e) => return Err(last_err.unwrap_or(e)),
+            };
+            tried.push(account_id);
+
+            match self.execute_for_account(account_id, req).await {
+                Ok(outcome) => return Ok(outcome),
+                Err(e) if is_retryable_upstream_error(&e) && attempt + 1 < self.retry_max => {
+                    // 限速/拒绝：换账号重试；cooldown 已在 execute_for_account 中设置
+                    tracing::warn!(account_id, attempt, "上游限速/拒绝，换账号重试: {e}");
+                    last_err = Some(e);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        // 所有尝试均失败，返回最后一次的真实错误
+        Err(last_err.unwrap_or(ProviderError::NoAvailableAccount))
     }
 
     /// 对指定账号执行养号/定向对话（跳过池随机选择）。
@@ -142,23 +213,50 @@ impl ChatEngine {
             Ok(text) => {
                 self.pool.dispatch_success(account_id).await;
                 self.record_audit(req, account_id, true);
+                // 异步写回 PG 成功状态（失败仅 warn，不阻断响应）
+                if let Some(sink) = &self.health_sink {
+                    let sink = Arc::clone(sink);
+                    tokio::spawn(async move {
+                        sink.record_success(account_id).await;
+                    });
+                }
                 Ok(ChatOutcome {
                     text,
                     account_id: Some(account_id),
                 })
             }
             Err(e) => {
-                self.pool.dispatch_failure(account_id).await;
+                let retryable = is_retryable_upstream_error(&e);
+                if retryable {
+                    // 429 / 403：指数退避长冷却
+                    self.pool.dispatch_rate_limited(account_id).await;
+                    // 异步写回 PG 冷却（失败仅 warn，不阻断响应）
+                    if let Some(sink) = &self.health_sink {
+                        let sink = Arc::clone(sink);
+                        let reason = e.to_string();
+                        tokio::spawn(async move {
+                            // PG 端写固定 60s 基础冷却；in-memory 池另有指数退避
+                            let cooldown = chrono::Utc::now() + chrono::Duration::seconds(60);
+                            sink.record_rate_limit_failure(account_id, cooldown, &reason)
+                                .await;
+                        });
+                    }
+                } else {
+                    // 普通瞬时失败：2s 短冷却
+                    self.pool.dispatch_failure(account_id).await;
+                }
                 self.record_audit(req, account_id, false);
                 Err(e)
             }
         }
     }
 
-    /// 从号池选一个具备 pure_http_keys 的账号（无 keys 自动跳过，不进入冷却）。
-    async fn select_account_with_keys(&self) -> Result<i64, ProviderError> {
+    /// 从号池选一个具备 pure_http_keys 的账号，跳过 `tried` 中已尝试过的 id。
+    async fn select_account_with_keys_skip(&self, tried: &[i64]) -> Result<i64, ProviderError> {
         const MAX_ATTEMPTS: usize = 64;
-        let mut skip: Vec<i64> = Vec::new();
+        // tried 中的账号已进入冷却，无需再传 skip（cooldown 会自动排除）；
+        // 但显式排除确保即便冷却未生效也不重选同一账号。
+        let mut skip: Vec<i64> = tried.to_vec();
         for _ in 0..MAX_ATTEMPTS {
             let Some(id) = self.pool.select_skip(None, &skip).await else {
                 break;
@@ -166,6 +264,7 @@ impl ChatEngine {
             if self.bridge.has_pure_http_keys(id) {
                 return Ok(id);
             }
+            // 没有 keys → 静默跳过，不进入冷却
             skip.push(id);
         }
         Err(ProviderError::NoAvailableAccount)
@@ -194,9 +293,25 @@ impl ChatEngine {
     }
 }
 
+/// 判断上游错误是否可重试（换账号有意义的情况）。
+///
+/// 纯函数：仅依赖错误消息文本，无 IO，便于单元测试。
+/// - HTTP 429 → 当前账号 IP 被限速，换账号可能绕过
+/// - HTTP 403 → 当前账号被临时拒绝，换账号可能成功
+/// - 其余（400 / 网络 / lease / bridge）→ 换账号无意义，立即返回
+pub fn is_retryable_upstream_error(e: &ProviderError) -> bool {
+    match e {
+        ProviderError::Upstream(msg) => msg.contains("429") || msg.contains("403"),
+        _ => false,
+    }
+}
+
 #[async_trait::async_trait]
 impl ChatBackend for ChatEngine {
-    async fn chat_outcome(&self, req: &ChatRequest) -> Result<ChatOutcome, grok_domain::ProviderError> {
+    async fn chat_outcome(
+        &self,
+        req: &ChatRequest,
+    ) -> Result<ChatOutcome, grok_domain::ProviderError> {
         ChatEngine::chat_outcome(self, req).await
     }
 }
@@ -228,6 +343,15 @@ mod tests {
         ChatEngine::new(pool, lease, bridge, None)
     }
 
+    fn engine_with_retry(
+        pool: SharedPool,
+        bridge: Arc<dyn BridgeClient>,
+        retry_max: usize,
+    ) -> ChatEngine {
+        let lease = Arc::new(InMemoryLeaseManager::new(&[(Scope::GrokWeb, 4)]));
+        ChatEngine::new(pool, lease, bridge, None).with_retry_max(retry_max)
+    }
+
     const DATA_URI: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 
     fn req() -> ChatRequest {
@@ -239,6 +363,41 @@ mod tests {
             request_id: "req-1".to_string(),
         }
     }
+
+    // ── 重试谓词单测 ────────────────────────────────────────────────────────
+
+    #[test]
+    fn is_retryable_predicate_correct() {
+        // 可重试：429 限速 / 403 拒绝
+        assert!(is_retryable_upstream_error(&ProviderError::Upstream(
+            "chat status 429 Too Many Requests".into()
+        )));
+        assert!(is_retryable_upstream_error(&ProviderError::Upstream(
+            "chat status 403 Forbidden".into()
+        )));
+        // 不可重试：其他上游错误
+        assert!(!is_retryable_upstream_error(&ProviderError::Upstream(
+            "chat status 400 Bad Request".into()
+        )));
+        assert!(!is_retryable_upstream_error(&ProviderError::Upstream(
+            "empty chat response".into()
+        )));
+        assert!(!is_retryable_upstream_error(&ProviderError::Upstream(
+            "chat status 500 Internal Server Error".into()
+        )));
+        // 不可重试：非 Upstream 变体
+        assert!(!is_retryable_upstream_error(
+            &ProviderError::NoAvailableAccount
+        ));
+        assert!(!is_retryable_upstream_error(&ProviderError::Lease(
+            "timeout".into()
+        )));
+        assert!(!is_retryable_upstream_error(&ProviderError::Bridge(
+            "network error".into()
+        )));
+    }
+
+    // ── 基础功能测试 ─────────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn chat_returns_text_and_records_dispatch() {
@@ -276,14 +435,12 @@ mod tests {
     #[tokio::test]
     async fn lease_timeout_errors() {
         // web scope 上限 1：先占满一个长 lease，再用短时长请求 → Timeout。
-        // 这里用 with_lease_duration 极小以稳定触发。
         let pool = grok_pool::SimplifiedPool::new();
         pool.load_in_memory(vec![sample_account(1)]).await;
         pool.pin(1).await;
         let lease = Arc::new(InMemoryLeaseManager::new(&[(Scope::GrokWeb, 1)]));
         let bridge = Arc::new(MockBridgeClient::new());
 
-        // 占住 engine 将用的 gate（账号 1 的 gate "1"）：acquire 一个长 lease 并持住。
         let held = lease
             .acquire(Scope::GrokWeb, "1".into(), Duration::from_secs(60))
             .await
@@ -303,9 +460,7 @@ mod tests {
     async fn empty_bridge_bytes_counts_as_failure_and_cooldown() {
         let pool: SharedPool = Arc::new(grok_pool::SimplifiedPool::new());
         pool.load_in_memory(vec![sample_account(2)]).await;
-        // bridge 返回空字节 → attachment 阶段报错 → dispatch_failure → 冷却
-        let bridge = Arc::new(MockBridgeClient::new()); // images 空
-                                                        // 用远端 URL 使 bridge 找不到字节。
+        let bridge = Arc::new(MockBridgeClient::new());
         let mut reqc = req();
         reqc.images = vec!["https://x.com/missing.png".to_string()];
         let e = engine(pool.clone(), bridge);
@@ -333,7 +488,65 @@ mod tests {
         e.chat(&reqc).await.unwrap();
         let got = concrete.last_chat_payload.lock().await;
         let payload = got.as_ref().unwrap();
-        assert_eq!(payload["model"], "grok-chat");
+        // 非 OCR 路径使用 fast modeId 且开启生图（原字段 "model" 已迁移至 modeId）
+        assert_eq!(payload["modeId"], "fast");
         assert_eq!(payload["enableImageGeneration"], true);
+    }
+
+    // ── 跨账号重试测试 ───────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn retry_on_429_switches_to_second_account() {
+        // 账号 1 返回 429；账号 2 成功 → engine 应在账号 2 上成功并返回文本。
+        let pool: SharedPool = Arc::new(grok_pool::SimplifiedPool::new());
+        pool.load_in_memory(vec![sample_account(1), sample_account(2)])
+            .await;
+        let mut mock = MockBridgeClient::new();
+        mock.chat_text = "成功".to_string();
+        mock.fail_for_accounts = vec![1]; // 账号 1 模拟 429
+        let bridge: Arc<dyn BridgeClient> = Arc::new(mock);
+        let e = engine_with_retry(pool.clone(), bridge, 2);
+        let outcome = e.chat_outcome(&req()).await.unwrap();
+        assert_eq!(outcome.text, "成功");
+        assert_eq!(outcome.account_id, Some(2), "应切换到账号 2");
+        // 账号 1 应进入限速冷却（远长于 2s 普通冷却）
+        assert!(pool.in_cooldown(1).await, "账号 1 应在限速冷却中");
+    }
+
+    #[tokio::test]
+    async fn all_accounts_fail_returns_last_error() {
+        // 所有账号都返回 429 → 返回最后一次的真实错误而非通用错误。
+        let pool: SharedPool = Arc::new(grok_pool::SimplifiedPool::new());
+        pool.load_in_memory(vec![sample_account(1), sample_account(2)])
+            .await;
+        let mut mock = MockBridgeClient::new();
+        mock.fail_for_accounts = vec![1, 2]; // 两个账号都 429
+        let bridge: Arc<dyn BridgeClient> = Arc::new(mock);
+        let e = engine_with_retry(pool.clone(), bridge, 2);
+        let err = e.chat_outcome(&req()).await.unwrap_err();
+        // 应返回上游 429 错误，不是 NoAvailableAccount
+        assert!(
+            matches!(&err, ProviderError::Upstream(msg) if msg.contains("429")),
+            "应返回上游 429 错误，实际: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_max_one_means_no_retry() {
+        // retry_max=1 意味着只有首次尝试，没有重试。
+        let pool: SharedPool = Arc::new(grok_pool::SimplifiedPool::new());
+        pool.load_in_memory(vec![sample_account(1), sample_account(2)])
+            .await;
+        let mut mock = MockBridgeClient::new();
+        mock.fail_for_accounts = vec![1]; // 账号 1 失败
+        mock.chat_text = "second".to_string();
+        let bridge: Arc<dyn BridgeClient> = Arc::new(mock);
+        // retry_max=1：只尝试一次，账号 1 失败后直接返回错误（不重试）
+        let e = engine_with_retry(pool.clone(), bridge, 1);
+        let err = e.chat_outcome(&req()).await.unwrap_err();
+        assert!(
+            matches!(&err, ProviderError::Upstream(_)),
+            "retry_max=1 时应直接返回错误"
+        );
     }
 }

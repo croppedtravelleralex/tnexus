@@ -1,19 +1,21 @@
+import { apiBase } from "@/lib/api-base";
+import { unwrapAdminItems } from "@/lib/grok-quota";
+
 // Grok 管理 API 客户端（grok-admin crate，G4-P2）。
 //
 // 默认经 TNexus `/api/grok` 代理：复用 TNexus 管理员 cookie，无需单独 grok-admin JWT。
 // 直连模式：设 NEXT_PUBLIC_GROK_ADMIN_BASE=http://host:8091 并自行持 token。
-
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:9000";
 
 /** 经 TNexus 代理（推荐） */
 export const GROK_ADMIN_VIA_TNEXUS =
   process.env.NEXT_PUBLIC_GROK_ADMIN_VIA_TNEXUS !== "0" &&
   !process.env.NEXT_PUBLIC_GROK_ADMIN_BASE;
 
-/** grok-admin HTTP 挂载点 */
-export const GROK_ADMIN_BASE = GROK_ADMIN_VIA_TNEXUS
-  ? `${API_BASE.replace(/\/$/, "")}/api/grok`
-  : (process.env.NEXT_PUBLIC_GROK_ADMIN_BASE ?? API_BASE);
+function grokAdminBase(): string {
+  return GROK_ADMIN_VIA_TNEXUS
+    ? `${apiBase()}/api/grok`
+    : (process.env.NEXT_PUBLIC_GROK_ADMIN_BASE ?? apiBase());
+}
 
 /** TNexus 代理模式下 API 忽略 token 参数 */
 export const GROK_ADMIN_PROXY_TOKEN = "__tnexus_proxy__";
@@ -263,6 +265,18 @@ export type GrokLoginResponse = {
   tokens: GrokAuthTokens;
 };
 
+/** 单模式额度聚合（teammate 正在添加到 GET /admin/accounts/summary，先声明好降级）。 */
+export type GrokQuotaModeSummary = {
+  mode: string;
+  accounts: number;
+  remaining: number;
+  total: number;
+  exhausted: number;
+  stale: number;
+  oldest_synced_at: string | null;
+  newest_synced_at: string | null;
+};
+
 /** 池规模汇总（对齐 grok-admin `AccountSummary`） */
 export type GrokAccountSummary = {
   total: number;
@@ -273,6 +287,8 @@ export type GrokAccountSummary = {
   probing: number;
   quota_exhausted: number;
   by_provider: Record<string, GrokProviderSummary>;
+  /** 各模式额度聚合；旧服务端不返回此字段，降级处理。 */
+  quota?: GrokQuotaModeSummary[];
 };
 
 export type GrokProviderSummary = {
@@ -332,14 +348,14 @@ export const grokAdminApi = {
     const query = q.toString();
     let res: Response;
     try {
-      res = await fetch(`${GROK_ADMIN_BASE}/admin/accounts${query ? `?${query}` : ""}`, {
+      res = await fetch(`${grokAdminBase()}/admin/accounts${query ? `?${query}` : ""}`, {
         headers: GROK_ADMIN_VIA_TNEXUS || token === GROK_ADMIN_PROXY_TOKEN
           ? undefined
           : { Authorization: `Bearer ${token}` },
         credentials: GROK_ADMIN_VIA_TNEXUS || token === GROK_ADMIN_PROXY_TOKEN ? "include" : undefined,
       });
     } catch {
-      throw new Error(`无法连接 grok-admin（${GROK_ADMIN_BASE}）`);
+      throw new Error(`无法连接 grok-admin（${grokAdminBase()}）`);
     }
     if (res.status === 401) {
       throw new GrokAdminAuthError();
@@ -365,11 +381,19 @@ export const grokAdminApi = {
   },
 
   getQuotaWindows: async (token: string, id: number): Promise<GrokQuotaWindow[]> => {
-    return grokAdminGet<GrokQuotaWindow[]>(token, `/admin/accounts/${id}/quota`);
+    const raw = await grokAdminGet<GrokQuotaWindow[] | { items?: GrokQuotaWindow[] }>(
+      token,
+      `/admin/accounts/${id}/quota`,
+    );
+    return unwrapAdminItems<GrokQuotaWindow>(raw);
   },
 
   getModelStates: async (token: string, id: number): Promise<GrokModelState[]> => {
-    return grokAdminGet<GrokModelState[]>(token, `/admin/accounts/${id}/model-states`);
+    const raw = await grokAdminGet<GrokModelState[] | { items?: GrokModelState[] }>(
+      token,
+      `/admin/accounts/${id}/model-states`,
+    );
+    return unwrapAdminItems<GrokModelState>(raw);
   },
 
   updateAccount: async (
@@ -465,13 +489,13 @@ export const grokAdminApi = {
   login: async (username: string, password: string): Promise<GrokLoginResponse> => {
     let res: Response;
     try {
-      res = await fetch(`${GROK_ADMIN_BASE}/admin/auth/login`, {
+      res = await fetch(`${grokAdminBase()}/admin/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username, password }),
       });
     } catch {
-      throw new Error(`无法连接 grok-admin（${GROK_ADMIN_BASE}）`);
+      throw new Error(`无法连接 grok-admin（${grokAdminBase()}）`);
     }
     if (res.status === 401) {
       throw new Error("用户名或密码错误（401）");
@@ -649,13 +673,13 @@ async function grokAdminFetch(
   }
   let res: Response;
   try {
-    res = await fetch(`${GROK_ADMIN_BASE}${path}`, {
+    res = await fetch(`${grokAdminBase()}${path}`, {
       ...init,
       credentials: useProxy ? "include" : init?.credentials,
       headers,
     });
   } catch {
-    throw new Error(`无法连接 grok-admin（${GROK_ADMIN_BASE}）`);
+    throw new Error(`无法连接 grok-admin（${grokAdminBase()}）`);
   }
   if (res.status === 401) {
     if (useProxy) {

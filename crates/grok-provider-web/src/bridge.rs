@@ -304,6 +304,8 @@ pub struct MockBridgeClient {
     pub imagine_response: Value,
     /// fetch_imagine 收到的 payload（测试断言 golden）。
     pub last_imagine_payload: tokio::sync::Mutex<Option<Value>>,
+    /// fetch_chat 对这些账号 id 返回 429 上游错误（测试跨账号重试路径）。
+    pub fail_for_accounts: Vec<i64>,
 }
 
 impl MockBridgeClient {
@@ -314,6 +316,7 @@ impl MockBridgeClient {
             last_chat_payload: tokio::sync::Mutex::new(None),
             imagine_response: serde_json::Value::Null,
             last_imagine_payload: tokio::sync::Mutex::new(None),
+            fail_for_accounts: Vec::new(),
         }
     }
 }
@@ -344,9 +347,17 @@ impl BridgeClient for MockBridgeClient {
         &self,
         payload: &Value,
         _sso_token: Option<&str>,
-        _account_id: Option<i64>,
+        account_id: Option<i64>,
     ) -> Result<String, ProviderError> {
         *self.last_chat_payload.lock().await = Some(payload.clone());
+        // 指定账号模拟 429 限速（测试跨账号重试路径）
+        if let Some(id) = account_id {
+            if self.fail_for_accounts.contains(&id) {
+                return Err(ProviderError::Upstream(
+                    "chat status 429 Too Many Requests".into(),
+                ));
+            }
+        }
         Ok(self.chat_text.clone())
     }
 
