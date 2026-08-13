@@ -7,10 +7,17 @@ web/.env*.local
 /data/
 *.db
 
-# 排查过程产物
+# 构建暂存与排查过程产物。
+# 这些目录曾被一次 `git add -A` 扫进提交：dist/ 单独就有 143MB 编译产物，
+# reports/ 有 1971 个文件。推送后清除需要改写历史，所以在这里堵死。
+/dist/
+/reports/
 __pycache__/
 scripts/.tmp/
-crates/grok-signer/assets/access.log
+# 临时排查脚本一律以 _ 开头，不进仓库
+scripts/_*
+crates/grok-signer/assets/_*.js
+*.log
 
 # subagent session artifacts
 .pi-subagents/
