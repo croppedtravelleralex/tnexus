@@ -328,10 +328,10 @@ export default function StudioPage() {
 
   const onGenerate = async () => {
     if (!prompt.trim() || !conversationId) return;
-    if (!(await isClientCacheReady())) {
-      setError("请先在「设置 → 端侧缓存」选择生图缓存目录");
-      return;
-    }
+    // 端侧缓存只是本地副本，图片本身存在服务端，output-panel 缓存缺失时会回退远程预览。
+    // 这里曾经是硬门槛，直接 return 导致请求根本发不出去；而目录句柄的授权不跨浏览器
+    // 会话保留，重开浏览器就失效，等于把生图整个堵死。
+    const cacheReady = await isClientCacheReady();
     const directorModels = mode === "casting" ? castingModels : [textModel];
     const counts: Record<string, number> = {};
     for (const m of directorModels) counts[m] = actorImageCounts[m] ?? 1;
@@ -339,7 +339,9 @@ export default function StudioPage() {
 
     setBusy(true);
     setError("");
-    setQueueHint("");
+    setQueueHint(
+      cacheReady ? "" : "端侧缓存未就绪，本次只保留服务端图片；如需本地副本请在「设置 → 端侧缓存」选择目录",
+    );
     setResult(null);
     setProgress(5);
     setStage("queued");
