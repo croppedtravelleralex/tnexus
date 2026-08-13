@@ -35,6 +35,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/v1/accounts", get(list_accounts).post(import_accounts))
         .route("/api/v1/accounts/{id}/health", post(set_health))
         .route("/api/v1/sweep", post(sweep))
+        .route("/api/v1/quota", post(quota))
         .with_state(state)
 }
 
@@ -325,6 +326,25 @@ async fn sweep(
     match state
         .pool
         .sweep(query.limit.unwrap_or(0), query.concurrency.unwrap_or(8))
+        .await
+    {
+        Ok(report) => Json(json!({"ok": true, "report": report})).into_response(),
+        Err(err) => upstream_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
+}
+
+/// Chat-probe the pool: which accounts can actually generate right now.
+async fn quota(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+    Query(query): Query<SweepQuery>,
+) -> Response {
+    if !Config::authorizes(&state.config.admin_key, bearer(&headers)) {
+        return deny();
+    }
+    match state
+        .pool
+        .probe_quota(query.limit.unwrap_or(20), query.concurrency.unwrap_or(4))
         .await
     {
         Ok(report) => Json(json!({"ok": true, "report": report})).into_response(),

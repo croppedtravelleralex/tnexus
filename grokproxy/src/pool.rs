@@ -138,6 +138,102 @@ impl Pool {
     /// a sweep, every user request pays to rediscover that, and with a bounded
     /// attempt budget the request just fails. Running this once after a bulk
     /// import moves the dead ones to `needs_reauth` so the scheduler skips them.
+    /// Refresh + a real chat probe, so the report reflects entitlement, not just
+    /// whether the credential can still mint a token.
+    ///
+    /// `sweep` alone answers "is this token alive"; plenty of alive tokens are
+    /// refused at the chat endpoint. Quota state only shows up when something
+    /// actually asks the upstream to generate.
+    pub async fn probe_quota(&self, limit: usize, concurrency: usize) -> Result<QuotaReport> {
+        let accounts = self.store.list(Some(Provider::Build))?;
+        let now = crate::now();
+        let candidates: Vec<Account> = accounts
+            .into_iter()
+            .filter(|account| account.is_available(now))
+            .take(if limit == 0 { usize::MAX } else { limit })
+            .collect();
+
+        let mut report = QuotaReport {
+            checked: 0,
+            usable: 0,
+            no_permission: 0,
+            no_credit: 0,
+            rate_limited: 0,
+            unreachable: 0,
+            model: String::new(),
+        };
+        let width = concurrency.clamp(1, 16);
+        for chunk in candidates.chunks(width) {
+            let mut futures = Vec::with_capacity(chunk.len());
+            for account in chunk {
+                futures.push(async move {
+                    let outcome = self.probe_one_quota(account).await;
+                    (account, outcome)
+                });
+            }
+            for (account, outcome) in futures::future::join_all(futures).await {
+                report.checked += 1;
+                match outcome {
+                    Ok(model) => {
+                        report.usable += 1;
+                        if report.model.is_empty() {
+                            report.model = model.clone();
+                        }
+                        self.report_success(account, &model)?;
+                    }
+                    Err(err) => {
+                        let failure = downcast_failure(&err);
+                        match &failure {
+                            Failure::Forbidden => report.no_permission += 1,
+                            Failure::Cooling(secs) if *secs >= 1800 => report.no_credit += 1,
+                            Failure::Cooling(_) => report.rate_limited += 1,
+                            _ => report.unreachable += 1,
+                        }
+                        self.report_failure(account, &failure, &err.to_string())?;
+                    }
+                }
+            }
+        }
+        Ok(report)
+    }
+
+    /// One account: make sure the token is fresh, then actually ask for a reply.
+    async fn probe_one_quota(&self, account: &Account) -> Result<String> {
+        let mut access = account.access_token.clone();
+        if account.needs_refresh(crate::now(), REFRESH_SKEW_SECS) {
+            let pair = self
+                .upstream
+                .refresh_token(&account.refresh_token, &account.proxy_url)
+                .await?;
+            self.store.save_refreshed(
+                account.id,
+                &pair.access_token,
+                &pair.refresh_token,
+                pair.expires_at,
+                crate::now(),
+            )?;
+            access = pair.access_token;
+        }
+
+        let ids = self
+            .upstream
+            .list_models(&access, &account.proxy_url, &account.headers)
+            .await?;
+        let model = crate::upstream::pick_chat_model(&ids)
+            .unwrap_or_else(|| crate::upstream::FALLBACK_MODEL.to_string());
+
+        let payload = serde_json::json!({
+            "model": model,
+            "messages": [{"role": "user", "content": "Reply with exactly OK"}],
+            "max_tokens": 4,
+            "stream": false,
+        });
+        self.upstream
+            .chat_completions(&access, &account.proxy_url, &account.headers, &payload)
+            .await?;
+        Ok(model)
+    }
+
     pub async fn sweep(&self, limit: usize, concurrency: usize) -> Result<SweepReport> {
         let accounts = self.store.list(Some(Provider::Build))?;
         let candidates: Vec<Account> = accounts
@@ -207,6 +303,22 @@ pub fn downcast_failure(err: &anyhow::Error) -> Failure {
     err.downcast_ref::<UpstreamError>()
         .map(UpstreamError::failure)
         .unwrap_or(Failure::Transient)
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct QuotaReport {
+    pub checked: usize,
+    /// Chat actually returned a completion.
+    pub usable: usize,
+    /// Upstream refuses chat for this account (entitlement).
+    pub no_permission: usize,
+    /// Quota/credit exhausted; recovers on its own window.
+    pub no_credit: usize,
+    pub rate_limited: usize,
+    /// Never got an answer — says nothing about the account.
+    pub unreachable: usize,
+    /// Model the upstream is currently serving.
+    pub model: String,
 }
 
 #[derive(Debug, Clone, Copy, serde::Serialize)]
