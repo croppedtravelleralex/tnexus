@@ -1,0 +1,2 @@
+GET document.body.append
+CALL document.body.append()

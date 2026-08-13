@@ -9,24 +9,28 @@ services:
     image: ghcr.io/${GHCR_OWNER:-croppedtravelleralex}/grokproxy:${GROKPROXY_TAG:-latest}
     container_name: grokproxy
     restart: unless-stopped
-    # Loopback-only: reach it through the existing gateway, never the open internet.
-    ports:
-      - "127.0.0.1:${GROKPROXY_PORT:-8110}:8110"
+    # Host networking, same as grok2api-rs: the per-account sticky relay listens
+    # on the host's 127.0.0.1:18100, which a bridge container cannot reach.
+    # Binding GROKPROXY_ADDR to loopback keeps the service off the public IP.
+    network_mode: host
     environment:
-      GROKPROXY_ADDR: 0.0.0.0:8110
+      GROKPROXY_ADDR: 127.0.0.1:${GROKPROXY_PORT:-8110}
       GROKPROXY_DB: /data/grokproxy.db
       GROKPROXY_UPSTREAM: ${GROKPROXY_UPSTREAM:-https://cli-chat-proxy.grok.com/v1}
       GROKPROXY_API_KEY: ${GROKPROXY_API_KEY:?required}
       GROKPROXY_ADMIN_KEY: ${GROKPROXY_ADMIN_KEY:?required}
       # Egress for accounts that carry no sticky proxy_url of their own.
       GROKPROXY_PROXY: ${GROKPROXY_PROXY:-}
+      # Imported credentials carry the relay address of whatever deployment
+      # minted them; this points them at where it actually listens today.
+      GROKPROXY_STICKY_RELAY: ${GROKPROXY_STICKY_RELAY:-}
       GROKPROXY_TIMEOUT_SECS: ${GROKPROXY_TIMEOUT_SECS:-120}
       GROKPROXY_MAX_ATTEMPTS: ${GROKPROXY_MAX_ATTEMPTS:-3}
       RUST_LOG: ${GROKPROXY_LOG:-info}
     volumes:
       - ${GROKPROXY_DATA_DIR:-/opt/grokproxy/data}:/data
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8110/healthz"]
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:${GROKPROXY_PORT:-8110}/healthz"]
       interval: 30s
       timeout: 5s
       retries: 3

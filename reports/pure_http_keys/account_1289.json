@@ -1,0 +1,13 @@
+{
+  "email": "account_1289@oldpool.local",
+  "sso": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiYTczZDhlNDgtMzY2OC00ZTE5LTg1ZTMtZWQ3YzE2YTRmNzJiIn0.v5mF2YeHcX13foYp9PjpxFpxuugbXLpSO2FgNMIVf70",
+  "meta_b64": "pNlbr5ixnlAfoi5bvZZVWg0RqGfDc2mIgiY7f0FcfiG8E/sDoVGAJTPWXxtjWAx2",
+  "meta_html": "pNlbr5ixnlAfoi5bvZZVWg0RqGfDc2mIgiY7f0FcfiG8E/sDoVGAJTPWXxtjWAx2",
+  "fingerprint": "e589c5100f5c28f5c28f5c00f5c28f5c28f5c100",
+  "trailer_hex": "03",
+  "cookie": "sso=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiYTczZDhlNDgtMzY2OC00ZTE5LTg1ZTMtZWQ3YzE2YTRmNzJiIn0.v5mF2YeHcX13foYp9PjpxFpxuugbXLpSO2FgNMIVf70; sso-rw=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiYTczZDhlNDgtMzY2OC00ZTE5LTg1ZTMtZWQ3YzE2YTRmNzJiIn0.v5mF2YeHcX13foYp9PjpxFpxuugbXLpSO2FgNMIVf70; x-userid=8330760e-3882-4c27-a26f-858fb46e4bac; grok_device_id=248787b1-147c-42f1-9b7b-fad63a75fcef; mp_ea93da913ddb66b6372b89d97b1029ac_mixpanel=%7B%22distinct_id%22%3A%228330760e-3882-4c27-a26f-858fb46e4bac%22%2C%22%24device_id%22%3A%22ff7252fa-4be4-455b-ae5c-0364fced5610%22%2C%22%24initial_referrer%22%3A%22%24direct%22%2C%22%24initial_referring_domain%22%3A%22%24direct%22%2C%22%24user_id%22%3A%228330760e-3882-4c27-a26f-858fb46e4bac%22%7D; i18nextLng=zh; __cuid=ffd945cf-e98d-4205-8e4d-f2c13b880b44; __cuid=ffd945cf-e98d-4205-8e4d-f2c13b880b44; cf_clearance=XL3OSZmQbnb4twhoqNlAaHzDustvqTkIZNgNArvrKk4-1786521811-1.2.1.1-obVTl4MSS3hXyI7_hUlkdR9d5lbXHJNYy0OXkp.Zmw2HmGRvYUyWYdwVRitmLE61644ghCLJL4.c6NGb9CaJIRCGW85taFIdRQm9kANd6blNc.cN0PKbW6Ppg_N48TyH0e.BSagAxZ8YRpAIpKRCEJpJfSWmpVp90JPP2QlYKCnnWwxN.2EJjxILTGoFtE7SVE4096.hGhmXnEFrevz1OGciDvhfxPEhtXyOFoIeC_E7Ekwj2V2FqxlzHQ8AZLASGVGdm.ySi546ePax0nQfwU44hxPwMmAaASwFmsD2RQIgPVTUpWJkq0grzbSX3Z8Hrhrw9Q4aOHCcXAiMp504zB8hUzmVV_y8yUtF2tuOL8A; __cf_bm=94nHbX32zscAwSBsqsx48vPg4OdgXf94rOkb_SAnkJU-1786521811.3750205-1.0.1.1-_VTt5B.OztMogEOu6I9lMo8jju9K2x9e5cbs8jmxDoYGoMPJ6pybBZjboOg6TgonRUIYz9LPDhn5ub5vwGAZn8Yu18FxKFGDe4szBwvCvTDofA6QPkTyYIvqny_JFJhP; OptanonConsent=isGpcEnabled=0&datestamp=Wed+Aug+12+2026+16%3A03%3A35+GMT%2B0800+(%E4%B8%AD%E5%9B%BD%E6%A0%87%E5%87%86%E6%97%B6%E9%97%B4)&version=202603.1.0&browserGpcFlag=0&isDntEnabled=0&isIABGlobal=false&hosts=&landingPath=https%3A%2F%2Fgrok.com%2F&groups=C0001%3A1%2CC0004%3A1%2CC0003%3A1%2CC0002%3A1; __stripe_mid=9e7b426c-6d1d-4641-8dbb-de84760c590fb35e85; __stripe_sid=7954baa8-cd5e-48b0-b1f9-5b8cabb013091bb7b9",
+  "has_cf": true,
+  "extracted_at": "2026-08-12T16:03:44",
+  "digest_sample": "GET!/rest/app-chat/conversations!103597413obfiowerehiringe589c5100f5c28f5c28f5c00f5c28f5c28f5c100",
+  "account_id": 1289
+}

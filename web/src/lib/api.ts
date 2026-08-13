@@ -1,4 +1,5 @@
 import { apiBase, apiBaseLabel, gatewayBase } from "@/lib/api-base";
+import { extractErrorMessage } from "@/lib/http";
 import { type ChatConversationState, DEFAULT_CHAT_MODELS } from "@/lib/chat-conversations";
 import type { GrokChatConversationState } from "@/lib/grok-chat-conversations";
 import type { Conversation, ConversationState } from "@/lib/conversations";
@@ -248,16 +249,8 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (!res.ok) {
     const text = await res.text();
-    let message = text || res.statusText;
-    try {
-      const json = JSON.parse(text) as { error?: string; message?: string };
-      message = json.error ?? json.message ?? message;
-    } catch {
-      // keep raw text
-    }
-    if (res.status === 401) {
-      message = "账号或密码错误";
-    }
+    const message =
+      res.status === 401 ? "账号或密码错误" : extractErrorMessage(text, res.statusText);
     throw new Error(message);
   }
   return res.json() as Promise<T>;
@@ -415,15 +408,7 @@ export const accountsApi = {
       throw new Error(`${API_OFFLINE_MESSAGE}（${apiBaseLabel()}）`);
     }
     if (!res.ok) {
-      const text = await res.text();
-      let message = text || res.statusText;
-      try {
-        const json = JSON.parse(text) as { error?: string };
-        message = json.error ?? message;
-      } catch {
-        // keep raw
-      }
-      throw new Error(message);
+      throw new Error(extractErrorMessage(await res.text(), res.statusText));
     }
     const blob = await res.blob();
     const disposition = res.headers.get("content-disposition") ?? "";
@@ -816,103 +801,4 @@ export const chatApi = {
     if (content) onDelta(content);
   },
 
-  /**
-   * 图片文字提取（OCR）：G7-P2，走既有 chat completions 带图附件链路
-   * （G1 gateway OCR：检测 image_url 附件 → grok-vision 上游）。
-   * 输入为 `data:image/...;base64,` data URI；返回识别文本。
-   * 后端若未暴露 /api/backend/grok/ocr 专用端点，则复用本端点（见 crates/grok-gateway）。
-   */
-  /**
-   * 生图（独立端点 /v1/images/generations）：grok chat/completions 无 image_mode，
-   * 必须走此端点。返回 b64 数组（resp format 固定 b64_json）。
-   * 500/503 时附加可读提示（GROK_IMAGE_ENABLED / bridge 未就绪）。
-   */
-  generateImage: async (prompt: string, n: number): Promise<string[]> => {
-    let res: Response;
-    try {
-      res = await fetch(`${gatewayBase()}/v1/images/generations`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(GATEWAY_KEY ? { Authorization: `Bearer ${GATEWAY_KEY}` } : {}),
-        },
-        body: JSON.stringify({ prompt, n, response_format: "b64_json" }),
-      });
-    } catch {
-      throw new Error("无法连接生图服务（gateway 不可达）");
-    }
-    if (!res.ok) {
-      const text = await res.text();
-      let message = text || res.statusText;
-      try {
-        const json = JSON.parse(text) as {
-          error?: { message?: string } | string;
-          message?: string;
-        };
-        message =
-          typeof json.error === "string"
-            ? json.error
-            : (json.error?.message ?? json.message ?? message);
-      } catch {
-        // keep raw text
-      }
-      if (res.status === 500 || res.status === 503) {
-        message = `${message}（需 gateway 开启 GROK_IMAGE_ENABLED=1 且 browser-bridge 就绪）`;
-      }
-      throw new Error(message);
-    }
-    const data = (await res.json()) as {
-      data?: Array<{ b64_json?: string; url?: string }>;
-    };
-    const items = (data.data ?? [])
-      .map((d) => d.b64_json ?? d.url ?? "")
-      .filter(Boolean);
-    return items;
-  },
-
-  extractText: async (dataUrl: string, prompt?: string): Promise<string> => {
-    const body = {
-      model: "gpt-4o-mini", // 内部通道 id，gateway 映射到 grok OCR 语义（与 chat 页一致）
-      stream: false,
-      messages: [
-        {
-          role: "user",
-          content: [
-            { type: "text", text: prompt ?? "请提取这张图片中的全部文字内容，按原有顺序输出；只输出识别到的文字。" },
-            { type: "image_url", image_url: { url: dataUrl } },
-          ],
-        },
-      ],
-    };
-    let res: Response;
-    try {
-      res = await fetch(`${apiBase()}/api/chat/completions`, {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-    } catch {
-      res = await fetch(`${gatewayBase()}/v1/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(GATEWAY_KEY ? { Authorization: `Bearer ${GATEWAY_KEY}` } : {}),
-        },
-        body: JSON.stringify(body),
-      });
-    }
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(text || res.statusText);
-    }
-    const data = (await res.json()) as {
-      choices?: Array<{ message?: { content?: string } }>;
-    };
-    const content = data.choices?.[0]?.message?.content ?? "";
-    if (!content.trim()) {
-      throw new Error("未识别到文字（空响应）");
-    }
-    return content;
-  },
 };

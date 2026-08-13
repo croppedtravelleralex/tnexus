@@ -1,0 +1,75 @@
+===== I. type=5 rows: who hit what (7d) =====
+  username  |    token_name     |                                content                                 | count |        first_ts        |        last_ts         
+------------+-------------------+------------------------------------------------------------------------+-------+------------------------+------------------------
+ alone123   | gpt生图           | status_code=401, invalid session                                       |    31 | 2026-08-08 17:42:45+00 | 2026-08-11 10:07:25+00
+ alone123   | gpt生图           | status_code=502, conversation HTTP 413 Payload Too Large: {"detail":{" |     6 | 2026-08-12 04:37:12+00 | 2026-08-12 04:37:58+00
+ root       | tnexus-test-key   | status_code=429, duplicate-prompt: identical image prompt recently sub |     4 | 2026-08-05 09:09:46+00 | 2026-08-05 09:14:26+00
+ alone123   | gpt生图           | status_code=500, upstream error: do request failed                     |     2 | 2026-08-11 10:06:18+00 | 2026-08-11 10:06:47+00
+ 3471847196 | IMAGE             | status_code=404, bad response status code 404                          |     1 | 2026-08-08 17:40:43+00 | 2026-08-08 17:40:43+00
+ baobaobao  | 开发              | status_code=401, invalid session                                       |     1 | 2026-08-06 07:37:52+00 | 2026-08-06 07:37:52+00
+ CCiii      | user group (auto) | status_code=502, image poll timeout after 300.0s (conversation_id=6a7b |     1 | 2026-08-11 18:12:54+00 | 2026-08-11 18:12:54+00
+(7 rows)
+
+
+===== J. exact timestamps of 413 + duplicate-prompt rows =====
+   id   |           ts           | username |   token_name    | is_stream | use_time |                           content                            
+--------+------------------------+----------+-----------------+-----------+----------+--------------------------------------------------------------
+ 790097 | 2026-08-05 07:27:32+00 | root     | tnexus-test-key | f         |        0 | status_code=429, duplicate-prompt: identical image prompt re
+ 790098 | 2026-08-05 07:27:33+00 | root     | tnexus-test-key | f         |        0 | status_code=429, duplicate-prompt: identical image prompt re
+ 791881 | 2026-08-05 09:09:46+00 | root     | tnexus-test-key | f         |        0 | status_code=429, duplicate-prompt: identical image prompt re
+ 791906 | 2026-08-05 09:10:42+00 | root     | tnexus-test-key | f         |        0 | status_code=429, duplicate-prompt: identical image prompt re
+ 791913 | 2026-08-05 09:10:53+00 | root     | tnexus-test-key | f         |        0 | status_code=429, duplicate-prompt: identical image prompt re
+ 791992 | 2026-08-05 09:14:26+00 | root     | tnexus-test-key | f         |        0 | status_code=429, duplicate-prompt: identical image prompt re
+ 869514 | 2026-08-12 04:37:12+00 | alone123 | gpt生图         | t         |        3 | status_code=502, conversation HTTP 413 Payload Too Large: {"
+ 869515 | 2026-08-12 04:37:16+00 | alone123 | gpt生图         | t         |        1 | status_code=502, conversation HTTP 413 Payload Too Large: {"
+ 869516 | 2026-08-12 04:37:21+00 | alone123 | gpt生图         | t         |        1 | status_code=502, conversation HTTP 413 Payload Too Large: {"
+ 869518 | 2026-08-12 04:37:27+00 | alone123 | gpt生图         | t         |        1 | status_code=502, conversation HTTP 413 Payload Too Large: {"
+ 869520 | 2026-08-12 04:37:39+00 | alone123 | gpt生图         | t         |        2 | status_code=502, conversation HTTP 413 Payload Too Large: {"
+ 869522 | 2026-08-12 04:37:58+00 | alone123 | gpt生图         | t         |        1 | status_code=502, conversation HTTP 413 Payload Too Large: {"
+(12 rows)
+
+
+===== K. is_stream / model for all type=5 on 115 (7d) =====
+ is_stream | count 
+-----------+-------
+ f         |    23
+ t         |    23
+(2 rows)
+
+
+===== L. does a FAILED channel test write a log row? look for 模型测试 in type=5 =====
+ type | token_name |   left   | count 
+------+------------+----------+-------
+    2 | 模型测试   | 模型测试 |    60
+(1 row)
+
+
+===== M. full 7d totals for 115 with/without channel-test rows =====
+ ok_all | fail_all | ok_no_test | fail_no_test | ok_real | fail_real 
+--------+----------+------------+--------------+---------+-----------
+     79 |       46 |         49 |           46 |      11 |        42
+(1 row)
+
+
+===== N. use_time distribution for successful 115 requests (7d) =====
+ count | min | p50 | p90 | p95 | p99 | max 
+-------+-----+-----+-----+-----+-----+-----
+    79 |   2 |  39 |  97 | 136 | 407 | 407
+(1 row)
+
+
+===== O. NewAPI retry / general settings =====
+                    key                    | left 
+-------------------------------------------+------
+ monitor_setting.auto_test_channel_enabled | true
+ monitor_setting.auto_test_channel_minutes | 120
+(2 rows)
+
+
+===== P. channel 115 setting/param_override/status_code_mapping =====
+ id  | scm | setting | po | settings2 
+-----+-----+---------+----+-----------
+ 114 |     |         |    | 
+ 115 |     |         |    | 
+(2 rows)
+

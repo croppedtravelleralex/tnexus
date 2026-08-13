@@ -1,0 +1,32 @@
+===== X. do channel-test rows consume quota/tokens? =====
+    token_name     | count | sum_quota | sum_pt | sum_ct | avg_use_time 
+-------------------+-------+-----------+--------+--------+--------------
+ 生成              |    99 |   4950000 |  26952 | 163350 |         62.9
+ 模型测试          |    60 |  30000000 |      0 |      0 |          3.2
+ tnexus-test-key   |    35 |   1750000 |    122 |  57750 |         85.7
+ 生图              |    18 |    900000 |   4592 |  29700 |         56.3
+ css               |     7 |    350000 |   1053 |  11550 |         57.0
+ 画图              |     5 |    250000 |   1352 |   3300 |         64.0
+ user group (auto) |     3 |    150000 |   6161 |   4950 |         38.7
+ 测试密钥          |     2 |    150000 |     34 |   3300 |         60.5
+ tt                |     2 |    100000 |    165 |   3300 |         38.0
+ text              |     2 |   5005892 |  20162 |   2824 |         34.5
+ gpt生图           |     1 |     50000 |     12 |   1650 |         39.0
+ uiui              |     1 |     50000 |      2 |   1650 |         54.0
+ 图                |     1 |     50000 |     12 |   1650 |         41.0
+(13 rows)
+
+
+===== Y. gateway compose/env files on panda =====
+total 52
+drwxr-xr-x  5 root root  4096 Aug 12 15:42 .
+drwxr-xr-x 33 root root  4096 Aug  5 21:16 ..
+drwxr-xr-x  6 root root  4096 Aug  2 17:14 data
+drwxr-xr-x  3 root root  4096 Jul 30 11:24 deploy
+-rw-------  1 root root  2596 Aug 12 15:42 .env
+drwxr-xr-x  2 root root 28672 Aug 12 17:01 pure_http_keys
+--- .env grep ---
+/root/TNexus/deploy/panda/gateway-compose.yml:18:      IMAGE_ACCOUNT_INFLIGHT_MAX: "1"
+/root/TNexus/deploy/panda/gateway-compose.yml:20:      UPSTREAM_IMAGE_POLL_TIMEOUT_SECS: "300"
+
+===== Z. gateway service definition =====

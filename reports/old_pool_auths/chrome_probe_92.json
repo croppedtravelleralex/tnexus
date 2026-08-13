@@ -1,0 +1,13 @@
+{
+  "account_id": 92,
+  "identity_key": "4565233160022ec961edc134af05d7264b78528095392b089eff532a91cc14e1",
+  "headed": true,
+  "ui_send": false,
+  "ui_login_wall": false,
+  "ui_reply_seen": false,
+  "http_chat": [],
+  "ws_frames": [],
+  "final_url": "https://grok.com/chat",
+  "error": null,
+  "ok": false
+}

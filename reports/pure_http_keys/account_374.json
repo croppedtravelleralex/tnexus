@@ -1,0 +1,13 @@
+{
+  "email": "account_374@oldpool.local",
+  "sso": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiNGExYWNmY2MtMzliZS00ZWRiLWEzOGUtOTVhYmQ1ZDc0MmI2In0.1vKawTBr7Nn2kd30LkBUivb6HFB8MB0CyzCO0qBlfcI",
+  "meta_b64": "pZPwwYPRd3BgUd9xbMYCV4mAROKCCwMrA1vu7GHre//HP3BgYR2GfvJZjtJDGwkx",
+  "meta_html": "pZPwwYPRd3BgUd9xbMYCV4mAROKCCwMrA1vu7GHre//HP3BgYR2GfvJZjtJDGwkx",
+  "fingerprint": "",
+  "trailer_hex": "03",
+  "cookie": "sso=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiNGExYWNmY2MtMzliZS00ZWRiLWEzOGUtOTVhYmQ1ZDc0MmI2In0.1vKawTBr7Nn2kd30LkBUivb6HFB8MB0CyzCO0qBlfcI; sso-rw=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiNGExYWNmY2MtMzliZS00ZWRiLWEzOGUtOTVhYmQ1ZDc0MmI2In0.1vKawTBr7Nn2kd30LkBUivb6HFB8MB0CyzCO0qBlfcI; x-userid=97d31f5a-ec14-4ac7-97cd-5b675539ee7f; grok_device_id=738badbe-28d0-4c64-a4e6-b20fe89d1d29; cf_clearance=FIgnyMY0e.F4HwnGiwxt4CnXvPOmJmG3Fr.XnZ0Q.qU-1786505518-1.2.1.1-.tjrj_dkPHl_opMCpVvI0ooxUFa37OMeag91CKbDl7Ypeg91xug85jheT2uGinmuWKvI8n8vi4Ls1fDKnNlT5iDAS.S3xzsf5msUzjUmUcCUTelv6hyD0SI8MOh8kyYSgttab_HZsD4rKOqDV6CcItuZoHlJ8FusXZjC5U4ixocn8q6Mz9qJKjILU6Hza5T7MdmxijjIM5HL07IYDiUFtxvbauxPfXEIAmTZQiITmTeQjgudyg1ilpabRXjiDeo88dZfACbHSkeF7_cI37aKt3II7p7pDm68fl0MjAOiBNmL8q_XjnqXeWCcFvOWER3OuO5sCtEcMM6SHx77O1OgAQ26K0KW_6pvNCZFn8FMyvo; __cf_bm=hCWKgb3YFXctQL_OuxRltYNgJAZbDwefnEx5MsWCqzQ-1786505518.6624372-1.0.1.1-_Ykn2qMleuzvvTiA_YoYIAG4rk_rfbIpOua95qdwKsgPoPj5akAtbQ19DWt0PgknKesh1GJbGXkZBhbEp8dEJjRi8ynqTC3r.0HJTcE97ASY2BMToca_tPMJCfW_N.Mm",
+  "has_cf": true,
+  "extracted_at": "2026-08-12T11:32:07",
+  "digest_sample": "",
+  "account_id": 374
+}

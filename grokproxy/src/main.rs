@@ -38,7 +38,8 @@ async fn main() -> Result<()> {
     let config = Config::from_env();
     let store = Store::open(&config.database_path)?;
     let upstream = Upstream::new(&config.base_url, config.upstream_timeout_secs)
-        .with_default_proxy(config.default_proxy.clone());
+        .with_default_proxy(config.default_proxy.clone())
+        .with_sticky_relay(config.sticky_relay.clone());
     let pool = Pool::new(store, upstream, config.max_attempts);
 
     if config.admin_key.is_empty() {

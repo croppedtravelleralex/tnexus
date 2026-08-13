@@ -1,0 +1,11 @@
+# 瘦镜像：仅 grok2api-rs 二进制 + signer（本机构建后 save/load 发布）
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY grok2api-rs /usr/local/bin/grok2api-rs
+COPY grok_sign_standalone.js /opt/grok-signer/grok_sign_standalone.js
+ENV GROK2API_ADDR=0.0.0.0:8000
+ENV GROK2API_SIGNER_MODE=remote
+ENV GROK_SIGNER_ASSET=/opt/grok-signer/grok_sign_standalone.js
+EXPOSE 8000
+ENTRYPOINT ["/usr/local/bin/grok2api-rs"]

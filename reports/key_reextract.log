@@ -1,0 +1,97 @@
+missing_fingerprint=164
+
+>>> re-extract 1..40 of 164
+[3/40] FAIL 100: session extract failed: digests=0 sigs=0 meta_html=False
+[1/40] FAIL 88: session extract failed: digests=0 sigs=0 meta_html=False
+[2/40] FAIL 99: session extract failed: digests=0 sigs=0 meta_html=False
+[5/40] FAIL 210: session extract failed: digests=0 sigs=0 meta_html=False
+[6/40] FAIL 221: session extract failed: digests=0 sigs=0 meta_html=False
+[4/40] FAIL 209: session extract failed: digests=0 sigs=0 meta_html=False
+[10/40] FAIL 235: Page.goto: net::ERR_CONNECTION_CLOSED at https://grok.com/
+Call log:
+  - navigating to "https://grok.com/", waiting until "domcontentloaded"
+
+[11/40] FAIL 237: Page.goto: net::ERR_CONNECTION_CLOSED at https://grok.com/
+Call log:
+  - navigating to "https://grok.com/", waiting until "domcontentloaded"
+
+[8/40] FAIL 226: Page.goto: net::ERR_CONNECTION_CLOSED at https://grok.com/
+Call log:
+  - navigating to "https://grok.com/", waiting until "domcontentloaded"
+
+[7/40] FAIL 222: session extract failed: digests=0 sigs=0 meta_html=False
+[9/40] FAIL 234: Page.goto: net::ERR_CONNECTION_CLOSED at https://grok.com/
+Call log:
+  - navigating to "https://grok.com/", waiting until "domcontentloaded"
+
+[12/40] FAIL 239: Page.goto: net::ERR_CONNECTION_CLOSED at https://grok.com/
+Call log:
+  - navigating to "https://grok.com/", waiting until "domcontentloaded"
+
+[16/40] FAIL 248: session extract failed: digests=0 sigs=0 meta_html=False
+[17/40] FAIL 251: session extract failed: digests=0 sigs=0 meta_html=False
+[18/40] FAIL 253: session extract failed: digests=0 sigs=0 meta_html=False
+[14/40] FAIL 245: session extract failed: digests=0 sigs=0 meta_html=False
+[15/40] FAIL 247: session extract failed: digests=0 sigs=0 meta_html=False
+[13/40] FAIL 240: session extract failed: digests=0 sigs=0 meta_html=False
+[19/40] FAIL 254: session extract failed: digests=0 sigs=0 meta_html=False
+[21/40] FAIL 256: session extract failed: digests=0 sigs=0 meta_html=False
+[22/40] FAIL 257: session extract failed: digests=0 sigs=0 meta_html=False
+[20/40] FAIL 255: session extract failed: digests=0 sigs=0 meta_html=False
+[23/40] FAIL 258: session extract failed: digests=0 sigs=0 meta_html=False
+[24/40] FAIL 259: session extract failed: digests=0 sigs=0 meta_html=False
+[25/40] FAIL 260: session extract failed: digests=0 sigs=0 meta_html=False
+[26/40] FAIL 263: session extract failed: digests=0 sigs=0 meta_html=False
+[27/40] FAIL 264: session extract failed: digests=0 sigs=0 meta_html=False
+[28/40] FAIL 266: session extract failed: digests=0 sigs=0 meta_html=False
+[29/40] FAIL 267: session extract failed: digests=0 sigs=0 meta_html=False
+[30/40] FAIL 268: session extract failed: digests=0 sigs=0 meta_html=False
+[31/40] FAIL 269: session extract failed: digests=0 sigs=0 meta_html=False
+[33/40] FAIL 271: session extract failed: digests=0 sigs=0 meta_html=False
+[32/40] FAIL 270: session extract failed: digests=0 sigs=0 meta_html=False
+[35/40] FAIL 275: session extract failed: digests=0 sigs=0 meta_html=False
+[36/40] FAIL 277: session extract failed: digests=0 sigs=0 meta_html=False
+[34/40] FAIL 274: session extract failed: digests=0 sigs=0 meta_html=False
+[39/40] FAIL 280: Page.goto: net::ERR_CONNECTION_CLOSED at https://grok.com/
+Call log:
+  - navigating to "https://grok.com/", waiting until "domcontentloaded"
+
+[38/40] FAIL 279: Page.goto: net::ERR_CONNECTION_CLOSED at https://grok.com/
+Call log:
+  - navigating to "https://grok.com/", waiting until "domcontentloaded"
+
+[37/40] FAIL 278: Page.goto: net::ERR_CONNECTION_CLOSED at https://grok.com/
+Call log:
+  - navigating to "https://grok.com/", waiting until "domcontentloaded"
+
+[40/40] FAIL 281: Page.goto: net::ERR_CONNECTION_CLOSED at https://grok.com/
+Call log:
+  - navigating to "https://grok.com/", waiting until "domcontentloaded"
+
+{"ok": 0, "fail": 40, "skip": 0, "n": 40, "workers": 6}
+
+>>> re-extract 41..80 of 164
+[4/40] FAIL 286: Page.goto: net::ERR_CONNECTION_CLOSED at https://grok.com/
+Call log:
+  - navigating to "https://grok.com/", waiting until "domcontentloaded"
+
+[6/40] FAIL 290: Page.goto: net::ERR_CONNECTION_CLOSED at https://grok.com/
+Call log:
+  - navigating to "https://grok.com/", waiting until "domcontentloaded"
+
+[5/40] FAIL 287: Page.goto: net::ERR_CONNECTION_CLOSED at https://grok.com/
+Call log:
+  - navigating to "https://grok.com/", waiting until "domcontentloaded"
+
+[1/40] FAIL 282: Page.goto: net::ERR_CONNECTION_CLOSED at https://grok.com/
+Call log:
+  - navigating to "https://grok.com/", waiting until "domcontentloaded"
+
+[3/40] FAIL 285: Page.goto: net::ERR_CONNECTION_CLOSED at https://grok.com/
+Call log:
+  - navigating to "https://grok.com/", waiting until "domcontentloaded"
+
+[2/40] FAIL 284: Page.goto: net::ERR_CONNECTION_CLOSED at https://grok.com/
+Call log:
+  - navigating to "https://grok.com/", waiting until "domcontentloaded"
+

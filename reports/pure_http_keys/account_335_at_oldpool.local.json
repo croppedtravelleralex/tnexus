@@ -1,0 +1,12 @@
+{
+  "email": "account_335@oldpool.local",
+  "sso": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiNDAwZmU2ZGUtNDFmNS00MWIxLWI1MmYtYzc2ZDJlNjQ5ZGQ3In0.QgEOjpYOcHhEKOaKl7531szsBHn4pfrik7TvnKIxWX8",
+  "meta_b64": "YyD8Mcv22gZpCuY+zRAACG1s5FFPPvAfo4Ovxf+yEd/S95Od9flZbu9Vv8RP0FFt",
+  "meta_html": "YyD8Mcv22gZpCuY+zRAACG1s5FFPPvAfo4Ovxf+yEd/S95Od9flZbu9Vv8RP0FFt",
+  "fingerprint": "",
+  "trailer_hex": "03",
+  "cookie": "sso=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiNDAwZmU2ZGUtNDFmNS00MWIxLWI1MmYtYzc2ZDJlNjQ5ZGQ3In0.QgEOjpYOcHhEKOaKl7531szsBHn4pfrik7TvnKIxWX8; sso-rw=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiNDAwZmU2ZGUtNDFmNS00MWIxLWI1MmYtYzc2ZDJlNjQ5ZGQ3In0.QgEOjpYOcHhEKOaKl7531szsBHn4pfrik7TvnKIxWX8; x-userid=1b12ad55-4d8e-41da-9b65-708ab89cf1b4; grok_device_id=f00fc267-1ae0-4938-8949-4be3b7755856; __cf_bm=SOY1x4r.6vvkuv26LSkzs2CONQ_8UlRQauKFOnUN62o-1786505312.7835875-1.0.1.1-ADszBIJdD5nhdEEYC5_DxK8El86infjIGUO4js.TA_.r4CC1ww880LDcI.A_IK52YiOcjpIq7Q79OWeCEwXE_BHQdUD84LN.9kdxBHuO3tQo3ogq04W_nMuTKIRwdG.6",
+  "has_cf": false,
+  "extracted_at": "2026-08-12T11:28:36",
+  "digest_sample": ""
+}

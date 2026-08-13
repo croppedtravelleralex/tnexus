@@ -1,0 +1,17 @@
+{
+  "account_id": 92,
+  "identity_key": "4565233160022ec961edc134af05d7264b78528095392b089eff532a91cc14e1",
+  "headed": true,
+  "proxy": "http://127.0.0.1:7897",
+  "ui_send": true,
+  "ui_login_wall": false,
+  "ui_reply_seen": true,
+  "http_chat": [],
+  "ws_events": [
+    "pong"
+  ],
+  "ws_reply": "",
+  "final_url": "https://grok.com/chat",
+  "error": null,
+  "ok": true
+}

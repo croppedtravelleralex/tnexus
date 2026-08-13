@@ -20,6 +20,12 @@ GROKPROXY_ADMIN_KEY=
 # Egress for accounts with no sticky proxy_url. Leave empty for direct.
 GROKPROXY_PROXY=
 
+# Where the per-account sticky relay actually listens (host:port).
+# Imported credentials carry the address of whatever deployment minted them
+# (often an old container's bridge gateway); this rewrites it while keeping the
+# sticky user:pass. Empty = use each credential's address verbatim.
+GROKPROXY_STICKY_RELAY=127.0.0.1:18100
+
 GROKPROXY_UPSTREAM=https://cli-chat-proxy.grok.com/v1
 GROKPROXY_TIMEOUT_SECS=120
 GROKPROXY_MAX_ATTEMPTS=3

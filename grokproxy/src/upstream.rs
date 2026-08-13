@@ -161,12 +161,25 @@ pub fn truncate(text: &str, limit: usize) -> String {
 /// mostly-stale pool then fails requests purely on timeouts.
 const REFRESH_TIMEOUT_SECS: u64 = 15;
 
+/// Swap the host:port of a proxy URL while keeping scheme and credentials.
+pub fn rewrite_proxy_host(proxy: &str, relay: &str) -> String {
+    let (scheme, rest) = match proxy.split_once("://") {
+        Some((scheme, rest)) => (scheme, rest),
+        None => ("http", proxy),
+    };
+    match rest.rsplit_once('@') {
+        Some((credentials, _host)) => format!("{scheme}://{credentials}@{relay}"),
+        None => format!("{scheme}://{relay}"),
+    }
+}
+
 #[derive(Clone)]
 pub struct Upstream {
     base_url: String,
     timeout: Duration,
     refresh_timeout: Duration,
     default_proxy: String,
+    sticky_relay: String,
 }
 
 impl Upstream {
@@ -177,6 +190,7 @@ impl Upstream {
             refresh_timeout: timeout.min(Duration::from_secs(REFRESH_TIMEOUT_SECS)),
             timeout,
             default_proxy: String::new(),
+            sticky_relay: String::new(),
         }
     }
 
@@ -191,14 +205,27 @@ impl Upstream {
         self
     }
 
+    /// Where the sticky relay actually listens, as `host:port`.
+    ///
+    /// Imported credentials carry a `proxy_url` whose host was whatever the
+    /// minting deployment used (e.g. an old container's bridge gateway). The
+    /// part worth keeping is the `user:pass`, which selects the sticky egress
+    /// slot; the address is deployment-specific and must be overridable.
+    pub fn with_sticky_relay(mut self, relay: impl Into<String>) -> Self {
+        self.sticky_relay = relay.into().trim().to_string();
+        self
+    }
+
     /// Per-account sticky egress wins; the configured default is the fallback.
-    pub fn effective_proxy<'a>(&'a self, account_proxy: &'a str) -> &'a str {
+    pub fn effective_proxy(&self, account_proxy: &str) -> String {
         let trimmed = account_proxy.trim();
         if trimmed.is_empty() {
-            &self.default_proxy
-        } else {
-            trimmed
+            return self.default_proxy.clone();
         }
+        if self.sticky_relay.is_empty() {
+            return trimmed.to_string();
+        }
+        rewrite_proxy_host(trimmed, &self.sticky_relay)
     }
 
     /// One client per call: each account may carry a different sticky egress,
@@ -213,7 +240,7 @@ impl Upstream {
             .user_agent(format!("grok-cli/{CLIENT_VERSION}"));
         let proxy = self.effective_proxy(proxy_url);
         if !proxy.is_empty() {
-            builder = builder.proxy(reqwest::Proxy::all(proxy)?);
+            builder = builder.proxy(reqwest::Proxy::all(&proxy)?);
         }
         Ok(builder.build()?)
     }
@@ -501,5 +528,48 @@ mod tests {
     fn a_short_chat_timeout_also_shortens_refresh() {
         let upstream = Upstream::new(DEFAULT_BASE_URL, 8);
         assert_eq!(upstream.refresh_timeout(), Duration::from_secs(8));
+    }
+
+    #[test]
+    fn sticky_relay_rewrite_keeps_the_credentials() {
+        // The user:pass selects the sticky egress slot; only the address moves.
+        assert_eq!(
+            rewrite_proxy_host("http://mail-bob:sticky@172.20.0.1:18100", "127.0.0.1:18100"),
+            "http://mail-bob:sticky@127.0.0.1:18100"
+        );
+    }
+
+    #[test]
+    fn rewrite_handles_missing_scheme_and_credentials() {
+        assert_eq!(
+            rewrite_proxy_host("172.20.0.1:18100", "127.0.0.1:18100"),
+            "http://127.0.0.1:18100"
+        );
+        assert_eq!(
+            rewrite_proxy_host("http://172.20.0.1:18100", "127.0.0.1:18100"),
+            "http://127.0.0.1:18100"
+        );
+    }
+
+    #[test]
+    fn relay_override_applies_only_to_account_proxies() {
+        let upstream = Upstream::new(DEFAULT_BASE_URL, 5)
+            .with_default_proxy("http://default:1")
+            .with_sticky_relay("127.0.0.1:18100");
+        assert_eq!(
+            upstream.effective_proxy("http://mail-a:sticky@172.20.0.1:18100"),
+            "http://mail-a:sticky@127.0.0.1:18100"
+        );
+        // A blank account proxy still falls through to the default untouched.
+        assert_eq!(upstream.effective_proxy(""), "http://default:1");
+    }
+
+    #[test]
+    fn without_relay_override_account_proxy_is_used_as_is() {
+        let upstream = Upstream::new(DEFAULT_BASE_URL, 5);
+        assert_eq!(
+            upstream.effective_proxy("http://mail-a:sticky@172.20.0.1:18100"),
+            "http://mail-a:sticky@172.20.0.1:18100"
+        );
     }
 }

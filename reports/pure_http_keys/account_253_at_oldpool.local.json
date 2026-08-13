@@ -1,0 +1,12 @@
+{
+  "email": "account_253@oldpool.local",
+  "sso": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiMDA3YjVmZGEtMTFkOC00ODRjLWIzOTEtYzI4OTFhYjdkOGIzIn0.xf1H2skGlujxMAZElGV92A5iv0CL-P80Ww3jm4EdZHI",
+  "meta_b64": "Oj7Sdz4VMhM3dpG0E1VQ/RBwfp0uV2nOQE/HGahnvUkjWqCqeyEAQV3LR3qU+G5b",
+  "meta_html": "Oj7Sdz4VMhM3dpG0E1VQ/RBwfp0uV2nOQE/HGahnvUkjWqCqeyEAQV3LR3qU+G5b",
+  "fingerprint": "",
+  "trailer_hex": "03",
+  "cookie": "sso=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiMDA3YjVmZGEtMTFkOC00ODRjLWIzOTEtYzI4OTFhYjdkOGIzIn0.xf1H2skGlujxMAZElGV92A5iv0CL-P80Ww3jm4EdZHI; sso-rw=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiMDA3YjVmZGEtMTFkOC00ODRjLWIzOTEtYzI4OTFhYjdkOGIzIn0.xf1H2skGlujxMAZElGV92A5iv0CL-P80Ww3jm4EdZHI; x-userid=93f22b75-4703-480d-9981-02bad74532b1; grok_device_id=cc129658-48aa-4e35-8f1e-f6a6592cdf34; mp_ea93da913ddb66b6372b89d97b1029ac_mixpanel=%7B%22distinct_id%22%3A%2293f22b75-4703-480d-9981-02bad74532b1%22%2C%22%24device_id%22%3A%223d82f7c3-ce1d-4876-b2ca-3aa657c596c6%22%2C%22%24initial_referrer%22%3A%22%24direct%22%2C%22%24initial_referring_domain%22%3A%22%24direct%22%2C%22%24user_id%22%3A%2293f22b75-4703-480d-9981-02bad74532b1%22%7D; i18nextLng=zh; cf_clearance=.nzeU88qxNnqF.NX7KeYVSRmkRP4dwr.9skSOrve6v8-1786501658-1.2.1.1-xxolGUhJeOIwoiQ8NlnZi3kM1kdofBu74Je7gQiLhQSQFQlzbhR4LER.Jpaw_Cjeq4KrqvG2LLj8SgGCT7qY6Do2KUy1mFuikHrH_uy.SwvopOjS1vSTYn9YlLHooVUsAHsF.jl7RttJUJlzkqtGn6mfqhE0bt.gNar_21H.8js35tMyR3MB_7XYQCai52oPEVUhRY2N747GsMjc.joN0CMGrUsYDu6A8INmlMqrfcy0pdgHkDg6uhB5eujC_OLYo1croJ_a_mpQs_lC7dWE.Ee7CXmS3PdriDaEUqvVeLIjRj1ksH7V86IkcTWSSdg5SDtZdcRcEBKmH4YtFFLHWHfeQQcX4xoibhXHfD0dBGc; __cf_bm=.4BimYXR6nF2zAIHwCkuhpxGXsYsHE4qO9APgLPGivY-1786501658.027614-1.0.1.1-osXG_WEwWSm0OhkJXkQASjp3fmWEnhrF9y8lmuTYpjYM9uh8WEShmqd5HGlgx9cdpAK5OzN4oJwZv.H5vpZWKPjUFcsIiUhqdWv_Jyh46S8eSkbjB3wPh1Z4GN_zzqcN; __cuid=dee57830-5167-451b-837c-b7ff278c17ef; __cuid=dee57830-5167-451b-837c-b7ff278c17ef",
+  "has_cf": true,
+  "extracted_at": "2026-08-12T10:27:40",
+  "digest_sample": ""
+}

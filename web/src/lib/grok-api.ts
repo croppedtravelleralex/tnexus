@@ -1,4 +1,5 @@
 import { apiBase } from "@/lib/api-base";
+import { extractErrorMessage } from "@/lib/http";
 
 /**
  * Grok 独立 API client：默认经 TNexus `/api/grok/v1` 代理（cookie 鉴权，无需前端持 key）。
@@ -160,19 +161,7 @@ export const grokApi = {
     );
     if (!res.ok) {
       const text = await res.text();
-      let message = text || res.statusText;
-      try {
-        const json = JSON.parse(text) as {
-          error?: { message?: string } | string;
-          message?: string;
-        };
-        message =
-          typeof json.error === "string"
-            ? json.error
-            : (json.error?.message ?? json.message ?? message);
-      } catch {
-        // keep raw text
-      }
+      let message = extractErrorMessage(text, res.statusText);
       if (res.status === 500 || res.status === 503) {
         message = `${message}（Grok 生图服务未就绪，请联系管理员）`;
       }

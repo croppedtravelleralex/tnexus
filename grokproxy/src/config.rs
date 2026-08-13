@@ -16,6 +16,9 @@ pub struct Config {
     pub max_attempts: usize,
     /// Egress used when an account carries no sticky `proxy_url`.
     pub default_proxy: String,
+    /// `host:port` where the sticky relay really listens; rewrites the address
+    /// baked into imported credentials while keeping their sticky user:pass.
+    pub sticky_relay: String,
 }
 
 fn env_or(key: &str, fallback: &str) -> String {
@@ -39,6 +42,7 @@ impl Config {
                 .unwrap_or(120),
             max_attempts: env_or("GROKPROXY_MAX_ATTEMPTS", "3").parse().unwrap_or(3),
             default_proxy: env_or("GROKPROXY_PROXY", ""),
+            sticky_relay: env_or("GROKPROXY_STICKY_RELAY", ""),
         }
     }
 

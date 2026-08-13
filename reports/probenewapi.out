@@ -1,0 +1,233 @@
+===== A. channels table columns =====
+     column_name      |     data_type     
+----------------------+-------------------
+ id                   | bigint
+ type                 | bigint
+ key                  | text
+ open_ai_organization | text
+ test_model           | text
+ status               | bigint
+ name                 | text
+ weight               | bigint
+ created_time         | bigint
+ test_time            | bigint
+ response_time        | bigint
+ base_url             | text
+ other                | text
+ balance              | numeric
+ balance_updated_time | bigint
+ models               | text
+ group                | character varying
+ used_quota           | bigint
+ model_mapping        | text
+ status_code_mapping  | character varying
+ priority             | bigint
+ auto_ban             | bigint
+ other_info           | text
+ tag                  | text
+ setting              | text
+ param_override       | text
+ header_override      | text
+ remark               | character varying
+ channel_info         | json
+ settings             | text
+(30 rows)
+
+
+===== B. channel 114/115 health =====
+ id  |       name       | status | weight | priority | response_time | test_time  | auto_ban | used_quota |                              models                               
+-----+------------------+--------+--------+----------+---------------+------------+----------+------------+-------------------------------------------------------------------
+ 114 | tnexus-gateway   |      1 |     30 |      100 |          5513 | 1786518993 |        0 |   27606942 | gpt-image-2,gpt-5,gpt-5-1,gpt-5-2,gpt-5-3,gpt-5-3-mini,gpt-5-mini
+ 115 | tnexus-dedicated |      1 |    100 |      100 |          3226 | 1786519127 |        0 |    3750000 | gpt-image-2
+(2 rows)
+
+
+===== C. logs table columns =====
+     column_name     |     data_type     
+---------------------+-------------------
+ id                  | bigint
+ user_id             | bigint
+ created_at          | bigint
+ type                | bigint
+ content             | text
+ username            | text
+ token_name          | text
+ model_name          | text
+ quota               | bigint
+ prompt_tokens       | bigint
+ completion_tokens   | bigint
+ use_time            | bigint
+ is_stream           | boolean
+ channel_id          | bigint
+ channel_name        | text
+ token_id            | bigint
+ group               | text
+ ip                  | text
+ request_id          | character varying
+ other               | text
+ upstream_request_id | character varying
+(21 rows)
+
+
+===== D. channel 115 log type breakdown (7d) =====
+ type | count 
+------+-------
+    2 |    79
+    5 |    46
+(2 rows)
+
+
+===== E. channel 115 error breakdown (7d), type=2(consume)/5(error) =====
+ type |                                                                            content                                                                            | count 
+------+---------------------------------------------------------------------------------------------------------------------------------------------------------------+-------
+    2 | 大小 1024x1024, 品质 standard, 生成数量 1                                                                                                                     |    39
+    5 | status_code=401, invalid session                                                                                                                              |    32
+    2 | 模型测试                                                                                                                                                      |    30
+    2 | 品质 standard, 生成数量 1                                                                                                                                     |     9
+    5 | status_code=502, conversation HTTP 413 Payload Too Large: {"detail":{"message":"你提交的消息过长，请编辑后重新发送。","code":"message_length_exceeds_limit"}} |     6
+    5 | status_code=429, duplicate-prompt: identical image prompt recently submitted                                                                                  |     4
+    5 | status_code=500, upstream error: do request failed                                                                                                            |     2
+    5 | status_code=502, image poll timeout after 300.0s (conversation_id=6a7b64da-860c-83ec-88ca-cdf5a9c7ce04, attempts=79)                                          |     1
+    2 | 大小 1080x1920, 品质 standard, 生成数量 1                                                                                                                     |     1
+    5 | status_code=404, bad response status code 404                                                                                                                 |     1
+(10 rows)
+
+
+===== F. channel 115 rows with username/token to spot channel-test rows (7d) =====
+ type |  username  |    token_name     | model_name  | count 
+------+------------+-------------------+-------------+-------
+    5 | alone123   | gpt生图           | gpt-image-2 |    39
+    2 | root       | tnexus-test-key   | gpt-image-2 |    38
+    2 | root       | 模型测试          | gpt-image-2 |    30
+    2 | 520hh1314  | css               | gpt-image-2 |     7
+    5 | root       | tnexus-test-key   | gpt-image-2 |     4
+    2 | hhhl_1219  | 画图              | gpt-image-2 |     2
+    5 | 3471847196 | IMAGE             | gpt-image-2 |     1
+    2 | CCiii      | user group (auto) | gpt-image-2 |     1
+    5 | baobaobao  | 开发              | gpt-image-2 |     1
+    5 | CCiii      | user group (auto) | gpt-image-2 |     1
+    2 | alone123   | gpt生图           | gpt-image-2 |     1
+(11 rows)
+
+
+===== G. channel_test / abilities related tables =====
+                           table_name                            
+-----------------------------------------------------------------
+ abilities
+ abilities_backup_20260715164458
+ authz_roles
+ casbin_rule
+ channel_backup_20260619_gptimage84
+ channels
+ channels_backup_20260715153251
+ checkins
+ closeapi_abilities_ch116_backup_20260808_0952_pre_ds_openai
+ closeapi_abilities_ch116_backup_20260808_1059_trim_models
+ closeapi_abilities_ch116_backup_20260808_1100_fix_models
+ closeapi_abilities_ch116_backup_20260808_1102_fix_models
+ closeapi_abilities_channel69_backup_20260616144256_pre_publish
+ closeapi_abilities_channel69_backup_202606211454_pre_north_nemo
+ closeapi_abilities_channel69_backup_20260621_234042_pre_unpubli
+ closeapi_abilities_channel69_backup_20260702_1542_pre_bigpickle
+ closeapi_abilities_channel69_backup_20260708_1210_pre_hy3
+ closeapi_aff_quota_direct_backup_20260615_1129
+ closeapi_announcements_backup_20260615_1136
+ closeapi_announcements_backup_20260615_2212
+ closeapi_cache_ratio_backup_20260615_2017
+ closeapi_channel116_backup_20260808_0952_pre_ds_openai
+ closeapi_channel116_backup_20260808_1059_trim_models
+ closeapi_channel116_backup_20260808_1100_fix_models
+ closeapi_channel116_backup_20260808_1102_fix_models
+ closeapi_channel69_backup_20260616143329_pre_mimo
+ closeapi_channel69_backup_202606211454_pre_north_nemotron
+ closeapi_channel69_backup_20260702_1518_pre_bigpickle
+ closeapi_channel69_backup_20260708_1210_pre_hy3
+ closeapi_channel69_status_backup_20260615093843
+ closeapi_channel69_status_backup_20260702_1601_pre_enable
+ closeapi_channel70_model_patch_backup_20260615
+ closeapi_channel87_backup_20260705_pre_server1_price
+ closeapi_direct_aff_trigger_backup_20260615_2110
+ closeapi_models_bigpickle_backup_20260702_1542_pre_bigpickle
+ closeapi_models_ds_mimo_backup_20260616143732_pre_publish
+ closeapi_models_hy3_backup_20260708_1210_pre_hy3
+ closeapi_models_north_nemotron_backup_202606211454_pre_publish
+ closeapi_models_north_nemotron_backup_20260621_234042_pre_unpub
+ closeapi_oauth_aid_map
+ closeapi_oauth_identity_history
+ closeapi_options_groups_backup_20260808_0952_pre_ds_openai
+ closeapi_options_pricing_backup_20260705_pre_server1_price
+ closeapi_options_pricing_backup_20260708_1210_pre_hy3
+ custom_oauth_providers
+ logs
+ midjourneys
+ models
+ oauth_aid_migration_backup_bindings
+ oauth_aid_migration_backup_history
+ ops_announcement_catalog
+ ops_announcement_reads
+ ops_announcement_recipients
+ ops_chat_ai_personas
+ ops_chat_bot_messages
+ ops_chat_bot_test_cache
+ ops_chat_notification_outbox
+ ops_chat_room_members_cache
+ ops_chat_user_bindings
+ ops_effect_template_logs
+ ops_email_auth_codes
+ ops_invite_edges
+ ops_inviter_id_backfill_backup_20260615020415
+ ops_log_facts
+ ops_red_packet_logs
+ ops_red_packet_shares
+ ops_red_packet_system_configs
+ ops_red_packets
+ ops_reward_audit_logs
+ ops_reward_budget_pools
+ ops_reward_claims
+ ops_reward_code_attempts
+ ops_reward_codes
+ ops_reward_configs
+ ops_reward_daily_budgets
+ ops_reward_daily_entries
+ ops_room_chronicles
+ ops_system_samples
+ ops_title_catalog
+ ops_user_events
+ ops_user_title_events
+ ops_user_titles
+ options
+ passkey_credentials
+ perf_metrics
+ prefill_groups
+ quota_data
+ redemptions
+ setups
+ subscription_orders
+ subscription_plans
+ subscription_pre_consume_records
+ system_instances
+ system_task_locks
+ system_tasks
+ tasks
+ tokens
+ top_ups
+ two_fa_backup_codes
+ two_fas
+ user_oauth_bindings
+ user_subscriptions
+ users
+ vendors
+(104 rows)
+
+
+===== H. NewAPI auto-disable / retry settings ====== 
+                    key                    | left  
+-------------------------------------------+-------
+ AutoGroups                                | []
+ AutomaticDisableChannelEnabled            | false
+ AutomaticEnableChannelEnabled             | true
+ DefaultUseAutoGroup                       | false
+ monitor_setting.auto_test_channel_enabled | true
+ monitor_setting.auto_test_channel_minutes | 120
+(6 rows)
+

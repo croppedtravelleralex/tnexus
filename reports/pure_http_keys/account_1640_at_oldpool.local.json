@@ -1,0 +1,12 @@
+{
+  "email": "account_1640@oldpool.local",
+  "sso": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiYjJjMjRkZTItZWJjYy00NTNkLTgyY2EtNDM4MDM4OWEwZTcwIn0.xLtnkgy892qr6cderleA22yCjIbNiglxp8ELt2cMJYI",
+  "meta_b64": "/d11uDKDtemUfWqZKJ2O4zYG6B65OPQ/xRZXXJPdjJTgGjTyHvb0anepYAvQvdrJ",
+  "meta_html": "/d11uDKDtemUfWqZKJ2O4zYG6B65OPQ/xRZXXJPdjJTgGjTyHvb0anepYAvQvdrJ",
+  "fingerprint": "ef7f2f0fae147ae147ae02b851eb851eb8602b851eb851eb860fae147ae147ae00",
+  "trailer_hex": "03",
+  "cookie": "sso=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiYjJjMjRkZTItZWJjYy00NTNkLTgyY2EtNDM4MDM4OWEwZTcwIn0.xLtnkgy892qr6cderleA22yCjIbNiglxp8ELt2cMJYI; sso-rw=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiYjJjMjRkZTItZWJjYy00NTNkLTgyY2EtNDM4MDM4OWEwZTcwIn0.xLtnkgy892qr6cderleA22yCjIbNiglxp8ELt2cMJYI; x-userid=f99ad99d-88aa-42db-98c8-5ac3b74757a7; grok_device_id=80dac340-97bf-4a16-b784-ed1c0a61eb34; cf_clearance=u2Pr0PqMTmXsoyFzJPeZ0C5ItXQmH3LSY3Puddx8Q_o-1786525854-1.2.1.1-4FKeY7cjUNQy1KpwGPMKvNhcmxZyccclBHM0KUuurS3JIbyJQxWvYflv5h5XhU1QEAB3nb3jk9uP.Gr.VkfhZFeB.oN8eFcjJAYQyzkKM3KBfiB_wcaqjrdZTRIv6B5Okodn.q1ISfaTKD7iZGRO2szdkXoxiVZpuO5j_O7Lskgw47Kj0qX5pVg1He1rRr4BRR.jS_e2wEPAOvqUJKtSaYFStLtg96kQWJ_usmD7SzXujdzfyqRZp7pWouvn2HcBexL6jxnhgxNkzx8gTGvZ5MOwjF.AMyevObNqKZKNvTnSgXlZKWNWscyc2H1qBp0VLoC8LesTDoo_DTAB4Vj84EW7XAAhTz.d7_rb72OU8q4; __cf_bm=J9cOohXUwr1x3_jye56WCZE44B6IvmDZ4abMNNPC9WI-1786525854.7998724-1.0.1.1-g2o6OcZPZVO4RMiGIDrZ74egI9HhMLeNzVH6uGo_vglJA15En5zGWJRjJ1qm_BRq1NB1JycYJ7ensGqsAXUJVNEeUBAOPURIT2hEY6DpaplocCJxJcZVxpK9khQrOFCf; mp_ea93da913ddb66b6372b89d97b1029ac_mixpanel=%7B%22distinct_id%22%3A%22f99ad99d-88aa-42db-98c8-5ac3b74757a7%22%2C%22%24device_id%22%3A%228d705348-f441-4bdb-8ac3-59253d615e11%22%2C%22%24initial_referrer%22%3A%22%24direct%22%2C%22%24initial_referring_domain%22%3A%22%24direct%22%2C%22%24user_id%22%3A%22f99ad99d-88aa-42db-98c8-5ac3b74757a7%22%7D; i18nextLng=zh; __cuid=45267238-772f-451d-9f0d-a12619cf7ad8; __cuid=45267238-772f-451d-9f0d-a12619cf7ad8; OptanonConsent=isGpcEnabled=0&datestamp=Wed+Aug+12+2026+17%3A11%3A03+GMT%2B0800+(%E4%B8%AD%E5%9B%BD%E6%A0%87%E5%87%86%E6%97%B6%E9%97%B4)&version=202603.1.0&browserGpcFlag=0&isDntEnabled=0&isIABGlobal=false&hosts=&landingPath=https%3A%2F%2Fgrok.com%2F&groups=C0001%3A1%2CC0004%3A1%2CC0003%3A1%2CC0002%3A1",
+  "has_cf": true,
+  "extracted_at": "2026-08-12T17:11:17",
+  "digest_sample": "GET!/rest/app-chat/conversations!103601462obfiowerehiringef7f2f0fae147ae147ae02b851eb851eb8602b851eb851eb860fae147ae147a"
+}

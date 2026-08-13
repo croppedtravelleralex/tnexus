@@ -1,5 +1,5 @@
 import { apiBase } from "@/lib/api-base";
-import { unwrapAdminItems } from "@/lib/grok-quota";
+import { unwrapItems } from "@/lib/http";
 
 // Grok 管理 API 客户端（grok-admin crate，G4-P2）。
 //
@@ -385,7 +385,7 @@ export const grokAdminApi = {
       token,
       `/admin/accounts/${id}/quota`,
     );
-    return unwrapAdminItems<GrokQuotaWindow>(raw);
+    return unwrapItems<GrokQuotaWindow>(raw);
   },
 
   getModelStates: async (token: string, id: number): Promise<GrokModelState[]> => {
@@ -393,7 +393,7 @@ export const grokAdminApi = {
       token,
       `/admin/accounts/${id}/model-states`,
     );
-    return unwrapAdminItems<GrokModelState>(raw);
+    return unwrapItems<GrokModelState>(raw);
   },
 
   updateAccount: async (

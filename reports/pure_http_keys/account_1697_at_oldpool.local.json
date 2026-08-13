@@ -1,0 +1,12 @@
+{
+  "email": "account_1697@oldpool.local",
+  "sso": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiMTZjNzdiMWQtYzdmYi00ODdlLTk2MmUtZmExZjkwYzNlMTU2In0.8jfJfcJiuaw5wTaZr-27FR5LilWrojaga3uct86h9OE",
+  "meta_b64": "97JLQbVQGfm0ihAZ7PAbIA5uByKSmlbuL4c5kpoTV2+Cu7Q32khk+h9hZQMurNhz",
+  "meta_html": "97JLQbVQGfm0ihAZ7PAbIA5uByKSmlbuL4c5kpoTV2+Cu7Q32khk+h9hZQMurNhz",
+  "fingerprint": "5aedd0100100",
+  "trailer_hex": "03",
+  "cookie": "sso=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiMTZjNzdiMWQtYzdmYi00ODdlLTk2MmUtZmExZjkwYzNlMTU2In0.8jfJfcJiuaw5wTaZr-27FR5LilWrojaga3uct86h9OE; sso-rw=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiMTZjNzdiMWQtYzdmYi00ODdlLTk2MmUtZmExZjkwYzNlMTU2In0.8jfJfcJiuaw5wTaZr-27FR5LilWrojaga3uct86h9OE; x-userid=52596231-439c-4455-aa73-fe46fa09511a; grok_device_id=bd9b41d6-00b1-4061-8c91-86496bd58023; cf_clearance=hrs_LurmcJx6x1rvEmtmZBMdAKszMEpGfdwmO.CmgTE-1786526491-1.2.1.1-pDHzfF22iuhdsPU2BExOfI2eBz0iYnyQp_tMiN2FrXMlnK3NsXvkd2NSUPZZQm67mUL2JH5KQbr70zpsJKF77TXfhD9JDoOqAZoKuqQBqj_nkUwK3bOPSlYwWqJR4TrJTA9ubfO2eTw9Boa8jJJSSDCwlnVZwi0Kdc4eOxtdNNMXiZm.khDM7PeEIHkfGElyIx0q6RTYbCWaYGHl0M6fff2vqnNmMja5R01BuubTf5rlXvhrFqQLZRScjNYGJ_9dWL.zkEJaZvdhYZBptM3LBX61EUTO.3A1FPN19jYm0xoU0IPAc9QcOLifyO8xq47Bc_vURXFjNWWq9wE1J6o09qwLN1jVtoaR51VvyP0xkR8; __cf_bm=sIGF0K6O7X4Ovk32PtPc4pDWddynQds139ort9L_vbU-1786526491.2946215-1.0.1.1-gPETCWpCJUBQSPVMwhzhSNs4rZq83Pp5zurJbiZTNV0.Qqjfir5rOjAYfW7KyUKrXvRx999zMdYLv5typjdHi0N.wwvCGf5s3Jg5GF37mM.whPo3T9ENMxgRgaN86LUP; mp_ea93da913ddb66b6372b89d97b1029ac_mixpanel=%7B%22distinct_id%22%3A%2252596231-439c-4455-aa73-fe46fa09511a%22%2C%22%24device_id%22%3A%22524ff0b2-ca67-4aef-9df0-c435ec34392e%22%2C%22%24initial_referrer%22%3A%22%24direct%22%2C%22%24initial_referring_domain%22%3A%22%24direct%22%2C%22%24user_id%22%3A%2252596231-439c-4455-aa73-fe46fa09511a%22%7D; i18nextLng=zh; __cuid=802260b2-fb8c-44ab-970f-0ad8bd86d35a; __cuid=802260b2-fb8c-44ab-970f-0ad8bd86d35a",
+  "has_cf": true,
+  "extracted_at": "2026-08-12T17:21:43",
+  "digest_sample": "GET!/rest/app-chat/conversations!103602096obfiowerehiring5aedd0100100"
+}

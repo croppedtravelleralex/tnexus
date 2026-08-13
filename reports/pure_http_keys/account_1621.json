@@ -1,0 +1,13 @@
+{
+  "email": "account_1621@oldpool.local",
+  "sso": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiYzc4ZDE5MDItODM2Ni00NjIzLWI4YjgtOTM2NWUzY2JlNjExIn0.jQX2OFFNuCI3baKjmpIyB4J95gFy0wB1n387GJSBcOY",
+  "meta_b64": "o7Zve2VUpaiHFfNm/kpE5Q4x/KlrqMhq3jhbxWY1kilWYCgtgA/evMnrsIGq7rmO",
+  "meta_html": "o7Zve2VUpaiHFfNm/kpE5Q4x/KlrqMhq3jhbxWY1kilWYCgtgA/evMnrsIGq7rmO",
+  "fingerprint": "5becd010051eb851eb851ec0051eb851eb851ec100",
+  "trailer_hex": "03",
+  "cookie": "sso=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiYzc4ZDE5MDItODM2Ni00NjIzLWI4YjgtOTM2NWUzY2JlNjExIn0.jQX2OFFNuCI3baKjmpIyB4J95gFy0wB1n387GJSBcOY; sso-rw=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiYzc4ZDE5MDItODM2Ni00NjIzLWI4YjgtOTM2NWUzY2JlNjExIn0.jQX2OFFNuCI3baKjmpIyB4J95gFy0wB1n387GJSBcOY; x-userid=cf2b7d75-6eed-459b-96e8-c45fd75178f6; grok_device_id=e57b5bb8-b70e-42ae-99f1-2ffb0fcb7d27; cf_clearance=0fjyI4gAV7dH_.2HS5wxgxahuQ4Kzu4Oz4X1NBbiR0Q-1786525570-1.2.1.1-Q9jedrXO1Oi1dqdl.kbFFFXyoGB7Of91vJSlWVjLKhoTddsD5JG78b2gJXhnRJdgDTw78Vip7m5IiWmFtWnVkAZ1NokKlvftjvBuLm0YTJWJBaXO8GQCyUNBR1fxrSZT_D9M_M9euUghJm_mQgkH.ixB7yHKSISXwjtNJprp5r6slkKULlU9r.HUrJ_SNYTl8yfvtjF81oFLiq6rp8biRl4N8E_xQHq92peHf4XuPr9Uvjdr8Cbj.LTqspXx96oXYjlNd9jU0l7gLV2Pf52E9wCpMDl0NkSWrvxCvUjs1DBWXiMKSe03fg78TxXcslBPdk5E4z_YksVPPL8kFNf59hDaq0fcr64W526U0Yvi8Jw; __cf_bm=5mqUS7LCascqCHPbpXq.VWm8fY6echXV2NGNZiv_FFk-1786525570.74098-1.0.1.1-42.M1rLP.VM2UDNI64OAaNpROfeMwqqGIWvyfP2vhBAlxYGkMQT_OUY8AFeg2wL58FIqRCSrI8JDMSIJPrs_tIn7zcst4oLrQTBmUfkMw3lbEZR72RCMmTHu1vs5CHVp; mp_ea93da913ddb66b6372b89d97b1029ac_mixpanel=%7B%22distinct_id%22%3A%22cf2b7d75-6eed-459b-96e8-c45fd75178f6%22%2C%22%24device_id%22%3A%227ab4c3e4-8a72-4c07-8c77-bdd748223e3d%22%2C%22%24initial_referrer%22%3A%22%24direct%22%2C%22%24initial_referring_domain%22%3A%22%24direct%22%2C%22%24user_id%22%3A%22cf2b7d75-6eed-459b-96e8-c45fd75178f6%22%7D; i18nextLng=zh; __cuid=150ca59e-83bd-457e-8ded-1aff0c283bca; __cuid=150ca59e-83bd-457e-8ded-1aff0c283bca",
+  "has_cf": true,
+  "extracted_at": "2026-08-12T17:06:27",
+  "digest_sample": "GET!/rest/app-chat/conversations!103601177obfiowerehiring5becd010051eb851eb851ec0051eb851eb851ec100",
+  "account_id": 1621
+}

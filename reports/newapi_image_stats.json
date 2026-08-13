@@ -1,0 +1,199 @@
+{
+  "report_version": "2026-08-12T14:35:00+08:00",
+  "data_sources": [
+    {
+      "name": "NewAPI PostgreSQL logs",
+      "location": "docker exec new-api-postgres psql -U newapi -d new-api, table logs",
+      "filter": "model_name='gpt-image-2', channel_id=115 (tnexus-dedicated)",
+      "latency_metric": "use_time column (seconds, NewAPI upstream round-trip including retries at proxy layer)",
+      "time_field": "created_at (unix epoch seconds)"
+    },
+    {
+      "name": "TNexus gateway pipeline_events",
+      "location": "/opt/tnexus/data/pool/pipeline_events.ndjson",
+      "filter": "kind='gateway_image'",
+      "latency_metric": "timings_ms.gateway_wall_ms (milliseconds, end-to-end gateway handler wall time)",
+      "time_field": "ts (RFC3339)"
+    },
+    {
+      "name": "TNexus user_image_records",
+      "location": "docker exec panda-postgres-1 psql -U tnexus -d tnexus",
+      "filter": "source='gateway_openapi'",
+      "note": "Persisted successful image artifacts only; no latency"
+    },
+    {
+      "name": "Gateway docker logs",
+      "location": "docker logs panda-gateway-1",
+      "filter": "grep 'image call failed|image batch bridge failed'"
+    }
+  ],
+  "model": "gpt-image-2",
+  "channel": {
+    "id": 115,
+    "name": "tnexus-dedicated",
+    "status": 1
+  },
+  "newapi_logs_all_model_entries": {
+    "note": "Includes both /v1/images/generations AND /v1/chat/completions routed with gpt-image-2 model name. Chat-completions failures (401/502) inflate aggregate error rate.",
+    "last_24h": {
+      "total_requests": 39,
+      "success": 15,
+      "failure": 24,
+      "success_rate_pct": 38.46,
+      "latency_use_time_seconds_all_requests": {
+        "p50": 1.0,
+        "p95": 59.5,
+        "p99": 240.1
+      },
+      "latency_use_time_seconds_success_only": {
+        "p50": 39.0,
+        "p95": 64.5,
+        "p99": 78.5
+      },
+      "type_breakdown": {
+        "2_success": 15,
+        "5_failure": 24
+      }
+    },
+    "last_7d": {
+      "total_requests": 151,
+      "success": 103,
+      "failure": 48,
+      "success_rate_pct": 68.21,
+      "latency_use_time_seconds_all_requests": {
+        "p50": 4.0,
+        "p95": 259.5,
+        "p99": 380.5
+      },
+      "latency_use_time_seconds_success_only": {
+        "p50": 47.0,
+        "p95": 342.7,
+        "p99": 405.94
+      },
+      "type_breakdown": {
+        "2_success": 103,
+        "5_failure": 48
+      }
+    }
+  },
+  "newapi_logs_images_generations_only": {
+    "note": "Filtered other LIKE '%/v1/images/generations%'. Best proxy for dedicated image API endpoint.",
+    "last_24h": {
+      "total_requests": 9,
+      "success": 8,
+      "failure": 1,
+      "success_rate_pct": 88.89,
+      "latency_use_time_seconds_all_requests": {
+        "p50": 56.0,
+        "p95": 235.0,
+        "p99": 316.6
+      }
+    },
+    "last_7d": {
+      "total_requests": 80,
+      "success": 72,
+      "failure": 8,
+      "success_rate_pct": 90.0,
+      "latency_use_time_seconds_all_requests": {
+        "p50": 55.5,
+        "p95": 343.4,
+        "p99": 409.94
+      }
+    }
+  },
+  "newapi_logs_by_request_path_last_24h": {
+    "images_generations": { "success": 8, "failure": 1 },
+    "chat_completions": { "success": 7, "failure": 23 },
+    "images_edits": { "success": 0, "failure": 0 }
+  },
+  "newapi_logs_by_request_path_last_7d": {
+    "images_generations": { "success": 72, "failure": 8 },
+    "chat_completions": { "success": 29, "failure": 39 },
+    "images_edits": { "success": 2, "failure": 0 },
+    "other_unknown": { "success": 0, "failure": 1 }
+  },
+  "failure_breakdown": {
+    "last_24h": [
+      { "status_code": 401, "error_code": "bad_response_status_code", "request_path": "/v1/chat/completions", "count": 15 },
+      { "status_code": 502, "error_code": "text_stream_failed", "request_path": "/v1/chat/completions", "count": 6 },
+      { "status_code": 500, "error_code": "do_request_failed", "request_path": "/v1/chat/completions", "count": 2 },
+      { "status_code": 502, "error_code": "upstream_unreachable", "request_path": "/v1/images/generations", "count": 1 }
+    ],
+    "last_7d": [
+      { "status_code": 401, "error_code": "bad_response_status_code", "request_path": "/v1/chat/completions", "count": 31 },
+      { "status_code": 429, "error_code": "duplicate_prompt", "request_path": "/v1/images/generations", "count": 6 },
+      { "status_code": 502, "error_code": "text_stream_failed", "request_path": "/v1/chat/completions", "count": 6 },
+      { "status_code": 500, "error_code": "do_request_failed", "request_path": "/v1/chat/completions", "count": 2 },
+      { "status_code": 401, "error_code": "bad_response_status_code", "request_path": "/v1/images/generations", "count": 1 },
+      { "status_code": 502, "error_code": "upstream_unreachable", "request_path": "/v1/images/generations", "count": 1 },
+      { "status_code": 404, "error_code": "bad_response_status_code", "request_path": "/v1/responses", "count": 1 }
+    ]
+  },
+  "gateway_pipeline_events": {
+    "event": "gateway_image",
+    "endpoint": "TNexus gateway POST /v1/images/generations (direct, not via NewAPI proxy)",
+    "last_24h": {
+      "events": 23,
+      "success": 23,
+      "failure": 0,
+      "success_rate_pct": 100.0,
+      "gateway_wall_ms": {
+        "p50": 38028,
+        "p95": 61465,
+        "p99": 63665,
+        "avg": 44400
+      },
+      "gateway_wall_seconds": {
+        "p50": 38.0,
+        "p95": 61.5,
+        "p99": 63.7,
+        "avg": 44.4
+      }
+    },
+    "last_7d": {
+      "events": 249,
+      "success": 249,
+      "failure": 0,
+      "success_rate_pct": 100.0,
+      "gateway_wall_ms": {
+        "p50": 54642,
+        "p95": 134644,
+        "p99": 349412,
+        "avg": 69005
+      },
+      "gateway_wall_seconds": {
+        "p50": 54.6,
+        "p95": 134.6,
+        "p99": 349.4,
+        "avg": 69.0
+      }
+    }
+  },
+  "user_image_records": {
+    "source": "gateway_openapi",
+    "last_24h": 20,
+    "last_7d": 136,
+    "all_time": 136
+  },
+  "gateway_docker_log_failures": {
+    "last_24h": 4,
+    "last_7d": 4,
+    "sample_errors": [
+      "image poll timeout after 300s (upstream Grok imagine polling)",
+      "chat_requirements_prepare HTTP 401 Unauthorized (expired/invalid account token)"
+    ]
+  },
+  "interpretation": {
+    "headline_success_rate": "Dedicated /v1/images/generations via NewAPI ch115: ~89-90% (7d). Aggregate gpt-image-2 model logs show 38-68% because ~60% of failures are /v1/chat/completions path (401/502), not the image endpoint.",
+    "latency": "Successful image generations take ~40-56s p50 at gateway (pipeline_events) and ~47-56s p50 in NewAPI use_time. p95/p99 tail to 5-7 minutes due to upstream poll timeouts (300s cap).",
+    "gateway_health": "Direct gateway pipeline_events: 100% success (249/249 in 7d). NewAPI-layer and chat-completions-path failures are client-retry/proxy artifacts, not systemic gateway image pipeline failure.",
+    "recommendations": [
+      "Split NewAPI reporting: track /v1/images/generations separately from chat/completions gpt-image-2 entries.",
+      "Investigate chat/completions 401 (bad_response_status_code): likely stale Grok account tokens; refresh affected accounts.",
+      "429 duplicate_prompt on images/generations (6 in 7d): expected dedup gate; clients should backoff or vary prompts.",
+      "Monitor image poll timeout (~300s): upstream Grok imagine latency tail; consider alerting on p95 > 120s.",
+      "Re-enable newapi_image_stats_query.sh error detail query: logs table has no message column (use other JSON fields)."
+    ]
+  },
+  "blockers": []
+}

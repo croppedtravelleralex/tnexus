@@ -1,0 +1,12 @@
+{
+  "email": "account_1386@oldpool.local",
+  "sso": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiMGM3YjM5NjUtZjNmZC00NzYyLTllMWItYjRkOTQ2MDgyMjM1In0.9_hw0rZe2Ld-yFJJ0rp63vuotXZUHjf3ZbdXhM2Ke5s",
+  "meta_b64": "68ktUZlbVtBHJUNiKWK8A3C1Q5rDZf3ommurBf6SfPSggbS7IR5WKakI57o8ihR/",
+  "meta_html": "68ktUZlbVtBHJUNiKWK8A3C1Q5rDZf3ommurBf6SfPSggbS7IR5WKakI57o8ihR/",
+  "fingerprint": "a14760fd70a3d70a3d702147ae147ae14802147ae147ae1480fd70a3d70a3d700",
+  "trailer_hex": "03",
+  "cookie": "sso=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiMGM3YjM5NjUtZjNmZC00NzYyLTllMWItYjRkOTQ2MDgyMjM1In0.9_hw0rZe2Ld-yFJJ0rp63vuotXZUHjf3ZbdXhM2Ke5s; sso-rw=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiMGM3YjM5NjUtZjNmZC00NzYyLTllMWItYjRkOTQ2MDgyMjM1In0.9_hw0rZe2Ld-yFJJ0rp63vuotXZUHjf3ZbdXhM2Ke5s; x-userid=5df25ff4-e4a3-4312-85f3-a0f004b0b7e5; grok_device_id=b16d90cf-9228-49a2-a126-e93b47713d88; mp_ea93da913ddb66b6372b89d97b1029ac_mixpanel=%7B%22distinct_id%22%3A%225df25ff4-e4a3-4312-85f3-a0f004b0b7e5%22%2C%22%24device_id%22%3A%2202d80098-3b2b-47b9-9887-fbffa598bcfd%22%2C%22%24initial_referrer%22%3A%22%24direct%22%2C%22%24initial_referring_domain%22%3A%22%24direct%22%2C%22%24user_id%22%3A%225df25ff4-e4a3-4312-85f3-a0f004b0b7e5%22%7D; i18nextLng=zh; __cuid=6b6e0241-96e7-45f8-8661-a67dd257f508; __cuid=6b6e0241-96e7-45f8-8661-a67dd257f508; cf_clearance=yVqOZWJzIvsj03ntnvNH1KRLlzHNF6bRm5lxxBqlAoE-1786523179-1.2.1.1-kgsqEJSZLbjNXcv7oFoT3GrISEiY9hVDHx6PJAY3o_0eiSxTkC9RFY1H_VMASe9eEPYNnqMoQFnHNnGAYeokSY93fovutDgUWXVY_grA7ndxsD0w2PGz6tLf_BtVrjkm7clEUVlqY87YOyBE_SWCC_wH7D_Y8eDWkPJSx_Q5RCP8fXlwqx4sVks8Cgrv94YeL_Q2S3UPGD8Kxw2jBjGxMjsaKgINwurj4jA_3ZVUENgNZ6Ytk06KGrddY0cqcD2zbKwxkYpBZ0QgdflIJm5TZJm_zPZw7PwP8U2ZDWh88jmE6OolOHKz4l.VSJ6VUG_tn4G9H94dRncWWlodc74Mkje0ov0E9DQZiFxAmuQpDi4; __cf_bm=zEbSISCjF0.3ys.Uksj2ivKd8mK9ZzmNCznIseUf0II-1786523179.716564-1.0.1.1-SIcIpvbnVPLNAkw.3iJGi9XbcpwmgHXKcgXd8acrK6eWKl.rmBOFjlWJ92dIZ_vXgvZWBJ7JmihejJY5zFZWb6HhR7S1kZJ.l9sLkPCCplMCd.6.1OEuDxHIpB6CshpB",
+  "has_cf": true,
+  "extracted_at": "2026-08-12T16:26:36",
+  "digest_sample": "GET!/rest/app-chat/conversations!103598783obfiowerehiringa14760fd70a3d70a3d702147ae147ae14802147ae147ae1480fd70a3d70a3d7"
+}

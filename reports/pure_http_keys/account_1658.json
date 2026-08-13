@@ -1,0 +1,13 @@
+{
+  "email": "account_1658@oldpool.local",
+  "sso": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiYmU4ZWE5MDEtMDk5OS00YTMyLTlmY2QtYjc1MmI1MzU1ZWI3In0.DPIFXnMGZvb1FZKzOElSx45abjUBtzqTYPVgiv9vAjY",
+  "meta_b64": "A0SItkOQFdkX18grKSwa4ioax4vTRP00VrONwSZxdLs3XkVQsiFytLNkFXV5Gp/g",
+  "meta_html": "A0SItkOQFdkX18grKSwa4ioax4vTRP00VrONwSZxdLs3XkVQsiFytLNkFXV5Gp/g",
+  "fingerprint": "91eb14100100",
+  "trailer_hex": "03",
+  "cookie": "sso=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiYmU4ZWE5MDEtMDk5OS00YTMyLTlmY2QtYjc1MmI1MzU1ZWI3In0.DPIFXnMGZvb1FZKzOElSx45abjUBtzqTYPVgiv9vAjY; sso-rw=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiYmU4ZWE5MDEtMDk5OS00YTMyLTlmY2QtYjc1MmI1MzU1ZWI3In0.DPIFXnMGZvb1FZKzOElSx45abjUBtzqTYPVgiv9vAjY; x-userid=4b09db54-ef57-4aa0-93b3-9199ef3a11ec; grok_device_id=4d64ea40-7253-401b-b991-a4cf67e8a18c; cf_clearance=enViqbbElGFCM_GbhbXcvL2Rsg4d.tPCUPUIkEKPVZc-1786526069-1.2.1.1-qAEOXxLYFxqiC4okZhcyNv9ZmJhCIb4K6D74fuC0dkbtL_mJd0IB3GomD3qi85LnkniR8G2UMZfxDeh7R0YeoTycBX3WBNsY5RSBvSxp8qikE6QJmUNg2ahLdHbKhjM5ihu1i7YRDsi1Ed9Z90tN_qtRW0pWklwUVBkw71nbtR8jumpeLm5ZKIpluuDq4cxtFm62k2ax5mpJcWlttM2eHS4nmk22VNq6r6YtC8n_wxYX4ZaC14aN7SVK_Xk4MnZ3OV_ALQiGaeJNGNOGgWTPKu4l5vqZhkF0lpYlFjjcCEOjkhe9dYCG2BKI0d_3Bs6bOik7NwXbxsIeoLqCnaTauOaC3J036c4zYviQswvILFs; __cf_bm=oKOtUaq9GJy8pdnoDrmbyVhT.6.KPs0x6a0d2C3UFI4-1786526069.8865864-1.0.1.1-mdv07fP9IM83LXjHpMBfixSEKcexmD2DugVP738LziUWLBqnLFLwaY5XjTn6d6rkHQUHOnBOUeTeWwYflqiPl3R2NXFVcOStuAiaB9LzramVfR3h2_iX42j_D_XhmUH7; mp_ea93da913ddb66b6372b89d97b1029ac_mixpanel=%7B%22distinct_id%22%3A%224b09db54-ef57-4aa0-93b3-9199ef3a11ec%22%2C%22%24device_id%22%3A%225f6f6d06-3967-4a88-9983-9ee15f135afb%22%2C%22%24initial_referrer%22%3A%22%24direct%22%2C%22%24initial_referring_domain%22%3A%22%24direct%22%2C%22%24user_id%22%3A%224b09db54-ef57-4aa0-93b3-9199ef3a11ec%22%7D; i18nextLng=zh; __cuid=2712d4d6-c2ca-4b0d-9f25-1d9aae9ef1ce; __cuid=2712d4d6-c2ca-4b0d-9f25-1d9aae9ef1ce",
+  "has_cf": true,
+  "extracted_at": "2026-08-12T17:14:40",
+  "digest_sample": "GET!/rest/app-chat/conversations!103601674obfiowerehiring91eb14100100",
+  "account_id": 1658
+}

@@ -368,6 +368,7 @@ mod tests {
                 upstream_timeout_secs: 5,
                 max_attempts: 2,
                 default_proxy: String::new(),
+                sticky_relay: String::new(),
             },
         })
     }

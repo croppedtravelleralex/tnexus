@@ -1,0 +1,222 @@
+===== 0. gateway image/poll/dup related env =====
+CHATGPT_IMAGE_MODEL=gpt-image-2
+GPTIMAGE_BASE=http://127.0.0.1:8014
+GPTIMAGE_ROOT=/gptimage
+IMAGE_ACCOUNT_INFLIGHT_MAX=1
+IMAGE_ADMIN_RETRY_MAX=5
+IMAGE_ENABLED=1
+IMAGE_GLOBAL_CONCURRENCY=10
+IMAGE_PARALLEL_CONCURRENCY=10
+IMAGE_RESPONSE_FORMAT=url
+IMAGE_STORE_PATH=/data/images
+TNEXUS_ACCOUNT_OPS_IMAGE=ghcr.io/croppedtravelleralex/tnexus-account-ops:latest
+TNEXUS_IMAGE=ghcr.io/croppedtravelleralex/tnexus:latest
+UPSTREAM_IMAGE_POLL_CHECK_BEFORE_HIT=1
+UPSTREAM_IMAGE_POLL_INITIAL_WAIT_SECS=5
+UPSTREAM_IMAGE_POLL_INTERVAL_SECS=3
+UPSTREAM_IMAGE_POLL_SETTLE_SECS=2
+UPSTREAM_IMAGE_POLL_TIMEOUT_SECS=300
+
+===== 1. count of key error signatures (7d) =====
+1302 /tmp/gw7d.log
+413                                15
+message_length_exceeds_limit       6
+duplicate-prompt                   0
+poll timeout                       2
+invalid session                    0
+conversation HTTP                  6
+
+===== 2. every 413 line (full) =====
+120:2026-08-11T15:41:10.394133Z  WARN gptimage_gateway_rs: upstream image failed; retrying next pool account email=ionagary4335@outlook.com attempt=3 error=chat_requirements_prepare HTTP 401 Unauthorized: {
+232:2026-08-11T15:48:03.534413Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b43f9-b954-83ec-a631-1c7c6679ddd5 attempt=13 remaining_secs=246.42006192
+291:2026-08-11T15:52:30.710652Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b449c-4264-83ec-86c0-185f22d6ff4b attempt=39 remaining_secs=143.369822413
+479:2026-08-11T16:00:58.076413Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b471d-34fc-83ec-8c1c-2185ade87596 attempt=6 remaining_secs=275.648652498
+698:2026-08-12T01:35:15.986413Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7bcd98-d220-83ec-b0ec-e58c8ce81f1f attempt=13 remaining_secs=246.358436683
+744:2026-08-12T01:48:11.021118Z  INFO gptimage_gateway_rs: image ok email=qaflowud630wbo2a@proton.me elapsed_ms=31413 batch_n=1 b64_count=1 quota_after=Some(Number(18))
+800:2026-08-12T02:16:51.304899Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7bd74c-477c-83ec-8fbc-626bd8b52236 attempt=16 remaining_secs=234.794794139
+1084:2026-08-12T04:37:12.929038Z ERROR gptimage_gateway_rs: upstream text stream failed error=conversation HTTP 413 Payload Too Large: {"detail":{"message":"你提交的消息过长，请编辑后重新发送。","code":"message_length_exceeds_limit"}}
+1086:2026-08-12T04:37:15.413877Z  INFO upstream::requirements: chat_requirements_finalize turnstile_required=true turnstile_solved_len=2376 proof_solved_len=651
+1087:2026-08-12T04:37:16.686163Z ERROR gptimage_gateway_rs: upstream text stream failed error=conversation HTTP 413 Payload Too Large: {"detail":{"message":"你提交的消息过长，请编辑后重新发送。","code":"message_length_exceeds_limit"}}
+1090:2026-08-12T04:37:21.067332Z ERROR gptimage_gateway_rs: upstream text stream failed error=conversation HTTP 413 Payload Too Large: {"detail":{"message":"你提交的消息过长，请编辑后重新发送。","code":"message_length_exceeds_limit"}}
+1093:2026-08-12T04:37:27.914045Z ERROR gptimage_gateway_rs: upstream text stream failed error=conversation HTTP 413 Payload Too Large: {"detail":{"message":"你提交的消息过长，请编辑后重新发送。","code":"message_length_exceeds_limit"}}
+1096:2026-08-12T04:37:39.944226Z ERROR gptimage_gateway_rs: upstream text stream failed error=conversation HTTP 413 Payload Too Large: {"detail":{"message":"你提交的消息过长，请编辑后重新发送。","code":"message_length_exceeds_limit"}}
+1099:2026-08-12T04:37:58.893628Z ERROR gptimage_gateway_rs: upstream text stream failed error=conversation HTTP 413 Payload Too Large: {"detail":{"message":"你提交的消息过长，请编辑后重新发送。","code":"message_length_exceeds_limit"}}
+1115:2026-08-12T05:37:13.638413Z  INFO upstream::requirements: chat_requirements_finalize turnstile_required=true turnstile_solved_len=2360 proof_solved_len=651
+
+===== 3. 413 with 10 lines of preceding context =====
+    "message": "Provided authentication token is expired. Please try signing in again.",
+    "type": null,
+    "code": "token_expired",
+    "param": null
+  },
+  "status": 401,
+  "detail": {
+    "code": "token_expired",
+    "m
+2026-08-11T15:41:09.249530Z  INFO gptimage_gateway_rs: upstream image attempt email=ionagary4335@outlook.com attempt=3 max_attempts=5
+2026-08-11T15:41:10.394133Z  WARN gptimage_gateway_rs: upstream image failed; retrying next pool account email=ionagary4335@outlook.com attempt=3 error=chat_requirements_prepare HTTP 401 Unauthorized: {
+  "error": {
+    "message": "Provided authentication token is expired. Please try signing in again.",
+--
+2026-08-11T15:47:23.509087Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b43f9-b954-83ec-a631-1c7c6679ddd5 attempt=3 remaining_secs=286.445387838
+2026-08-11T15:47:27.662873Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b43f9-b954-83ec-a631-1c7c6679ddd5 attempt=4 remaining_secs=282.291601954
+2026-08-11T15:47:31.450181Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b43f9-b954-83ec-a631-1c7c6679ddd5 attempt=5 remaining_secs=278.504293914
+2026-08-11T15:47:35.517610Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b43f9-b954-83ec-a631-1c7c6679ddd5 attempt=6 remaining_secs=274.43686435
+2026-08-11T15:47:39.296094Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b43f9-b954-83ec-a631-1c7c6679ddd5 attempt=7 remaining_secs=270.658381369
+2026-08-11T15:47:43.507230Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b43f9-b954-83ec-a631-1c7c6679ddd5 attempt=8 remaining_secs=266.447245368
+2026-08-11T15:47:47.289987Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b43f9-b954-83ec-a631-1c7c6679ddd5 attempt=9 remaining_secs=262.664487677
+2026-08-11T15:47:51.517553Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b43f9-b954-83ec-a631-1c7c6679ddd5 attempt=10 remaining_secs=258.436921738
+2026-08-11T15:47:55.313639Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b43f9-b954-83ec-a631-1c7c6679ddd5 attempt=11 remaining_secs=254.640835442
+2026-08-11T15:47:59.817855Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b43f9-b954-83ec-a631-1c7c6679ddd5 attempt=12 remaining_secs=250.13661936
+2026-08-11T15:48:03.534413Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b43f9-b954-83ec-a631-1c7c6679ddd5 attempt=13 remaining_secs=246.42006192
+2026-08-11T15:48:07.608430Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b43f9-b954-83ec-a631-1c7c6679ddd5 attempt=14 remaining_secs=242.34604458
+2026-08-11T15:48:11.568506Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b43f9-b954-83ec-a631-1c7c6679ddd5 attempt=15 remaining_secs=238.385968472
+--
+2026-08-11T15:51:51.300891Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b449c-4264-83ec-86c0-185f22d6ff4b attempt=29 remaining_secs=182.779582138
+2026-08-11T15:51:55.440641Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b449c-4264-83ec-86c0-185f22d6ff4b attempt=30 remaining_secs=178.639832567
+2026-08-11T15:51:59.193546Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b449c-4264-83ec-86c0-185f22d6ff4b attempt=31 remaining_secs=174.88692682800001
+2026-08-11T15:52:03.262353Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b449c-4264-83ec-86c0-185f22d6ff4b attempt=32 remaining_secs=170.818119991
+2026-08-11T15:52:07.070555Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b449c-4264-83ec-86c0-185f22d6ff4b attempt=33 remaining_secs=167.00991802
+2026-08-11T15:52:11.180063Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b449c-4264-83ec-86c0-185f22d6ff4b attempt=34 remaining_secs=162.900410365
+2026-08-11T15:52:14.949941Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b449c-4264-83ec-86c0-185f22d6ff4b attempt=35 remaining_secs=159.130531656
+2026-08-11T15:52:19.089587Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b449c-4264-83ec-86c0-185f22d6ff4b attempt=36 remaining_secs=154.990886154
+2026-08-11T15:52:22.844102Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b449c-4264-83ec-86c0-185f22d6ff4b attempt=37 remaining_secs=151.23637154
+2026-08-11T15:52:26.946129Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b449c-4264-83ec-86c0-185f22d6ff4b attempt=38 remaining_secs=147.134344204
+2026-08-11T15:52:30.710652Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b449c-4264-83ec-86c0-185f22d6ff4b attempt=39 remaining_secs=143.369822413
+2026-08-11T15:52:34.845057Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b449c-4264-83ec-86c0-185f22d6ff4b attempt=40 remaining_secs=139.235416005
+2026-08-11T15:52:38.619311Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b449c-4264-83ec-86c0-185f22d6ff4b attempt=41 remaining_secs=135.461162728
+--
+2026-08-11T16:00:26.810751Z  INFO gptimage_gateway_rs: upstream image attempt email=irisisaiah9623@outlook.com attempt=1 max_attempts=5
+2026-08-11T16:00:28.202376Z  INFO upstream::requirements: chat_requirements_finalize turnstile_required=true turnstile_solved_len=2424 proof_solved_len=651
+2026-08-11T16:00:28.774386Z  INFO upstream::runtime: image prepare complete conduit_len=351
+2026-08-11T16:00:33.725014Z  INFO upstream::sse: image SSE ended without file_id; deferring to conversation poll conversation_id=6a7b471d-34fc-83ec-8c1c-2185ade87596 events=18
+2026-08-11T16:00:33.725063Z  INFO upstream::poll: image poll start (post-SSE) conversation_id=6a7b471d-34fc-83ec-8c1c-2185ade87596 initial_wait_secs=5.0 timeout_secs=300.0
+2026-08-11T16:00:39.297062Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b471d-34fc-83ec-8c1c-2185ade87596 attempt=1 remaining_secs=294.428004508
+2026-08-11T16:00:43.228819Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b471d-34fc-83ec-8c1c-2185ade87596 attempt=2 remaining_secs=290.496247206
+2026-08-11T16:00:46.775978Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b471d-34fc-83ec-8c1c-2185ade87596 attempt=3 remaining_secs=286.949087914
+2026-08-11T16:00:50.644066Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b471d-34fc-83ec-8c1c-2185ade87596 attempt=4 remaining_secs=283.080999987
+2026-08-11T16:00:54.196220Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b471d-34fc-83ec-8c1c-2185ade87596 attempt=5 remaining_secs=279.528846001
+2026-08-11T16:00:58.076413Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b471d-34fc-83ec-8c1c-2185ade87596 attempt=6 remaining_secs=275.648652498
+2026-08-11T16:01:01.664749Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b471d-34fc-83ec-8c1c-2185ade87596 attempt=7 remaining_secs=272.060318416
+2026-08-11T16:01:05.616684Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b471d-34fc-83ec-8c1c-2185ade87596 attempt=8 remaining_secs=268.108381195
+--
+2026-08-12T01:34:35.973051Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7bcd98-d220-83ec-b0ec-e58c8ce81f1f attempt=3 remaining_secs=286.371798656
+2026-08-12T01:34:40.054072Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7bcd98-d220-83ec-b0ec-e58c8ce81f1f attempt=4 remaining_secs=282.290776183
+2026-08-12T01:34:43.776126Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7bcd98-d220-83ec-b0ec-e58c8ce81f1f attempt=5 remaining_secs=278.568722854
+2026-08-12T01:34:47.798887Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7bcd98-d220-83ec-b0ec-e58c8ce81f1f attempt=6 remaining_secs=274.545963777
+2026-08-12T01:34:51.626906Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7bcd98-d220-83ec-b0ec-e58c8ce81f1f attempt=7 remaining_secs=270.717942646
+2026-08-12T01:34:55.765401Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7bcd98-d220-83ec-b0ec-e58c8ce81f1f attempt=8 remaining_secs=266.579447956
+2026-08-12T01:34:59.510054Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7bcd98-d220-83ec-b0ec-e58c8ce81f1f attempt=9 remaining_secs=262.834794618
+2026-08-12T01:35:04.279574Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7bcd98-d220-83ec-b0ec-e58c8ce81f1f attempt=10 remaining_secs=258.065275596
+2026-08-12T01:35:08.163702Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7bcd98-d220-83ec-b0ec-e58c8ce81f1f attempt=11 remaining_secs=254.181148333
+2026-08-12T01:35:12.188815Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7bcd98-d220-83ec-b0ec-e58c8ce81f1f attempt=12 remaining_secs=250.156033196
+2026-08-12T01:35:15.986413Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7bcd98-d220-83ec-b0ec-e58c8ce81f1f attempt=13 remaining_secs=246.358436683
+2026-08-12T01:35:20.042992Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7bcd98-d220-83ec-b0ec-e58c8ce81f1f attempt=14 remaining_secs=242.301857171
+2026-08-12T01:35:23.844454Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7bcd98-d220-83ec-b0ec-e58c8ce81f1f attempt=15 remaining_secs=238.500395063
+--
+    "code": "token_expired",
+    "param": null
+  },
+  "status": 401,
+  "detail": {
+    "code": "token_expired",
+    "m
+2026-08-12T01:47:40.159799Z  INFO gptimage_gateway_rs: upstream image attempt email=qaflowud630wbo2a@proton.me attempt=2 max_attempts=5
+2026-08-12T01:47:40.523163Z  INFO upstream::requirements: chat_requirements_finalize turnstile_required=true turnstile_solved_len=2452 proof_solved_len=675
+2026-08-12T01:47:41.451514Z  INFO upstream::runtime: image prepare complete conduit_len=351
+2026-08-12T01:48:11.021118Z  INFO gptimage_gateway_rs: image ok email=qaflowud630wbo2a@proton.me elapsed_ms=31413 batch_n=1 b64_count=1 quota_after=Some(Number(18))
+2026-08-12T01:52:36.339605Z  INFO gptimage_gateway_rs: upstream image: skipping helper quota precheck email=islaisaiah86255@outlook.com
+2026-08-12T01:52:36.343651Z  INFO gptimage_gateway_rs: upstream image attempt email=agustinkelly59361@outlook.com attempt=1 max_attempts=5
+--
+2026-08-12T02:16:11.712618Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7bd74c-477c-83ec-8fbc-626bd8b52236 attempt=6 remaining_secs=274.387076981
+2026-08-12T02:16:15.523583Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7bd74c-477c-83ec-8fbc-626bd8b52236 attempt=7 remaining_secs=270.576110737
+2026-08-12T02:16:19.644657Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7bd74c-477c-83ec-8fbc-626bd8b52236 attempt=8 remaining_secs=266.455035457
+2026-08-12T02:16:23.489156Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7bd74c-477c-83ec-8fbc-626bd8b52236 attempt=9 remaining_secs=262.610537838
+2026-08-12T02:16:27.620785Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7bd74c-477c-83ec-8fbc-626bd8b52236 attempt=10 remaining_secs=258.478908231
+2026-08-12T02:16:31.445094Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7bd74c-477c-83ec-8fbc-626bd8b52236 attempt=11 remaining_secs=254.654599412
+2026-08-12T02:16:35.477896Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7bd74c-477c-83ec-8fbc-626bd8b52236 attempt=12 remaining_secs=250.621796552
+2026-08-12T02:16:39.251948Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7bd74c-477c-83ec-8fbc-626bd8b52236 attempt=13 remaining_secs=246.847746732
+2026-08-12T02:16:43.471798Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7bd74c-477c-83ec-8fbc-626bd8b52236 attempt=14 remaining_secs=242.627895969
+2026-08-12T02:16:47.261791Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7bd74c-477c-83ec-8fbc-626bd8b52236 attempt=15 remaining_secs=238.837902691
+2026-08-12T02:16:51.304899Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7bd74c-477c-83ec-8fbc-626bd8b52236 attempt=16 remaining_secs=234.794794139
+2026-08-12T02:16:55.078539Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7bd74c-477c-83ec-8fbc-626bd8b52236 attempt=17 remaining_secs=231.021154499
+2026-08-12T02:16:59.329624Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7bd74c-477c-83ec-8fbc-626bd8b52236 attempt=18 remaining_secs=226.770069842
+--
+  },
+  "status": 401,
+  "detail": {
+    "code": "token_expired",
+    "m
+2026-08-12T04:08:09.706762Z  INFO gptimage_gateway_rs: upstream image attempt email=alaniraymond3918@outlook.com attempt=2 max_attempts=5
+2026-08-12T04:08:11.153220Z  INFO upstream::requirements: chat_requirements_finalize turnstile_required=true turnstile_solved_len=2336 proof_solved_len=623
+2026-08-12T04:08:12.138294Z  INFO upstream::runtime: image prepare complete conduit_len=348
+2026-08-12T04:09:05.508983Z  INFO gptimage_gateway_rs: image ok email=alaniraymond3918@outlook.com elapsed_ms=56381 batch_n=1 b64_count=1 quota_after=Some(Number(13))
+2026-08-12T04:37:11.521581Z  INFO upstream::requirements: chat_requirements_finalize turnstile_required=true turnstile_solved_len=2388 proof_solved_len=675
+2026-08-12T04:37:12.929038Z ERROR gptimage_gateway_rs: upstream text stream failed error=conversation HTTP 413 Payload Too Large: {"detail":{"message":"你提交的消息过长，请编辑后重新发送。","code":"message_length_exceeds_limit"}}
+2026-08-12T04:37:12.929131Z ERROR tower_http::trace::on_failure: response failed classification=Status code: 502 Bad Gateway latency=3302 ms
+2026-08-12T04:37:15.413877Z  INFO upstream::requirements: chat_requirements_finalize turnstile_required=true turnstile_solved_len=2376 proof_solved_len=651
+2026-08-12T04:37:16.686163Z ERROR gptimage_gateway_rs: upstream text stream failed error=conversation HTTP 413 Payload Too Large: {"detail":{"message":"你提交的消息过长，请编辑后重新发送。","code":"message_length_exceeds_limit"}}
+2026-08-12T04:37:16.686237Z ERROR tower_http::trace::on_failure: response failed classification=Status code: 502 Bad Gateway latency=1696 ms
+2026-08-12T04:37:19.868661Z  INFO upstream::requirements: chat_requirements_finalize turnstile_required=true turnstile_solved_len=2452 proof_solved_len=643
+2026-08-12T04:37:21.067332Z ERROR gptimage_gateway_rs: upstream text stream failed error=conversation HTTP 413 Payload Too Large: {"detail":{"message":"你提交的消息过长，请编辑后重新发送。","code":"message_length_exceeds_limit"}}
+2026-08-12T04:37:21.067411Z ERROR tower_http::trace::on_failure: response failed classification=Status code: 502 Bad Gateway latency=1540 ms
+2026-08-12T04:37:26.711364Z  INFO upstream::requirements: chat_requirements_finalize turnstile_required=true turnstile_solved_len=2468 proof_solved_len=627
+2026-08-12T04:37:27.914045Z ERROR gptimage_gateway_rs: upstream text stream failed error=conversation HTTP 413 Payload Too Large: {"detail":{"message":"你提交的消息过长，请编辑后重新发送。","code":"message_length_exceeds_limit"}}
+2026-08-12T04:37:27.914118Z ERROR tower_http::trace::on_failure: response failed classification=Status code: 502 Bad Gateway latency=1529 ms
+2026-08-12T04:37:38.403893Z  INFO upstream::requirements: chat_requirements_finalize turnstile_required=true turnstile_solved_len=2368 proof_solved_len=679
+2026-08-12T04:37:39.944226Z ERROR gptimage_gateway_rs: upstream text stream failed error=conversation HTTP 413 Payload Too Large: {"detail":{"message":"你提交的消息过长，请编辑后重新发送。","code":"message_length_exceeds_limit"}}
+2026-08-12T04:37:39.944327Z ERROR tower_http::trace::on_failure: response failed classification=Status code: 502 Bad Gateway latency=2366 ms
+2026-08-12T04:37:57.472419Z  INFO upstream::requirements: chat_requirements_finalize turnstile_required=true turnstile_solved_len=2420 proof_solved_len=679
+2026-08-12T04:37:58.893628Z ERROR gptimage_gateway_rs: upstream text stream failed error=conversation HTTP 413 Payload Too Large: {"detail":{"message":"你提交的消息过长，请编辑后重新发送。","code":"message_length_exceeds_limit"}}
+2026-08-12T04:37:58.893728Z ERROR tower_http::trace::on_failure: response failed classification=Status code: 502 Bad Gateway latency=1718 ms
+2026-08-12T04:52:30.225300Z  INFO gptimage_gateway_rs: upstream image: skipping helper quota precheck email=islaisaiah86255@outlook.com
+--
+2026-08-12T04:53:25.412518Z  INFO gptimage_gateway_rs: image ok email=alexnnnmmm@proton.me elapsed_ms=55186 batch_n=1 b64_count=1 quota_after=Some(Number(16))
+2026-08-12T05:12:29.325194Z  INFO gptimage_gateway_rs: upstream image: skipping helper quota precheck email=guychristian04928@outlook.com
+2026-08-12T05:12:29.330105Z  INFO gptimage_gateway_rs: upstream image attempt email=qaflowxho1z6hynk@proton.me attempt=1 max_attempts=5
+2026-08-12T05:12:31.929214Z  INFO upstream::requirements: chat_requirements_finalize turnstile_required=true turnstile_solved_len=2392 proof_solved_len=635
+2026-08-12T05:12:32.740441Z  INFO upstream::runtime: image prepare complete conduit_len=348
+2026-08-12T05:13:07.298604Z  INFO gptimage_gateway_rs: image ok email=qaflowxho1z6hynk@proton.me elapsed_ms=37972 batch_n=1 b64_count=1 quota_after=Some(Number(20))
+2026-08-12T05:13:58.999748Z  INFO upstream::requirements: chat_requirements_finalize turnstile_required=true turnstile_solved_len=2324 proof_solved_len=663
+2026-08-12T05:14:02.553922Z  INFO upstream::runtime: text conversation complete conversation_id=6a7c0117-ff84-83ec-9e0e-636dcf910370 text_len=0 events=2
+2026-08-12T05:16:14.705449Z  INFO upstream::requirements: chat_requirements_finalize turnstile_required=true turnstile_solved_len=2392 proof_solved_len=659
+2026-08-12T05:16:17.007452Z  INFO upstream::runtime: text conversation complete conversation_id=6a7c019f-6eac-83ec-9dc4-dfa9617d3b8b text_len=0 events=2
+2026-08-12T05:37:13.638413Z  INFO upstream::requirements: chat_requirements_finalize turnstile_required=true turnstile_solved_len=2360 proof_solved_len=651
+2026-08-12T05:37:14.185492Z  INFO upstream::runtime: image prepare complete conduit_len=352
+2026-08-12T05:37:44.659022Z  INFO gptimage_gateway_rs: chat image ok email=alexnnnmmm@proton.me elapsed_ms=31496 b64_len=2580900
+
+===== 4. duplicate-prompt lines =====
+
+===== 5. poll timeout lines + context =====
+2026-08-11T15:46:00.722339Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b4299-3cbc-83ec-8891-4735a5b81324 attempt=71 remaining_secs=18.983501516
+2026-08-11T15:46:04.647925Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b4299-3cbc-83ec-8891-4735a5b81324 attempt=72 remaining_secs=15.057915281
+2026-08-11T15:46:08.181412Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b4299-3cbc-83ec-8891-4735a5b81324 attempt=73 remaining_secs=11.524427228
+2026-08-11T15:46:12.253925Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b4299-3cbc-83ec-8891-4735a5b81324 attempt=74 remaining_secs=7.451914929
+2026-08-11T15:46:15.901914Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b4299-3cbc-83ec-8891-4735a5b81324 attempt=75 remaining_secs=3.803926364
+2026-08-11T15:46:19.795665Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b4299-3cbc-83ec-8891-4735a5b81324 attempt=76 remaining_secs=0.0
+2026-08-11T15:46:19.802135Z ERROR gptimage_gateway_rs: image call failed email=guychristian04928@outlook.com elapsed_ms=312273 error=image poll timeout after 300.1s (conversation_id=6a7b4299-3cbc-83ec-8891-4735a5b81324, attempts=76)
+2026-08-11T15:46:19.802225Z ERROR tower_http::trace::on_failure: response failed classification=Status code: 502 Bad Gateway latency=312664 ms
+2026-08-11T15:47:02.111234Z  INFO gptimage_gateway_rs: upstream image: skipping helper quota precheck email=islaisaiah86255@outlook.com
+--
+2026-08-11T18:12:34.854514Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b64da-860c-83ec-88ca-cdf5a9c7ce04 attempt=74 remaining_secs=19.25726526
+2026-08-11T18:12:38.408954Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b64da-860c-83ec-88ca-cdf5a9c7ce04 attempt=75 remaining_secs=15.70282533
+2026-08-11T18:12:42.277153Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b64da-860c-83ec-88ca-cdf5a9c7ce04 attempt=76 remaining_secs=11.834625846
+2026-08-11T18:12:45.820420Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b64da-860c-83ec-88ca-cdf5a9c7ce04 attempt=77 remaining_secs=8.291358539
+2026-08-11T18:12:49.737581Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b64da-860c-83ec-88ca-cdf5a9c7ce04 attempt=78 remaining_secs=4.374200155
+2026-08-11T18:12:53.304399Z  INFO upstream::poll: image poll check: no ids yet conversation_id=6a7b64da-860c-83ec-88ca-cdf5a9c7ce04 attempt=79 remaining_secs=0.807379625
+2026-08-11T18:12:54.120046Z ERROR gptimage_gateway_rs: image call failed email=gilbertlily2896@outlook.com elapsed_ms=337197 error=image poll timeout after 300.0s (conversation_id=6a7b64da-860c-83ec-88ca-cdf5a9c7ce04, attempts=79)
+2026-08-11T18:12:54.120295Z ERROR tower_http::trace::on_failure: response failed classification=Status code: 502 Bad Gateway latency=337619 ms
+2026-08-11T19:00:44.702472Z  INFO upstream::requirements: chat_requirements_finalize turnstile_required=true turnstile_solved_len=2440 proof_solved_len=635
+
+===== 6. prompt length / payload size hints =====
+
+===== 7. sample of image request start lines (to see logged fields) =====
+2026-08-12T07:55:39.205918Z  INFO gptimage_gateway_rs: upstream image attempt email=hanaregina45877@outlook.com attempt=3 max_attempts=5
+2026-08-12T07:55:39.757856Z  INFO gptimage_gateway_rs: upstream image attempt email=ionagary4335@outlook.com attempt=4 max_attempts=5
+2026-08-12T07:55:40.499944Z  INFO gptimage_gateway_rs: upstream image attempt email=irisisaiah9623@outlook.com attempt=5 max_attempts=5
+2026-08-12T08:05:32.305431Z  INFO gptimage_gateway_rs: upstream image attempt email=eleanorjane28840@outlook.com attempt=1 max_attempts=5
+2026-08-12T08:05:32.872424Z  INFO gptimage_gateway_rs: upstream image attempt email=emberevan8683@outlook.com attempt=2 max_attempts=5
+
+2026-08-12T04:06:23.174364Z  INFO upstream::poll: image poll start (post-SSE) conversation_id=6a7bf101-a0a8-83ec-883c-1198e3a3165c initial_wait_secs=5.0 timeout_secs=300.0
+2026-08-12T07:42:22.238845Z  INFO upstream::poll: image poll start (post-SSE) conversation_id=6a7c23d1-7018-83ec-a8ce-70cd03aa32ec initial_wait_secs=5.0 timeout_secs=300.0
+2026-08-12T07:56:44.333066Z  INFO upstream::poll: image poll start (post-SSE) conversation_id=6a7c26ff-4328-83ec-895c-1ddfcd4784d5 initial_wait_secs=5.0 timeout_secs=300.0

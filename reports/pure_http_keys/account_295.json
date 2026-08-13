@@ -1,0 +1,13 @@
+{
+  "email": "account_295@oldpool.local",
+  "sso": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiMWE3YjFhMzUtYjRmMi00ODM4LTliZTUtOTg4MzJmYmZjMDU1In0.x2tFLz5QINnKNd1Fh-TmV9pnHVf7h66G5-qfsupPGGk",
+  "meta_b64": "PjEEumVXpODSU+7xJDlVAMihvYWcRbPg7vZNGYlv5L9M33TeFYkNZnWkyer9OrY2",
+  "meta_html": "PjEEumVXpODSU+7xJDlVAMihvYWcRbPg7vZNGYlv5L9M33TeFYkNZnWkyer9OrY2",
+  "fingerprint": "",
+  "trailer_hex": "03",
+  "cookie": "sso=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiMWE3YjFhMzUtYjRmMi00ODM4LTliZTUtOTg4MzJmYmZjMDU1In0.x2tFLz5QINnKNd1Fh-TmV9pnHVf7h66G5-qfsupPGGk; sso-rw=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiMWE3YjFhMzUtYjRmMi00ODM4LTliZTUtOTg4MzJmYmZjMDU1In0.x2tFLz5QINnKNd1Fh-TmV9pnHVf7h66G5-qfsupPGGk; x-userid=ac9811b7-39c0-4978-9a3c-f926098c20c2; grok_device_id=e479a125-6d60-4878-a3cf-347793186451; cf_clearance=sKlteHF6jUkFfyGyuVKVyul2XoQzj7krnvEuwdlkatw-1786503230-1.2.1.1-cGcqON9RSx3aakcAk.4Lc6CB.wOv_GZ8Jm0nqlE_yfFxOKYEnTqKeC69BTzRzRjKhe4MNpTeLOcsQ7SeOVImlV9jLDw2zMgVY7OIHENUNfro.aV2sDG1COFcpRsp2QKDs6HrENxi8ZX2SgiJmQdno_vx4cf2QjXTBZ0RWK6f7xPCwKKls2OPUyO4BSEex0LpCtOLmCy3HXg9oRUwBMlA1WLtCnOVOYlojmZkv2HG9XJR2KW4uQ98OixoU_Nps7YdFgom4jH4..OhfuJOkyGZwWig4i6LwrnK5BYhTB2EkKYk76cCw6AcSOOfdLYby1suA8dm3Ol2bbNVAJnYLEelXn7vBXv5IE9AVL08H0AJGPU; __cf_bm=ORpWuW4kbfJNb4nlKIWx3IWTBUCjO5PBk9MF_rqqUs4-1786503230.2716103-1.0.1.1-0FncTI0Y3LI9NeKgWs331JZGFk10x4u_Q9FzT04BGN1MnmZpi8YBFEJIe8r4MvNzYeEaDIvO10xZsgEkYiQ8wduKNhuzCkmr8036OIDJZsmrRresOCSpRpItx3gLwOAe; mp_ea93da913ddb66b6372b89d97b1029ac_mixpanel=%7B%22distinct_id%22%3A%22ac9811b7-39c0-4978-9a3c-f926098c20c2%22%2C%22%24device_id%22%3A%227817dce4-524b-488c-bc68-5604df1a473a%22%2C%22%24initial_referrer%22%3A%22%24direct%22%2C%22%24initial_referring_domain%22%3A%22%24direct%22%2C%22%24user_id%22%3A%22ac9811b7-39c0-4978-9a3c-f926098c20c2%22%7D; i18nextLng=zh; __cuid=0be23ee1-79bf-41cb-bb57-a87ab2be3c0a; __cuid=0be23ee1-79bf-41cb-bb57-a87ab2be3c0a",
+  "has_cf": true,
+  "extracted_at": "2026-08-12T10:54:00",
+  "digest_sample": "",
+  "account_id": 295
+}

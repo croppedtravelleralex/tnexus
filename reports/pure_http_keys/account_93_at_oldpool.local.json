@@ -1,0 +1,12 @@
+{
+  "email": "account_93@oldpool.local",
+  "sso": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiMmUxZGFjOWMtNmM2YS00NjFjLThhOTktYzRmYWVlODYxYjJhIn0.iItLu1k3SitWr4M3f-_wbV25e6iLz10Zi3kdQSnLcn4",
+  "meta_b64": "AF7a3x8m1cndBZPIBGdGSPXft28/2X2LFwLeyO5518kIvyQvmB1n5yNXmKt21uhH",
+  "meta_html": "AF7a3x8m1cndBZPIBGdGSPXft28/2X2LFwLeyO5518kIvyQvmB1n5yNXmKt21uhH",
+  "fingerprint": "70a960eb851eb851eb880666666666666680666666666666680eb851eb851eb8800",
+  "trailer_hex": "03",
+  "cookie": "sso=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiMmUxZGFjOWMtNmM2YS00NjFjLThhOTktYzRmYWVlODYxYjJhIn0.iItLu1k3SitWr4M3f-_wbV25e6iLz10Zi3kdQSnLcn4; sso-rw=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiMmUxZGFjOWMtNmM2YS00NjFjLThhOTktYzRmYWVlODYxYjJhIn0.iItLu1k3SitWr4M3f-_wbV25e6iLz10Zi3kdQSnLcn4; x-userid=5c4d2037-2da4-4962-bb32-37dd4a08af7c; grok_device_id=5220d672-25d4-4122-a21c-0d5e06d35b89; mp_ea93da913ddb66b6372b89d97b1029ac_mixpanel=%7B%22distinct_id%22%3A%225c4d2037-2da4-4962-bb32-37dd4a08af7c%22%2C%22%24device_id%22%3A%22b42d6c28-ac10-4fa3-b5cf-745b58791755%22%2C%22%24initial_referrer%22%3A%22%24direct%22%2C%22%24initial_referring_domain%22%3A%22%24direct%22%2C%22%24user_id%22%3A%225c4d2037-2da4-4962-bb32-37dd4a08af7c%22%7D; cf_clearance=XYp.ORjajgGqpciLYB5K6.jnUoh2hQ1YD2F1KRln0aE-1786499114-1.2.1.1-Z.8XjfQL8MhkkAoZDTTMf9VL5rPqYZ4m14AcuRF_cim0H5irSwqPvTSrpYnUpM6hXytDjEeew891ZnkC2ESkl7DgyLYAiwC_EDQS3Krx_GSb1zbhzgu_hFXPAfTznJ3v3hxIp_l6WUln6uti9JutsMtwfJMEnynbiXp2gGkQS1KWoR9hZJhg1J1rrSduWH2dOVjD2wxIKvn9ZUQ4uUZD1lwrOQXm7fbZUFTzCULBiu6jGwFdbWNOuWEHSnORlGZMmuoPxUIcUAC98wzEAhAvy7PjUi.Ia2PKauyAvIByYxbSimYWovDPmdGorivQ0bT2pU1FKGxPwnLc8JzRhh_0ApNqIgizkfO9JIH2hWu5P8o; __cf_bm=uc5wNgzgRp_g0VGwX.PaZOI82SIcn2laOHyFiElY38A-1786499113.7442925-1.0.1.1-p0W77kjQH35oRGCerPo_gx2_16a6r2kSQ5tkY9J8BwRJZ6kHZuQgBDMiT7IhLQ5a00RZ8YMsbu0Nn5G3W8TeJDbXOhO9oB4v0gDPev2pi5rQEK_xVsfX.cFpcUT.kB_p; i18nextLng=zh; __cuid=672ab81e-bc5f-41cb-b1b7-8ca0170fe929; __cuid=672ab81e-bc5f-41cb-b1b7-8ca0170fe929; __stripe_mid=614d582d-08b6-45d3-abde-ce97c3609f79e21a02; __stripe_sid=a6536170-b9dc-466e-adef-5680a1f99226b2514a",
+  "has_cf": true,
+  "extracted_at": "2026-08-12T09:45:21",
+  "digest_sample": "GET!/rest/app-chat/conversations!103574716obfiowerehiring70a960eb851eb851eb880666666666666680666666666666680eb851eb851eb"
+}

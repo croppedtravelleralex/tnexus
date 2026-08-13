@@ -1,15 +1,10 @@
 import type { GrokQuotaWindow } from "@/lib/grok-admin";
+import { unwrapItems } from "@/lib/http";
+
+/** 向后兼容别名：实现已移至 http.ts `unwrapItems`。 */
+export { unwrapItems as unwrapAdminItems };
 
 const MODE_PREF = ["fast", "auto", "console", "imagine"] as const;
-
-/** grok-admin 列表接口包一层 `{ items }`；兼容误当成裸数组的旧客户端。 */
-export function unwrapAdminItems<T>(raw: unknown): T[] {
-  if (Array.isArray(raw)) return raw as T[];
-  if (raw && typeof raw === "object" && Array.isArray((raw as { items?: unknown }).items)) {
-    return (raw as { items: T[] }).items;
-  }
-  return [];
-}
 
 /** 号池热条：优先展示 rate-limits 写入的 fast 窗口。 */
 export function pickDisplayQuotaWindow(
