@@ -75,7 +75,9 @@ fn ops_token(state: &AppState) -> Result<String, String> {
         .ok_or_else(|| "ACCOUNT_OPS_TOKEN 未配置".into())
 }
 
-async fn post_json(state: &AppState, path: &str, body: Value) -> Result<Value, String> {
+/// 发起请求并原样交回 (是否 2xx, 响应体文本)。
+/// 失败时也保留响应体，供 refresh-one 取回带错误标记的账号。
+async fn post_raw(state: &AppState, path: &str, body: Value) -> Result<(bool, String), String> {
     let base = state.config.account_ops_base.trim_end_matches('/');
     let token = ops_token(state)?;
     let resp = state
@@ -91,18 +93,26 @@ async fn post_json(state: &AppState, path: &str, body: Value) -> Result<Value, S
         .text()
         .await
         .map_err(|e| format!("account_ops 响应读取失败: {e}"))?;
-    if !status.is_success() {
-        let message = serde_json::from_str::<Value>(&text)
-            .ok()
-            .and_then(|v| {
-                v.get("detail")
-                    .and_then(|d| d.get("error"))
-                    .or_else(|| v.get("error"))
-                    .and_then(|e| e.as_str())
-                    .map(str::to_string)
-            })
-            .unwrap_or(text);
-        return Err(message);
+    Ok((status.is_success(), text))
+}
+
+fn ops_error_message(text: &str) -> String {
+    serde_json::from_str::<Value>(text)
+        .ok()
+        .and_then(|v| {
+            v.get("detail")
+                .and_then(|d| d.get("error"))
+                .or_else(|| v.get("error"))
+                .and_then(|e| e.as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| text.to_string())
+}
+
+async fn post_json(state: &AppState, path: &str, body: Value) -> Result<Value, String> {
+    let (ok, text) = post_raw(state, path, body).await?;
+    if !ok {
+        return Err(ops_error_message(&text));
     }
     if text.trim().is_empty() {
         return Ok(Value::Null);
@@ -245,12 +255,23 @@ pub async fn oauth_finish(
 }
 
 pub async fn refresh_one(state: &AppState, account: Value) -> Result<Value, String> {
-    let data = post_json(
+    let (ok, text) = post_raw(
         state,
         "/v1/accounts/refresh-one",
         json!({ "account": account }),
     )
     .await?;
+    let data: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+    if !ok {
+        // account-ops 失败时会回带打了 last_token_refresh_error 的账号。
+        // 写回库，让「哪些号刷不动」变成可查状态，而不是只在批量报告里一闪而过。
+        if let Some(failed) = data.get("account").cloned() {
+            if let Err(e) = state.accounts.merge_remote_items(&[failed]).await {
+                tracing::warn!(error = %e, "refresh-one 失败标记写回失败");
+            }
+        }
+        return Err(ops_error_message(&text));
+    }
     data.get("account")
         .cloned()
         .ok_or_else(|| "refresh-one 响应缺少 account".into())

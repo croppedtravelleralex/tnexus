@@ -107,20 +107,30 @@ impl Pool {
     ) -> Result<()> {
         let usage = crate::store::Usage::from_response(&outcome.body);
         let now = crate::now();
-        self.store.record_success_with_usage(
+        let budget = self.store.record_success_with_usage(
             account.id,
             model,
             now,
             &usage,
             Some(&outcome.rate_limit),
         )?;
-        if outcome.rate_limit.observed() && outcome.rate_limit.exhausted() {
-            debug!(account = %account.email, "quota exhausted, cooling");
+        // The upstream advertises the entitlement but never counts it down, so
+        // exhaustion is decided against our own running total.
+        if budget.spent() {
+            debug!(
+                account = %account.email,
+                spent = budget.spent_tokens,
+                limit = budget.limit_tokens,
+                "token budget spent, retiring account"
+            );
             self.store.mark_health(
                 account.id,
                 Health::Cooling,
                 now + QUOTA_COOLDOWN_SECS,
-                "quota exhausted (x-ratelimit-remaining = 0)",
+                &format!(
+                    "token budget spent ({}/{})",
+                    budget.spent_tokens, budget.limit_tokens
+                ),
                 now,
             )?;
         }

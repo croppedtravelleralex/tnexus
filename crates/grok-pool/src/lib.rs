@@ -68,6 +68,26 @@ pub enum LoadError {
     Storage(#[from] StorageError),
 }
 
+/// 一次 `reconcile` 的结果，用于日志与 health 暴露。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ReconcileReport {
+    /// 对账后池内账号总数。
+    pub total: usize,
+    /// 本次新入池的账号数。
+    pub added: usize,
+    /// 本次出池（PG 已禁用/删除）的账号数。
+    pub removed: usize,
+    /// 从 PG 冷却字段合并进内存的账号数。
+    pub cooldowns_applied: usize,
+}
+
+impl ReconcileReport {
+    /// 本次对账是否改变了池成员。
+    pub fn changed(&self) -> bool {
+        self.added > 0 || self.removed > 0
+    }
+}
+
 impl SimplifiedPool {
     /// 用默认冷却时长（2s）新建空池；需调用 `load` 填充账号。
     pub fn new() -> Self {
@@ -89,6 +109,73 @@ impl SimplifiedPool {
         inner.select_seq = 0;
         inner.last_selected_seq.clear();
         Ok(())
+    }
+
+    /// 与 PG 增量对账：同步账号增删与元数据，**保留**留存账号的冷却与轮转状态。
+    ///
+    /// 为什么不能周期性调用 `load` 代替：`load` 会清空 `cooldown_until` /
+    /// `rl_failure_count` / `last_selected_seq`，每轮调用都会让被限流的账号立刻
+    /// 重新可选，并把公平轮转游标归零 —— 那正是此前饿死问题的成因。
+    ///
+    /// 顺带把 PG 侧 `cooldown_until` 合并进内存冷却（取两者较晚者），让管理台
+    /// 或后台任务写入的冷却能真正作用到选号器。
+    pub async fn reconcile<R: AccountRepository + ?Sized>(
+        &self,
+        repo: &R,
+    ) -> Result<ReconcileReport, LoadError> {
+        let accounts = repo
+            .list_pool(Provider::GrokWeb, true)
+            .await
+            .map_err(LoadError::Storage)?;
+        let now_wall = chrono::Utc::now();
+        let now_mono = tokio::time::Instant::now();
+        let mut inner = self.inner.write().await;
+
+        let next_ids: std::collections::HashSet<i64> = accounts.iter().map(|a| a.id).collect();
+        let prev_ids: std::collections::HashSet<i64> =
+            inner.accounts.iter().map(|a| a.id).collect();
+
+        let added = next_ids.difference(&prev_ids).count();
+        let removed: Vec<i64> = prev_ids.difference(&next_ids).copied().collect();
+
+        // 出池账号的记账一并清掉，避免 HashMap 无界增长。
+        for id in &removed {
+            inner.cooldown_until.remove(id);
+            inner.success_count.remove(id);
+            inner.failure_count.remove(id);
+            inner.rl_failure_count.remove(id);
+            inner.last_selected_seq.remove(id);
+        }
+        if let Some(pin) = inner.pin {
+            if !next_ids.contains(&pin) {
+                inner.pin = None;
+            }
+        }
+
+        // PG 冷却 → 内存冷却（单调时钟），取较晚者，不缩短已有冷却。
+        let mut cooldowns_applied = 0usize;
+        for acc in &accounts {
+            let Some(until) = acc.cooldown_until else {
+                continue;
+            };
+            let Ok(remaining) = (until - now_wall).to_std() else {
+                continue; // 已过期
+            };
+            let candidate = now_mono + remaining;
+            let entry = inner.cooldown_until.entry(acc.id).or_insert(candidate);
+            if candidate > *entry {
+                *entry = candidate;
+            }
+            cooldowns_applied += 1;
+        }
+
+        inner.accounts = accounts;
+        Ok(ReconcileReport {
+            total: inner.accounts.len(),
+            added,
+            removed: removed.len(),
+            cooldowns_applied,
+        })
     }
 
     /// 直接注入内存账号（测试 / 单测直达，不依赖 PG）。
@@ -341,6 +428,149 @@ mod tests {
         p.load_in_memory(ids.iter().map(|&id| acc(id)).collect())
             .await;
         p
+    }
+
+    struct FakeRepo {
+        accounts: Vec<Account>,
+    }
+
+    impl FakeRepo {
+        fn with_ids(ids: &[i64]) -> Self {
+            Self {
+                accounts: ids.iter().map(|&id| acc(id)).collect(),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl AccountRepository for FakeRepo {
+        async fn list_pool(
+            &self,
+            _provider: Provider,
+            _enabled: bool,
+        ) -> Result<Vec<Account>, StorageError> {
+            Ok(self.accounts.clone())
+        }
+        async fn get(&self, _account_id: i64) -> Result<Account, StorageError> {
+            unreachable!("reconcile 不调用 get")
+        }
+        async fn by_identity_key(&self, _key: &str) -> Result<Account, StorageError> {
+            unreachable!("reconcile 不调用 by_identity_key")
+        }
+    }
+
+    #[tokio::test]
+    async fn reconcile_syncs_membership() {
+        let pool = pool_with(&[1, 2, 3], Duration::from_secs(2)).await;
+        let repo = FakeRepo::with_ids(&[2, 3, 4]);
+
+        let report = pool.reconcile(&repo).await.unwrap();
+
+        assert_eq!(report.added, 1);
+        assert_eq!(report.removed, 1);
+        assert_eq!(report.total, 3);
+        assert!(report.changed());
+
+        // 出池账号不再被选中，新入池账号可被选中。
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            seen.push(pool.select(None).await.unwrap());
+        }
+        seen.sort_unstable();
+        assert_eq!(seen, vec![2, 3, 4]);
+    }
+
+    /// 核心回归：对账**不得**清空留存账号的冷却。
+    /// 若这里退化成 `load`，被限流的账号会立刻重新可选，重演饿死/榨干问题。
+    #[tokio::test]
+    async fn reconcile_preserves_cooldown_of_surviving_accounts() {
+        let pool = pool_with(&[1, 2], Duration::from_secs(2)).await;
+        pool.dispatch_rate_limited(1).await; // 1 进入 60s 退避
+
+        let repo = FakeRepo::with_ids(&[1, 2]);
+        pool.reconcile(&repo).await.unwrap();
+
+        // 冷却仍然有效：只剩 2 可选，连选两次都不会是 1。
+        assert_eq!(pool.select(None).await, Some(2));
+        assert_eq!(pool.select(None).await, Some(2));
+    }
+
+    /// 对账不得清空 dispatch 记账（`load` 会清）。
+    #[tokio::test]
+    async fn reconcile_preserves_dispatch_counters() {
+        let pool = pool_with(&[1, 2], Duration::from_secs(2)).await;
+        pool.dispatch_success(1).await;
+        pool.dispatch_success(1).await;
+        assert_eq!(pool.success_count(1).await, 2);
+
+        pool.reconcile(&FakeRepo::with_ids(&[1, 2])).await.unwrap();
+
+        assert_eq!(pool.success_count(1).await, 2);
+    }
+
+    /// 出池账号的记账要清掉，否则 HashMap 会随账号轮换无界增长。
+    #[tokio::test]
+    async fn reconcile_drops_state_of_removed_accounts() {
+        let pool = pool_with(&[1, 2], Duration::from_secs(2)).await;
+        pool.dispatch_success(1).await;
+
+        pool.reconcile(&FakeRepo::with_ids(&[2])).await.unwrap();
+
+        assert_eq!(pool.success_count(1).await, 0);
+    }
+
+    /// PG 侧写入的冷却要能真正作用到选号器（此前完全传不到）。
+    #[tokio::test]
+    async fn reconcile_applies_pg_cooldown() {
+        let pool = pool_with(&[1, 2], Duration::from_secs(2)).await;
+
+        let mut cooling = acc(1);
+        cooling.cooldown_until = Some(chrono::Utc::now() + chrono::Duration::seconds(120));
+        let repo = FakeRepo {
+            accounts: vec![cooling, acc(2)],
+        };
+
+        let report = pool.reconcile(&repo).await.unwrap();
+        assert_eq!(report.cooldowns_applied, 1);
+        assert_eq!(pool.select(None).await, Some(2));
+        assert_eq!(pool.select(None).await, Some(2));
+    }
+
+    /// PG 里已过期的冷却不应把账号误锁。
+    #[tokio::test]
+    async fn reconcile_ignores_expired_pg_cooldown() {
+        let pool = pool_with(&[1], Duration::from_secs(2)).await;
+
+        let mut expired = acc(1);
+        expired.cooldown_until = Some(chrono::Utc::now() - chrono::Duration::seconds(30));
+        let repo = FakeRepo {
+            accounts: vec![expired],
+        };
+
+        let report = pool.reconcile(&repo).await.unwrap();
+        assert_eq!(report.cooldowns_applied, 0);
+        assert_eq!(pool.select(None).await, Some(1));
+    }
+
+    /// pin 的账号被禁用后要自动解除，否则 pin 会一直指向池外账号。
+    #[tokio::test]
+    async fn reconcile_clears_pin_when_account_leaves_pool() {
+        let pool = pool_with(&[1, 2], Duration::from_secs(2)).await;
+        pool.pin(1).await;
+        assert_eq!(pool.pinned().await, Some(1));
+
+        pool.reconcile(&FakeRepo::with_ids(&[2])).await.unwrap();
+
+        assert_eq!(pool.pinned().await, None);
+    }
+
+    /// 成员无变化时 `changed()` 为假，供调用方决定要不要打日志。
+    #[tokio::test]
+    async fn reconcile_reports_no_change_when_stable() {
+        let pool = pool_with(&[1, 2], Duration::from_secs(2)).await;
+        let report = pool.reconcile(&FakeRepo::with_ids(&[1, 2])).await.unwrap();
+        assert!(!report.changed());
+        assert_eq!(report.total, 2);
     }
 
     #[tokio::test]

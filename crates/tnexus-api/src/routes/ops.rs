@@ -109,25 +109,38 @@ async fn ops_summary(
     })))
 }
 
-async fn nurture_status(
-    State(state): State<Arc<AppState>>,
-    _admin: AdminUser,
-) -> Result<Json<Value>, (StatusCode, String)> {
-    if account_ops::ops_available(&state) {
-        if let Ok(data) = account_ops::nurture_status(&state).await {
-            return Ok(Json(data));
-        }
-    }
-    Ok(Json(json!({
+fn nurture_placeholder(message: &str, last_error: Option<String>) -> Value {
+    json!({
         "enabled": false,
         "running": false,
         "queue": { "depth": 0, "oldest_age_sec": 0 },
         "completed_in_day": 0,
         "max_per_account_per_day": 0,
-        "last_error": null,
+        "last_error": last_error,
         "source": "tnexus-local",
-        "message": "养号服务未配置（需 ACCOUNT_OPS_TOKEN + GPTIMAGE_ROOT）",
-    })))
+        "message": message,
+    })
+}
+
+async fn nurture_status(
+    State(state): State<Arc<AppState>>,
+    _admin: AdminUser,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    if !account_ops::ops_available(&state) {
+        return Ok(Json(nurture_placeholder(
+            "养号服务未配置（需 ACCOUNT_OPS_TOKEN + GPTIMAGE_ROOT）",
+            None,
+        )));
+    }
+    match account_ops::nurture_status(&state).await {
+        Ok(data) => Ok(Json(data)),
+        // 已配置却调不通时，过去回退成「未配置」，把服务故障伪装成配置缺失，
+        // 运维会去查 env 而不是查 account-ops。这里如实回报错误。
+        Err(e) => {
+            tracing::warn!(error = %e, "account-ops nurture status 调用失败");
+            Ok(Json(nurture_placeholder("养号服务不可达", Some(e))))
+        }
+    }
 }
 
 async fn nurture_enable(

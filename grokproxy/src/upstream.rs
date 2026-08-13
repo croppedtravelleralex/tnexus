@@ -134,10 +134,6 @@ impl RateLimit {
     pub fn observed(&self) -> bool {
         self.limit_tokens >= 0 || self.limit_requests >= 0
     }
-
-    pub fn exhausted(&self) -> bool {
-        self.remaining_tokens == 0 || self.remaining_requests == 0
-    }
 }
 
 /// A chat/responses call plus whatever quota the upstream disclosed.
@@ -611,7 +607,6 @@ mod tests {
         assert_eq!(quota.remaining_tokens, 994_300);
         assert_eq!(quota.remaining_requests, 18);
         assert!(quota.observed());
-        assert!(!quota.exhausted());
     }
 
     #[test]
@@ -620,21 +615,6 @@ mod tests {
         assert!(!quota.observed());
         // -1 keeps "never observed" distinct from "nothing left".
         assert_eq!(quota.remaining_tokens, -1);
-        assert!(!quota.exhausted());
-    }
-
-    #[test]
-    fn zero_remaining_counts_as_exhausted() {
-        for pair in [
-            ("x-ratelimit-remaining-tokens", "0"),
-            ("x-ratelimit-remaining-requests", "0"),
-        ] {
-            let quota = RateLimit::from_headers(&headers_from(&[
-                ("x-ratelimit-limit-tokens", "1000000"),
-                pair,
-            ]));
-            assert!(quota.exhausted(), "{pair:?} should be exhausted");
-        }
     }
 
     #[test]

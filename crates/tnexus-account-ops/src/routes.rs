@@ -159,6 +159,15 @@ async fn refresh_one(
     Json(body): Json<AccountIn>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let acc = refresh::refresh_access_token(&st.http, &body.account, false).await;
+    // 刷新失败必须让调用方看见：过去这里恒返回 ok:true，批量刷新把没换成的
+    // token 计入 refreshed 并写回库，账号静默过期无人知晓。
+    if let Some(err) = refresh::refresh_error(&acc) {
+        let merged = user_info::merge_user_info(&st.http, &acc).await;
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "ok": false, "error": err, "account": merged })),
+        ));
+    }
     let merged = user_info::merge_user_info(&st.http, &acc).await;
     Ok(Json(json!({ "ok": true, "account": merged })))
 }

@@ -11,6 +11,29 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 
 use crate::model::{Account, AccountImport, Health, ImportOutcome, Provider};
 
+/// What an account has spent against what the upstream says it is entitled to.
+///
+/// The upstream's `x-ratelimit-remaining-*` headers never move — verified with
+/// six back-to-back calls — so they advertise the entitlement rather than count
+/// down. Remaining quota is therefore ours to track: entitlement from the
+/// header, spend from the `usage` block of every response.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Budget {
+    pub spent_tokens: i64,
+    /// -1 when the upstream has never told us the entitlement.
+    pub limit_tokens: i64,
+}
+
+impl Budget {
+    pub fn known(&self) -> bool {
+        self.limit_tokens > 0
+    }
+
+    pub fn spent(&self) -> bool {
+        self.known() && self.spent_tokens >= self.limit_tokens
+    }
+}
+
 /// What one upstream call consumed, as reported by the upstream itself.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Usage {
@@ -422,10 +445,13 @@ impl Store {
     }
 
     pub fn record_success(&self, id: i64, model: &str, now: i64) -> Result<()> {
-        self.record_success_with_usage(id, model, now, &Usage::default(), None)
+        self.record_success_with_usage(id, model, now, &Usage::default(), None)?;
+        Ok(())
     }
 
-    /// Success plus whatever the upstream reported it cost and how much is left.
+    /// Success plus whatever the upstream reported it cost and how much the
+    /// account is entitled to. Returns the account's running budget so the
+    /// caller can retire it once it is spent.
     ///
     /// Quota columns are only written when the headers were actually present,
     /// so a response without them leaves the last known figures intact instead
@@ -437,7 +463,7 @@ impl Store {
         now: i64,
         usage: &Usage,
         quota: Option<&crate::upstream::RateLimit>,
-    ) -> Result<()> {
+    ) -> Result<Budget> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "UPDATE accounts SET
@@ -483,7 +509,17 @@ impl Store {
                 ],
             )?;
         }
-        Ok(())
+        let budget = conn.query_row(
+            "SELECT total_tokens, limit_tokens FROM accounts WHERE id = ?1",
+            params![id],
+            |row| {
+                Ok(Budget {
+                    spent_tokens: row.get(0)?,
+                    limit_tokens: row.get(1)?,
+                })
+            },
+        )?;
+        Ok(budget)
     }
 
     pub fn record_failure(
@@ -811,6 +847,80 @@ mod tests {
         assert_eq!(account.total_tokens, 40);
         assert_eq!(account.cost_ticks, 2_000_000);
         assert_eq!(account.success_count, 2);
+    }
+
+    #[test]
+    fn entitlement_is_stored_and_the_budget_tracks_spend() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .import(Some(Provider::Build), &[build_item("q@b.c", "r1")], 1)
+            .unwrap();
+        let id = store.list(None).unwrap()[0].id;
+        let quota = crate::upstream::RateLimit {
+            limit_tokens: 100,
+            remaining_tokens: 100,
+            limit_requests: 21,
+            remaining_requests: 21,
+        };
+        let usage = Usage {
+            prompt_tokens: 10,
+            completion_tokens: 20,
+            total_tokens: 30,
+            cost_ticks: 0,
+        };
+
+        let budget = store
+            .record_success_with_usage(id, "grok-4.6", 5, &usage, Some(&quota))
+            .unwrap();
+        assert_eq!(budget.limit_tokens, 100);
+        assert_eq!(budget.spent_tokens, 30);
+        assert!(!budget.spent());
+
+        // Headers advertise the same entitlement forever; spend is what moves.
+        for tick in 6..=9 {
+            store
+                .record_success_with_usage(id, "grok-4.6", tick, &usage, Some(&quota))
+                .unwrap();
+        }
+        let budget = store
+            .record_success_with_usage(id, "grok-4.6", 10, &usage, Some(&quota))
+            .unwrap();
+        assert!(budget.spent(), "180 tokens spent against a 100 entitlement");
+    }
+
+    #[test]
+    fn a_response_without_quota_headers_keeps_the_known_entitlement() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .import(Some(Provider::Build), &[build_item("q@b.c", "r1")], 1)
+            .unwrap();
+        let id = store.list(None).unwrap()[0].id;
+        let quota = crate::upstream::RateLimit {
+            limit_tokens: 1_000_000,
+            remaining_tokens: 1_000_000,
+            limit_requests: 21,
+            remaining_requests: 21,
+        };
+        store
+            .record_success_with_usage(id, "grok-4.6", 5, &Usage::default(), Some(&quota))
+            .unwrap();
+
+        // A later response that omits the headers must not blank the figure.
+        let budget = store
+            .record_success_with_usage(id, "grok-4.6", 6, &Usage::default(), None)
+            .unwrap();
+        assert_eq!(budget.limit_tokens, 1_000_000);
+    }
+
+    #[test]
+    fn an_unknown_entitlement_never_counts_as_spent() {
+        // Otherwise a never-used account would be retired before its first call.
+        let budget = Budget {
+            spent_tokens: 999,
+            limit_tokens: -1,
+        };
+        assert!(!budget.known());
+        assert!(!budget.spent());
     }
 
     #[test]

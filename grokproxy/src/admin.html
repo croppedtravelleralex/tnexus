@@ -225,17 +225,16 @@ function sum(group) {
   return Object.values(group || {}).reduce((a, b) => a + b, 0);
 }
 
-// Quota only becomes known after the account serves a request — the upstream
-// reports it in response headers, never up front.
+// The upstream advertises an entitlement in its response headers but never
+// counts it down, so remaining = entitlement − what we have spent locally.
+// Both halves only exist once the account has served at least one request.
 function quota(a) {
-  if (a.remaining_tokens == null) return '<span class="muted" title="尚未跑过请求，上游只在响应头里报额度">未知</span>';
-  const left = a.remaining_tokens;
-  const total = a.limit_tokens || 0;
-  const pct = total ? Math.round((left / total) * 100) : 0;
+  const total = a.limit_tokens;
+  if (!total) return '<span class="muted" title="上游只在响应头里报额度，账号跑过请求后才知道">未知</span>';
+  const left = Math.max(0, total - (a.total_tokens || 0));
+  const pct = Math.round((left / total) * 100);
   const colour = left === 0 ? '#dc2626' : pct < 20 ? '#d97706' : '#16a34a';
-  const requests = a.remaining_requests == null ? '' :
-    ` · ${a.remaining_requests}/${a.limit_requests} 次`;
-  return `<span style="color:${colour}" title="剩余 ${left.toLocaleString()} / ${total.toLocaleString()} token${requests}">`
+  return `<span style="color:${colour}" title="剩余 ${left.toLocaleString()} / 授权 ${total.toLocaleString()} token">`
     + `${(left / 1000).toFixed(0)}k <span class="muted">(${pct}%)</span></span>`;
 }
 
