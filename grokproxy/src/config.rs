@@ -19,6 +19,12 @@ pub struct Config {
     /// `host:port` where the sticky relay really listens; rewrites the address
     /// baked into imported credentials while keeping their sticky user:pass.
     pub sticky_relay: String,
+    /// Seconds between background health sweeps; 0 disables them.
+    pub sweep_interval_secs: u64,
+    /// Accounts checked per sweep. Bounded so a large pool is walked in slices
+    /// rather than hammering the upstream in one burst.
+    pub sweep_batch: usize,
+    pub sweep_concurrency: usize,
 }
 
 fn env_or(key: &str, fallback: &str) -> String {
@@ -43,6 +49,15 @@ impl Config {
             max_attempts: env_or("GROKPROXY_MAX_ATTEMPTS", "3").parse().unwrap_or(3),
             default_proxy: env_or("GROKPROXY_PROXY", ""),
             sticky_relay: env_or("GROKPROXY_STICKY_RELAY", ""),
+            sweep_interval_secs: env_or("GROKPROXY_SWEEP_INTERVAL_SECS", "1800")
+                .parse()
+                .unwrap_or(1800),
+            sweep_batch: env_or("GROKPROXY_SWEEP_BATCH", "200")
+                .parse()
+                .unwrap_or(200),
+            sweep_concurrency: env_or("GROKPROXY_SWEEP_CONCURRENCY", "8")
+                .parse()
+                .unwrap_or(8),
         }
     }
 

@@ -99,6 +99,54 @@ pub fn pick_chat_model(ids: &[String]) -> Option<String> {
     best.map(|(_, id)| id)
 }
 
+/// Quota the upstream reports on every chat response.
+///
+/// There is no quota *endpoint* — /usage, /credits, /quota and /rest/rate-limits
+/// all 404 — but the chat response carries `x-ratelimit-*` headers, which is
+/// the only place remaining quota is observable.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RateLimit {
+    pub limit_tokens: i64,
+    pub remaining_tokens: i64,
+    pub limit_requests: i64,
+    pub remaining_requests: i64,
+}
+
+impl RateLimit {
+    pub fn from_headers(headers: &reqwest::header::HeaderMap) -> Self {
+        let read = |name: &str| -> i64 {
+            headers
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|text| text.trim().parse::<i64>().ok())
+                .unwrap_or(-1)
+        };
+        RateLimit {
+            limit_tokens: read("x-ratelimit-limit-tokens"),
+            remaining_tokens: read("x-ratelimit-remaining-tokens"),
+            limit_requests: read("x-ratelimit-limit-requests"),
+            remaining_requests: read("x-ratelimit-remaining-requests"),
+        }
+    }
+
+    /// -1 means the header was absent, so "no data" is distinguishable from
+    /// "genuinely zero left".
+    pub fn observed(&self) -> bool {
+        self.limit_tokens >= 0 || self.limit_requests >= 0
+    }
+
+    pub fn exhausted(&self) -> bool {
+        self.remaining_tokens == 0 || self.remaining_requests == 0
+    }
+}
+
+/// A chat/responses call plus whatever quota the upstream disclosed.
+#[derive(Debug)]
+pub struct ChatOutcome {
+    pub body: serde_json::Value,
+    pub rate_limit: RateLimit,
+}
+
 #[derive(Debug, Clone)]
 pub struct TokenPair {
     pub access_token: String,
@@ -339,32 +387,22 @@ impl Upstream {
             .collect())
     }
 
-    /// Forward an OpenAI-shaped chat request. Returns the raw upstream JSON.
+    /// Forward an OpenAI-shaped chat request, keeping the quota headers.
     pub async fn chat_completions(
         &self,
         access_token: &str,
         proxy_url: &str,
         extra_headers: &serde_json::Value,
         payload: &serde_json::Value,
-    ) -> Result<serde_json::Value> {
-        let client = self.client(proxy_url)?;
-        let response = client
-            .post(format!("{}/chat/completions", self.base_url))
-            .bearer_auth(access_token)
-            .headers(self.cli_headers(extra_headers))
-            .json(payload)
-            .send()
-            .await
-            .map_err(|err| UpstreamError {
-                status: 0,
-                body: err.to_string(),
-            })?;
-        let status = response.status().as_u16();
-        let text = response.text().await.unwrap_or_default();
-        if status != 200 {
-            return Err(UpstreamError { status, body: text }.into());
-        }
-        serde_json::from_str(&text).map_err(|err| anyhow!("bad upstream json: {err}"))
+    ) -> Result<ChatOutcome> {
+        self.post_json(
+            "chat/completions",
+            access_token,
+            proxy_url,
+            extra_headers,
+            payload,
+        )
+        .await
     }
 
     pub async fn responses(
@@ -373,10 +411,22 @@ impl Upstream {
         proxy_url: &str,
         extra_headers: &serde_json::Value,
         payload: &serde_json::Value,
-    ) -> Result<serde_json::Value> {
+    ) -> Result<ChatOutcome> {
+        self.post_json("responses", access_token, proxy_url, extra_headers, payload)
+            .await
+    }
+
+    async fn post_json(
+        &self,
+        path: &str,
+        access_token: &str,
+        proxy_url: &str,
+        extra_headers: &serde_json::Value,
+        payload: &serde_json::Value,
+    ) -> Result<ChatOutcome> {
         let client = self.client(proxy_url)?;
         let response = client
-            .post(format!("{}/responses", self.base_url))
+            .post(format!("{}/{}", self.base_url, path))
             .bearer_auth(access_token)
             .headers(self.cli_headers(extra_headers))
             .json(payload)
@@ -387,11 +437,17 @@ impl Upstream {
                 body: err.to_string(),
             })?;
         let status = response.status().as_u16();
+        // Read quota before consuming the body; the headers are the only place
+        // remaining tokens/requests are reported.
+        let rate_limit = RateLimit::from_headers(response.headers());
         let text = response.text().await.unwrap_or_default();
         if status != 200 {
             return Err(UpstreamError { status, body: text }.into());
         }
-        serde_json::from_str(&text).map_err(|err| anyhow!("bad upstream json: {err}"))
+        Ok(ChatOutcome {
+            body: serde_json::from_str(&text).map_err(|err| anyhow!("bad upstream json: {err}"))?,
+            rate_limit,
+        })
     }
 }
 
@@ -528,6 +584,66 @@ mod tests {
     fn a_short_chat_timeout_also_shortens_refresh() {
         let upstream = Upstream::new(DEFAULT_BASE_URL, 8);
         assert_eq!(upstream.refresh_timeout(), Duration::from_secs(8));
+    }
+
+    fn headers_from(pairs: &[(&str, &str)]) -> reqwest::header::HeaderMap {
+        let mut map = reqwest::header::HeaderMap::new();
+        for (key, value) in pairs {
+            map.insert(
+                reqwest::header::HeaderName::try_from(*key).unwrap(),
+                reqwest::header::HeaderValue::from_str(value).unwrap(),
+            );
+        }
+        map
+    }
+
+    #[test]
+    fn quota_is_read_from_the_real_header_names() {
+        // Observed on a live chat response; this is the only place the free
+        // Build tier discloses remaining quota.
+        let quota = RateLimit::from_headers(&headers_from(&[
+            ("x-ratelimit-limit-tokens", "1000000"),
+            ("x-ratelimit-remaining-tokens", "994300"),
+            ("x-ratelimit-limit-requests", "21"),
+            ("x-ratelimit-remaining-requests", "18"),
+        ]));
+        assert_eq!(quota.limit_tokens, 1_000_000);
+        assert_eq!(quota.remaining_tokens, 994_300);
+        assert_eq!(quota.remaining_requests, 18);
+        assert!(quota.observed());
+        assert!(!quota.exhausted());
+    }
+
+    #[test]
+    fn absent_headers_mean_unknown_not_zero() {
+        let quota = RateLimit::from_headers(&headers_from(&[]));
+        assert!(!quota.observed());
+        // -1 keeps "never observed" distinct from "nothing left".
+        assert_eq!(quota.remaining_tokens, -1);
+        assert!(!quota.exhausted());
+    }
+
+    #[test]
+    fn zero_remaining_counts_as_exhausted() {
+        for pair in [
+            ("x-ratelimit-remaining-tokens", "0"),
+            ("x-ratelimit-remaining-requests", "0"),
+        ] {
+            let quota = RateLimit::from_headers(&headers_from(&[
+                ("x-ratelimit-limit-tokens", "1000000"),
+                pair,
+            ]));
+            assert!(quota.exhausted(), "{pair:?} should be exhausted");
+        }
+    }
+
+    #[test]
+    fn garbage_header_values_do_not_panic() {
+        let quota = RateLimit::from_headers(&headers_from(&[(
+            "x-ratelimit-remaining-tokens",
+            "not-a-number",
+        )]));
+        assert_eq!(quota.remaining_tokens, -1);
     }
 
     #[test]

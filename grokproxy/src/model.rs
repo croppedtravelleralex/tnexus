@@ -111,6 +111,12 @@ pub struct Account {
     pub cost_ticks: i64,
     /// Last time this account actually served a request; 0 = never proven.
     pub verified_at: i64,
+    /// Quota from the upstream's x-ratelimit-* headers; -1 = never observed.
+    pub limit_tokens: i64,
+    pub remaining_tokens: i64,
+    pub limit_requests: i64,
+    pub remaining_requests: i64,
+    pub quota_checked_at: i64,
 }
 
 impl Account {
@@ -230,6 +236,11 @@ pub struct AccountView {
     pub completion_tokens: i64,
     /// Accumulated spend in USD, derived from the upstream's cost ticks.
     pub cost_usd: f64,
+    /// Quota last reported by the upstream; null = never observed.
+    pub remaining_tokens: Option<i64>,
+    pub limit_tokens: Option<i64>,
+    pub remaining_requests: Option<i64>,
+    pub limit_requests: Option<i64>,
     /// False when the account has never served a request — `active` alone only
     /// means "imported", not "known good".
     pub verified: bool,
@@ -258,6 +269,11 @@ impl From<&Account> for AccountView {
             completion_tokens: account.completion_tokens,
             cost_usd: (account.cost_ticks as f64 / COST_TICKS_PER_USD * 1e6).round() / 1e6,
             verified: account.verified_at > 0,
+            remaining_tokens: (account.remaining_tokens >= 0).then_some(account.remaining_tokens),
+            limit_tokens: (account.limit_tokens >= 0).then_some(account.limit_tokens),
+            remaining_requests: (account.remaining_requests >= 0)
+                .then_some(account.remaining_requests),
+            limit_requests: (account.limit_requests >= 0).then_some(account.limit_requests),
         }
     }
 }

@@ -144,6 +144,13 @@ impl Store {
             // Proven to have served a request. Distinct from `active`, which is
             // merely the state a freshly imported account starts in.
             "verified_at INTEGER NOT NULL DEFAULT 0",
+            // Quota as last reported by x-ratelimit-* on a chat response.
+            // -1 = never observed, so "unknown" stays distinct from "zero left".
+            "limit_tokens INTEGER NOT NULL DEFAULT -1",
+            "remaining_tokens INTEGER NOT NULL DEFAULT -1",
+            "limit_requests INTEGER NOT NULL DEFAULT -1",
+            "remaining_requests INTEGER NOT NULL DEFAULT -1",
+            "quota_checked_at INTEGER NOT NULL DEFAULT 0",
         ] {
             let _ = conn.execute(&format!("ALTER TABLE accounts ADD COLUMN {column}"), []);
         }
@@ -176,6 +183,11 @@ impl Store {
             total_tokens: row.get("total_tokens").unwrap_or(0),
             cost_ticks: row.get("cost_ticks").unwrap_or(0),
             verified_at: row.get("verified_at").unwrap_or(0),
+            limit_tokens: row.get("limit_tokens").unwrap_or(-1),
+            remaining_tokens: row.get("remaining_tokens").unwrap_or(-1),
+            limit_requests: row.get("limit_requests").unwrap_or(-1),
+            remaining_requests: row.get("remaining_requests").unwrap_or(-1),
+            quota_checked_at: row.get("quota_checked_at").unwrap_or(0),
         })
     }
 
@@ -410,16 +422,21 @@ impl Store {
     }
 
     pub fn record_success(&self, id: i64, model: &str, now: i64) -> Result<()> {
-        self.record_success_with_usage(id, model, now, &Usage::default())
+        self.record_success_with_usage(id, model, now, &Usage::default(), None)
     }
 
-    /// Success plus whatever the upstream reported it cost.
+    /// Success plus whatever the upstream reported it cost and how much is left.
+    ///
+    /// Quota columns are only written when the headers were actually present,
+    /// so a response without them leaves the last known figures intact instead
+    /// of blanking them to "unknown".
     pub fn record_success_with_usage(
         &self,
         id: i64,
         model: &str,
         now: i64,
         usage: &Usage,
+        quota: Option<&crate::upstream::RateLimit>,
     ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -447,6 +464,25 @@ impl Store {
                 usage.cost_ticks
             ],
         )?;
+        if let Some(quota) = quota.filter(|q| q.observed()) {
+            conn.execute(
+                "UPDATE accounts SET
+                    limit_tokens       = ?1,
+                    remaining_tokens   = ?2,
+                    limit_requests     = ?3,
+                    remaining_requests = ?4,
+                    quota_checked_at   = ?5
+                 WHERE id = ?6",
+                params![
+                    quota.limit_tokens,
+                    quota.remaining_tokens,
+                    quota.limit_requests,
+                    quota.remaining_requests,
+                    now,
+                    id
+                ],
+            )?;
+        }
         Ok(())
     }
 
@@ -765,10 +801,10 @@ mod tests {
             cost_ticks: 1_000_000,
         };
         store
-            .record_success_with_usage(id, "grok-4.6", 5, &usage)
+            .record_success_with_usage(id, "grok-4.6", 5, &usage, None)
             .unwrap();
         store
-            .record_success_with_usage(id, "grok-4.6", 6, &usage)
+            .record_success_with_usage(id, "grok-4.6", 6, &usage, None)
             .unwrap();
 
         let account = store.get(id).unwrap().unwrap();

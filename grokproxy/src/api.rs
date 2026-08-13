@@ -134,11 +134,11 @@ async fn chat_completions(
             )
             .await
         {
-            Ok(body) => {
+            Ok(outcome) => {
                 let _ = state
                     .pool
-                    .report_success_with_usage(&account, &model, &body);
-                return Json(body).into_response();
+                    .report_success_with_usage(&account, &model, &outcome);
+                return Json(outcome.body).into_response();
             }
             Err(err) => {
                 let failure = downcast_failure(&err);
@@ -186,11 +186,11 @@ async fn responses(
             )
             .await
         {
-            Ok(body) => {
+            Ok(outcome) => {
                 let _ = state
                     .pool
-                    .report_success_with_usage(&account, &model, &body);
-                return Json(body).into_response();
+                    .report_success_with_usage(&account, &model, &outcome);
+                return Json(outcome.body).into_response();
             }
             Err(err) => {
                 let failure = downcast_failure(&err);
@@ -418,6 +418,9 @@ mod tests {
                 max_attempts: 2,
                 default_proxy: String::new(),
                 sticky_relay: String::new(),
+                sweep_interval_secs: 0,
+                sweep_batch: 0,
+                sweep_concurrency: 1,
             },
         })
     }

@@ -2,6 +2,7 @@
 
 mod api;
 mod config;
+mod janitor;
 mod jwt;
 mod model;
 mod pool;
@@ -49,6 +50,8 @@ async fn main() -> Result<()> {
 
     let listen = config.listen.clone();
     let state = Arc::new(AppState { pool, config });
+    // Timer-driven health sweeps: dead accounts leave the rotation on their own.
+    janitor::spawn(state.clone());
     let app = api::router(state.clone()).layer(tower_http::trace::TraceLayer::new_for_http());
 
     let listener = tokio::net::TcpListener::bind(&listen).await?;

@@ -9,6 +9,8 @@ use crate::upstream::{Failure, Upstream, UpstreamError};
 
 /// Refresh this many seconds before the token actually expires.
 const REFRESH_SKEW_SECS: i64 = 300;
+/// How long to rest an account whose reported quota hit zero.
+const QUOTA_COOLDOWN_SECS: i64 = 3_600;
 
 pub struct Pool {
     store: Store,
@@ -93,16 +95,35 @@ impl Pool {
         Ok(())
     }
 
-    /// Success plus the token/cost accounting the upstream returned.
+    /// Success plus the token/cost accounting and quota the upstream returned.
+    ///
+    /// When the headers say nothing is left, the account is cooled immediately
+    /// instead of waiting for the next request to discover it the hard way.
     pub fn report_success_with_usage(
         &self,
         account: &Account,
         model: &str,
-        body: &serde_json::Value,
+        outcome: &crate::upstream::ChatOutcome,
     ) -> Result<()> {
-        let usage = crate::store::Usage::from_response(body);
-        self.store
-            .record_success_with_usage(account.id, model, crate::now(), &usage)?;
+        let usage = crate::store::Usage::from_response(&outcome.body);
+        let now = crate::now();
+        self.store.record_success_with_usage(
+            account.id,
+            model,
+            now,
+            &usage,
+            Some(&outcome.rate_limit),
+        )?;
+        if outcome.rate_limit.observed() && outcome.rate_limit.exhausted() {
+            debug!(account = %account.email, "quota exhausted, cooling");
+            self.store.mark_health(
+                account.id,
+                Health::Cooling,
+                now + QUOTA_COOLDOWN_SECS,
+                "quota exhausted (x-ratelimit-remaining = 0)",
+                now,
+            )?;
+        }
         Ok(())
     }
 

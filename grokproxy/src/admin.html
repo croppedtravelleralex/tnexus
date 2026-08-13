@@ -143,7 +143,7 @@
       <thead><tr>
         <th>邮箱</th><th>通道</th><th>状态</th><th>模型</th>
         <th class="num">成功</th><th class="num">失败</th>
-        <th class="num">已用 token</th><th class="num">花费 $</th>
+        <th class="num">剩余额度</th><th class="num">已用 token</th><th class="num">花费 $</th>
         <th>最近使用</th><th>最近错误</th><th></th>
       </tr></thead>
       <tbody id="rows"></tbody>
@@ -225,6 +225,20 @@ function sum(group) {
   return Object.values(group || {}).reduce((a, b) => a + b, 0);
 }
 
+// Quota only becomes known after the account serves a request — the upstream
+// reports it in response headers, never up front.
+function quota(a) {
+  if (a.remaining_tokens == null) return '<span class="muted" title="尚未跑过请求，上游只在响应头里报额度">未知</span>';
+  const left = a.remaining_tokens;
+  const total = a.limit_tokens || 0;
+  const pct = total ? Math.round((left / total) * 100) : 0;
+  const colour = left === 0 ? '#dc2626' : pct < 20 ? '#d97706' : '#16a34a';
+  const requests = a.remaining_requests == null ? '' :
+    ` · ${a.remaining_requests}/${a.limit_requests} 次`;
+  return `<span style="color:${colour}" title="剩余 ${left.toLocaleString()} / ${total.toLocaleString()} token${requests}">`
+    + `${(left / 1000).toFixed(0)}k <span class="muted">(${pct}%)</span></span>`;
+}
+
 async function loadRows() {
   const params = new URLSearchParams({ limit: state.limit, offset: state.offset });
   if (state.health) params.set('health', state.health);
@@ -243,13 +257,14 @@ async function loadRows() {
       <td>${a.last_model || '—'}</td>
       <td class="num">${a.success_count}</td>
       <td class="num">${a.failure_count}</td>
+      <td class="num">${quota(a)}</td>
       <td class="num">${a.total_tokens ? a.total_tokens.toLocaleString() : '—'}</td>
       <td class="num">${a.cost_usd ? a.cost_usd.toFixed(4) : '—'}</td>
       <td>${when(a.last_used_at)}</td>
       <td class="err" title="${(a.last_error || '').replace(/"/g, '&quot;')}">${a.last_error || ''}</td>
       <td><button data-id="${a.id}" data-to="${a.health === 'disabled' ? 'active' : 'disabled'}">
         ${a.health === 'disabled' ? '启用' : '停用'}</button></td>
-    </tr>`).join('') || '<tr><td colspan="11" class="muted">没有匹配的账号</td></tr>';
+    </tr>`).join('') || '<tr><td colspan="12" class="muted">没有匹配的账号</td></tr>';
 
   for (const button of $('rows').querySelectorAll('button[data-id]')) {
     button.onclick = async () => {
