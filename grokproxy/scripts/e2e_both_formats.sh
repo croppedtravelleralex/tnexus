@@ -11,25 +11,31 @@ NEWAPI="${NEWAPI:-http://127.0.0.1:8081}"
 tok_openai="${TOKEN_OPENAI:-}"
 tok_claude="${TOKEN_CLAUDE:-}"
 
+# newapi soft-deletes tokens, so a row with status=1 can still be invisible to
+# it. Without the deleted_at filter this picks a tombstone and every call comes
+# back "Invalid token".
 lookup() {
   docker exec new-api-postgres psql -U newapi -d new-api -A -t -c \
-    "SELECT key FROM tokens WHERE \"group\"='$1' AND status=1
+    "SELECT key FROM tokens
+      WHERE \"group\"='$1' AND status=1 AND deleted_at IS NULL AND key NOT LIKE '%-%'
       ORDER BY unlimited_quota DESC, id DESC LIMIT 1;" | tr -d '[:space:]'
 }
 [[ -n "$tok_openai" ]] || tok_openai="$(lookup grok)"
 [[ -n "$tok_claude" ]] || tok_claude="$(lookup grok-claude)"
 
-# The Anthropic group is new, so it may have no token yet; mint one that is
-# scoped to exactly that group.
+# The Anthropic group is new, so it may have no token yet; mint one scoped to
+# exactly that group. The key must be hyphen-free: newapi splits the presented
+# key on "-" and looks up only the first segment, so any hyphen truncates it
+# into a key that does not exist.
 if [[ -z "$tok_claude" ]]; then
   echo ">>> no grok-claude token yet, creating one"
-  key="grokproxy-anthropic-e2e-$(date +%s)"
+  key="gpanth$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 42)"
   docker exec new-api-postgres psql -U newapi -d new-api -q -c "
     INSERT INTO tokens (user_id, key, status, name, created_time, accessed_time,
                         expired_time, remain_quota, unlimited_quota, \"group\")
-    SELECT user_id, '${key}', 1, 'grokproxy-anthropic-e2e',
+    SELECT user_id, '${key}', 1, 'grokproxy anthropic e2e',
            $(date +%s), $(date +%s), -1, 0, true, 'grok-claude'
-      FROM tokens WHERE \"group\"='grok' LIMIT 1;"
+      FROM tokens WHERE \"group\"='grok' AND deleted_at IS NULL LIMIT 1;"
   tok_claude="$key"
 fi
 
