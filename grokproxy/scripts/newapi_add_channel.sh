@@ -1,16 +1,25 @@
 #!/usr/bin/env bash
-# Register grokProxy as an OpenAI-compatible channel in newapi.
+# Register grokProxy as a channel in newapi.
 #
 # Idempotent: re-running updates the existing row instead of adding a duplicate.
 # The abilities table is what actually routes model -> channel, so it is
 # rebuilt alongside the channel row.
+#
+# CHANNEL_TYPE selects the protocol newapi will speak to grokProxy:
+#   1  = OpenAI      -> POST /v1/chat/completions
+#   14 = Anthropic   -> POST /v1/messages
+# grokProxy serves both, so the two channels differ only in this field.
 set -euo pipefail
 
 NAME="${CHANNEL_NAME:-grokproxy}"
 GROUP="${CHANNEL_GROUP:-grok}"
 MODELS="${CHANNEL_MODELS:-grok-4.6}"
-BASE_URL="${CHANNEL_BASE_URL:-http://172.22.0.1:8110}"
+# Default to newapi's own network gateway. The grok2api gateway (172.22.0.1)
+# also reaches grokProxy today, but only because newapi happens to be attached
+# to that compose network too — it would break the day that changes.
+BASE_URL="${CHANNEL_BASE_URL:-http://172.19.0.1:8110}"
 KEY="${CHANNEL_KEY:?CHANNEL_KEY (grokProxy API key) required}"
+TYPE="${CHANNEL_TYPE:-1}"
 PRIORITY="${CHANNEL_PRIORITY:-0}"
 WEIGHT="${CHANNEL_WEIGHT:-1}"
 
@@ -27,12 +36,13 @@ psql_do -q <<SQL
 INSERT INTO channels
   (type, key, name, status, base_url, models, "group", priority, weight,
    created_time, auto_ban, model_mapping, other, test_model)
-SELECT 1, '${KEY}', '${NAME}', 1, '${BASE_URL}', '${MODELS}', '${GROUP}',
+SELECT ${TYPE}, '${KEY}', '${NAME}', 1, '${BASE_URL}', '${MODELS}', '${GROUP}',
        ${PRIORITY}, ${WEIGHT}, ${now}, 1, '', '', 'grok-4.6'
  WHERE NOT EXISTS (SELECT 1 FROM channels WHERE name = '${NAME}');
 
 UPDATE channels
    SET key = '${KEY}',
+       type = ${TYPE},
        base_url = '${BASE_URL}',
        models = '${MODELS}',
        "group" = '${GROUP}',
@@ -57,7 +67,7 @@ SELECT trim(g), trim(m), ${channel_id}, true, ${PRIORITY}, ${WEIGHT}
        unnest(string_to_array('${MODELS}', ',')) AS m;
 SQL
 
-echo "channel ${channel_id} (${NAME}) -> ${BASE_URL} models=${MODELS} group=${GROUP}"
+echo "channel ${channel_id} (${NAME}) type=${TYPE} -> ${BASE_URL} models=${MODELS} group=${GROUP}"
 docker exec -i new-api-postgres psql -U newapi -d new-api -A -F'|' -t \
   -c "select id, name, type, status, \"group\", models, base_url from channels where id=${channel_id};"
 docker exec -i new-api-postgres psql -U newapi -d new-api -A -F'|' -t \
