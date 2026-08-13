@@ -1,0 +1,6 @@
+# grokproxy 是 workspace 之外的独立包，但物理上住在本仓里，rustup 会向上找到
+# 仓库根的 rust-toolchain.toml（1.97，不含 rustfmt/clippy）并覆盖 CI 装的 stable。
+# 本文件优先级更高，把组件一并声明，CI 就不需要额外 rustup component add。
+[toolchain]
+channel = "1.97"
+components = ["rustfmt", "clippy"]
