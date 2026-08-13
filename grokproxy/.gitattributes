@@ -1,0 +1,5 @@
+# Shell scripts here run on Linux (WSL build host and panda). Without this,
+# core.autocrlf on Windows checks them out with CRLF and bash fails at the
+# shebang line with "$'\r': command not found".
+*.sh text eol=lf
+Dockerfile text eol=lf
