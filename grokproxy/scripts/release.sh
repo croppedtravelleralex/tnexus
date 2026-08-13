@@ -63,6 +63,8 @@ bash scripts/push_image.sh "$sha"
 
 if [[ "$SKIP_GIT_PUSH" != "1" ]]; then
   step "git push"
+  # WSL has no access to the Windows credential helper, and its TLS to GitHub
+  # is unreliable; release.ps1 pushes from the Windows side and sets this flag.
   git -C "$REPO" push origin main
 fi
 

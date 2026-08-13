@@ -217,38 +217,40 @@ export default function SettingsPage() {
             </div>
             {cacheMsg ? <p className="mt-2 text-xs text-[var(--neo-muted)]">{cacheMsg}</p> : null}
           </ElevatedCard>
-          <ElevatedCard className="p-5">
-            <div className="flex items-center justify-between gap-2">
-              <h2 className="text-sm font-semibold text-[var(--neo-ink)]">Webshare 代理（TNexus 托管）</h2>
-              <Button size="sm" variant="outline" className="h-8" disabled={proxyBusy} onClick={() => void loadProxy()}>
-                {proxyBusy ? <LoaderCircle className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
-              </Button>
-            </div>
-            <p className="mt-2 text-xs text-[var(--neo-muted)]">
-              读写 gptimage 本地 config（account-ops + GPTIMAGE_ROOT），不经过生产 :8012 HTTP。
-            </p>
-            {proxyError ? <p className="mt-2 text-xs text-red-600">{proxyError}</p> : null}
-            <label className="mt-3 block text-xs font-medium text-[var(--neo-muted)]">出口代理 URL</label>
-            <Input
-              className="mt-1 font-mono text-xs"
-              value={proxyUrl}
-              onChange={(e) => setProxyUrl(e.target.value)}
-              placeholder="http://user:pass@host:port"
-            />
-            <div className="mt-3 flex flex-wrap gap-2">
-              <Button size="sm" disabled={proxyBusy} onClick={() => void saveProxy()}>
-                保存代理
-              </Button>
-              <Button size="sm" variant="outline" disabled={proxyBusy} onClick={() => void runWebshareScan()}>
-                立即 CF 扫描
-              </Button>
-            </div>
-            {webshareStatus ? (
-              <pre className="mt-3 max-h-40 overflow-auto rounded bg-[var(--neo-surface-muted)] p-2 text-[10px] text-[var(--neo-muted)]">
-                {JSON.stringify(webshareStatus, null, 2)}
-              </pre>
-            ) : null}
-          </ElevatedCard>
+          {user.role === "admin" && (
+            <ElevatedCard className="p-5">
+              <div className="flex items-center justify-between gap-2">
+                <h2 className="text-sm font-semibold text-[var(--neo-ink)]">Webshare 代理（TNexus 托管）</h2>
+                <Button size="sm" variant="outline" className="h-8" disabled={proxyBusy} onClick={() => void loadProxy()}>
+                  {proxyBusy ? <LoaderCircle className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
+                </Button>
+              </div>
+              <p className="mt-2 text-xs text-[var(--neo-muted)]">
+                读写 gptimage 本地 config（account-ops + GPTIMAGE_ROOT），不经过生产 :8012 HTTP。
+              </p>
+              {proxyError ? <p className="mt-2 text-xs text-red-600">{proxyError}</p> : null}
+              <label className="mt-3 block text-xs font-medium text-[var(--neo-muted)]">出口代理 URL</label>
+              <Input
+                className="mt-1 font-mono text-xs"
+                value={proxyUrl}
+                onChange={(e) => setProxyUrl(e.target.value)}
+                placeholder="http://user:pass@host:port"
+              />
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button size="sm" disabled={proxyBusy} onClick={() => void saveProxy()}>
+                  保存代理
+                </Button>
+                <Button size="sm" variant="outline" disabled={proxyBusy} onClick={() => void runWebshareScan()}>
+                  立即 CF 扫描
+                </Button>
+              </div>
+              {webshareStatus ? (
+                <pre className="mt-3 max-h-40 overflow-auto rounded bg-[var(--neo-surface-muted)] p-2 text-[10px] text-[var(--neo-muted)]">
+                  {JSON.stringify(webshareStatus, null, 2)}
+                </pre>
+              ) : null}
+            </ElevatedCard>
+          )}
         </div>
       ) : (
         <div className="mx-auto max-w-3xl space-y-4">
