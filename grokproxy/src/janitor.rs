@@ -36,12 +36,16 @@ pub fn spawn(state: Arc<AppState>) {
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             ticker.tick().await;
-            match state.pool.sweep(batch, concurrency).await {
+            // No fixed probe: each account gets the cheapest one that still
+            // reveals something, so upkeep does not drain the pool it guards.
+            match state.pool.probe_pool(None, batch, concurrency).await {
                 Ok(report) => info!(
                     checked = report.checked,
                     alive = report.alive,
                     revoked = report.revoked,
-                    other = report.other,
+                    no_permission = report.no_permission,
+                    unreachable = report.unreachable,
+                    budget_spent = report.budget_spent,
                     "sweep done"
                 ),
                 // Never break the loop: one bad sweep should not stop upkeep

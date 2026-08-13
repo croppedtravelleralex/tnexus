@@ -1,11 +1,13 @@
 //! grokProxy — minimal Grok account pool with an OpenAI-compatible front door.
 
+mod anthropic;
 mod api;
 mod config;
 mod janitor;
 mod jwt;
 mod model;
 mod pool;
+mod probe;
 mod store;
 mod upstream;
 

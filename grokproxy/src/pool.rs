@@ -1,27 +1,66 @@
-//! Scheduling: claim an account, make sure its token is fresh, report outcomes.
+//! Scheduling: hand out a ready account, report what happened to it.
+//!
+//! Requests are served from an in-memory ready pool rather than a query per
+//! request. Three things fall out of that which the per-request query could not
+//! give us: a claimed account is invisible to other requests for the duration
+//! (so two callers never share one account's rate limit), token refresh happens
+//! off the request path, and ranking can weigh remaining budget instead of only
+//! last-used order.
+
+use std::collections::{HashSet, VecDeque};
+use std::sync::Mutex;
 
 use anyhow::{anyhow, Result};
 use tracing::{debug, warn};
 
 use crate::model::{Account, Health, Provider};
+use crate::probe::{Probe, ProbeReport, Prober, REFRESH_SKEW_SECS};
 use crate::store::Store;
 use crate::upstream::{Failure, Upstream, UpstreamError};
 
-/// Refresh this many seconds before the token actually expires.
-const REFRESH_SKEW_SECS: i64 = 300;
 /// How long to rest an account whose reported quota hit zero.
 const QUOTA_COOLDOWN_SECS: i64 = 3_600;
+/// How many accounts to pull from the database per refill.
+const REFILL_BATCH: usize = 64;
+
+/// Accounts ready to serve, plus the ones currently serving.
+#[derive(Default)]
+struct Ready {
+    queue: VecDeque<Account>,
+    /// Ids handed out and not yet returned. Kept separate from the queue so a
+    /// refill cannot re-admit an account that is already in flight.
+    leased: HashSet<i64>,
+}
 
 pub struct Pool {
     store: Store,
     upstream: Upstream,
     max_attempts: usize,
+    ready: Mutex<Ready>,
 }
 
 /// An account claimed for one request, with a usable access token.
-#[derive(Debug)]
-pub struct Lease {
+///
+/// Dropping the lease returns the account to the pool. That happens on every
+/// path — success, upstream error, panic — so a request that dies mid-flight
+/// cannot strand an account outside the rotation.
+pub struct Lease<'a> {
     pub account: Account,
+    pool: &'a Pool,
+}
+
+impl std::fmt::Debug for Lease<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Lease")
+            .field("account", &self.account.email)
+            .finish()
+    }
+}
+
+impl Drop for Lease<'_> {
+    fn drop(&mut self) {
+        self.pool.release(self.account.id);
+    }
 }
 
 impl Pool {
@@ -30,6 +69,7 @@ impl Pool {
             store,
             upstream,
             max_attempts: max_attempts.max(1),
+            ready: Mutex::new(Ready::default()),
         }
     }
 
@@ -41,20 +81,32 @@ impl Pool {
         &self.upstream
     }
 
-    /// Claim the next Build account and guarantee a non-expired access token.
+    pub fn prober(&self) -> Prober<'_> {
+        Prober {
+            upstream: &self.upstream,
+            store: &self.store,
+        }
+    }
+
+    /// How many accounts are queued and how many are in flight.
+    pub fn ready_depth(&self) -> (usize, usize) {
+        let ready = self.ready.lock().unwrap();
+        (ready.queue.len(), ready.leased.len())
+    }
+
+    /// Claim a Build account and guarantee a non-expired access token.
     ///
     /// A refresh failure is charged to that account and the next one is tried,
     /// so one revoked credential cannot fail the whole request.
-    pub async fn acquire_build(&self) -> Result<Lease> {
+    pub async fn acquire_build(&self) -> Result<Lease<'_>> {
         let mut last_error = String::from("no schedulable build account");
         for _ in 0..self.max_attempts {
-            let now = crate::now();
-            let Some(mut account) = self.store.claim_next(Provider::Build, now)? else {
+            let Some(mut account) = self.take_ready()? else {
                 break;
             };
 
-            if !account.needs_refresh(now, REFRESH_SKEW_SECS) {
-                return Ok(Lease { account });
+            if !account.needs_refresh(crate::now(), REFRESH_SKEW_SECS) {
+                return Ok(self.lease(account));
             }
 
             match self
@@ -77,22 +129,84 @@ impl Pool {
                         account.refresh_token = pair.refresh_token;
                     }
                     account.expires_at = pair.expires_at;
-                    return Ok(Lease { account });
+                    return Ok(self.lease(account));
                 }
                 Err(err) => {
                     let failure = downcast_failure(&err);
                     last_error = format!("{}: {err}", account.email);
                     warn!(account = %account.email, error = %err, "refresh failed");
                     self.report_failure(&account, &failure, &err.to_string())?;
+                    self.release(account.id);
                 }
             }
         }
         Err(anyhow!(last_error))
     }
 
-    pub fn report_success(&self, account: &Account, model: &str) -> Result<()> {
-        self.store.record_success(account.id, model, crate::now())?;
+    fn lease(&self, account: Account) -> Lease<'_> {
+        Lease {
+            account,
+            pool: self,
+        }
+    }
+
+    /// Next account off the ready queue, refilling from the database when it
+    /// runs dry. Marks the account leased before returning it.
+    fn take_ready(&self) -> Result<Option<Account>> {
+        {
+            let mut ready = self.ready.lock().unwrap();
+            if let Some(account) = ready.queue.pop_front() {
+                ready.leased.insert(account.id);
+                return Ok(Some(account));
+            }
+        }
+        self.refill()?;
+        let mut ready = self.ready.lock().unwrap();
+        Ok(ready.queue.pop_front().inspect(|account| {
+            ready.leased.insert(account.id);
+        }))
+    }
+
+    /// Pull a batch of schedulable accounts and rank them.
+    ///
+    /// Ranking prefers accounts that have proven themselves and still have
+    /// budget left, then falls back to least-recently-used so traffic spreads
+    /// instead of grinding one account down.
+    fn refill(&self) -> Result<()> {
+        let now = crate::now();
+        let mut ready = self.ready.lock().unwrap();
+        if !ready.queue.is_empty() {
+            return Ok(());
+        }
+        let mut candidates: Vec<Account> = self
+            .store
+            .list(Some(Provider::Build))?
+            .into_iter()
+            .filter(|account| account.is_available(now) && !ready.leased.contains(&account.id))
+            .collect();
+
+        candidates.sort_by(|a, b| {
+            let proven = (b.verified_at > 0).cmp(&(a.verified_at > 0));
+            let budget = remaining_budget(b).cmp(&remaining_budget(a));
+            proven
+                .then(budget)
+                .then(a.last_used_at.cmp(&b.last_used_at))
+        });
+        candidates.truncate(REFILL_BATCH);
+        debug!(queued = candidates.len(), "ready pool refilled");
+        ready.queue = candidates.into();
         Ok(())
+    }
+
+    fn release(&self, id: i64) {
+        self.ready.lock().unwrap().leased.remove(&id);
+    }
+
+    /// Drop an account from the ready queue after it turned out to be unusable,
+    /// so the next request does not pick it straight back up.
+    fn evict(&self, id: i64) {
+        let mut ready = self.ready.lock().unwrap();
+        ready.queue.retain(|account| account.id != id);
     }
 
     /// Success plus the token/cost accounting and quota the upstream returned.
@@ -155,7 +269,58 @@ impl Pool {
             &crate::upstream::truncate(error, 300),
             now,
         )?;
+        // Whatever went wrong, this account is not fit to serve the next
+        // request off the queue.
+        self.evict(account.id);
         Ok(())
+    }
+
+    /// Run a probe across a slice of the pool.
+    ///
+    /// `probe` of `None` picks the cheapest probe that still teaches us
+    /// something about each account, which keeps a routine sweep from spending
+    /// the budget of accounts we have already measured.
+    pub async fn probe_pool(
+        &self,
+        probe: Option<Probe>,
+        limit: usize,
+        concurrency: usize,
+    ) -> Result<ProbeReport> {
+        let mut candidates: Vec<Account> = self
+            .store
+            .list(Some(Provider::Build))?
+            .into_iter()
+            .filter(|account| !matches!(account.health, Health::Disabled | Health::Forbidden))
+            .collect();
+        // Unmeasured accounts first: re-probing a measured one only spends its
+        // budget to relearn a number we already hold.
+        candidates.sort_by_key(|account| account.limit_tokens > 0);
+        candidates.truncate(if limit == 0 {
+            candidates.len()
+        } else {
+            limit.min(candidates.len())
+        });
+
+        let prober = self.prober();
+        let mut report = ProbeReport::default();
+        let width = concurrency.clamp(1, 16);
+        for chunk in candidates.chunks(width) {
+            let outcomes = futures::future::join_all(chunk.iter().map(|account| {
+                let probe = probe.unwrap_or_else(|| Probe::cheapest_useful_for(account));
+                let prober = &prober;
+                async move { (account, prober.run(account, probe).await) }
+            }))
+            .await;
+            for (account, outcome) in outcomes {
+                let outcome = outcome?;
+                if !outcome.alive() {
+                    self.evict(account.id);
+                }
+                report.absorb(&outcome);
+            }
+        }
+        debug!(?report, "probe run complete");
+        Ok(report)
     }
 
     /// Models advertised across the pool, newest first.
@@ -176,174 +341,6 @@ impl Pool {
         Ok(seen)
     }
 
-    /// Refresh every Build account once and record what the upstream says.
-    ///
-    /// A pool imported from an old archive is mostly dead credentials. Without
-    /// a sweep, every user request pays to rediscover that, and with a bounded
-    /// attempt budget the request just fails. Running this once after a bulk
-    /// import moves the dead ones to `needs_reauth` so the scheduler skips them.
-    /// Refresh + a real chat probe, so the report reflects entitlement, not just
-    /// whether the credential can still mint a token.
-    ///
-    /// `sweep` alone answers "is this token alive"; plenty of alive tokens are
-    /// refused at the chat endpoint. Quota state only shows up when something
-    /// actually asks the upstream to generate.
-    pub async fn probe_quota(&self, limit: usize, concurrency: usize) -> Result<QuotaReport> {
-        let accounts = self.store.list(Some(Provider::Build))?;
-        let now = crate::now();
-        let mut candidates: Vec<Account> = accounts
-            .into_iter()
-            .filter(|account| account.is_available(now))
-            .collect();
-        // Accounts whose entitlement is still unknown first: re-probing a known
-        // one only spends its budget to relearn a number we already have.
-        candidates.sort_by_key(|account| account.limit_tokens > 0);
-        candidates.truncate(if limit == 0 {
-            usize::MAX
-        } else {
-            limit.min(candidates.len())
-        });
-
-        let mut report = QuotaReport {
-            checked: 0,
-            usable: 0,
-            revoked: 0,
-            no_permission: 0,
-            no_credit: 0,
-            rate_limited: 0,
-            unreachable: 0,
-            model: String::new(),
-        };
-        let width = concurrency.clamp(1, 16);
-        for chunk in candidates.chunks(width) {
-            let mut futures = Vec::with_capacity(chunk.len());
-            for account in chunk {
-                futures.push(async move {
-                    let outcome = self.probe_one_quota(account).await;
-                    (account, outcome)
-                });
-            }
-            for (account, outcome) in futures::future::join_all(futures).await {
-                report.checked += 1;
-                match outcome {
-                    Ok(model) => {
-                        report.usable += 1;
-                        if report.model.is_empty() {
-                            report.model = model.clone();
-                        }
-                        self.report_success(account, &model)?;
-                    }
-                    Err(err) => {
-                        let failure = downcast_failure(&err);
-                        match &failure {
-                            // Terminal: the credential itself is gone. Lumping
-                            // this into "unreachable" hides a dead pool behind
-                            // what looks like a network problem.
-                            Failure::Revoked => report.revoked += 1,
-                            Failure::Forbidden => report.no_permission += 1,
-                            Failure::Cooling(secs) if *secs >= 1800 => report.no_credit += 1,
-                            Failure::Cooling(_) => report.rate_limited += 1,
-                            Failure::Transient => report.unreachable += 1,
-                        }
-                        self.report_failure(account, &failure, &err.to_string())?;
-                    }
-                }
-            }
-        }
-        Ok(report)
-    }
-
-    /// One account: make sure the token is fresh, then actually ask for a reply.
-    async fn probe_one_quota(&self, account: &Account) -> Result<String> {
-        let mut access = account.access_token.clone();
-        if account.needs_refresh(crate::now(), REFRESH_SKEW_SECS) {
-            let pair = self
-                .upstream
-                .refresh_token(&account.refresh_token, &account.proxy_url)
-                .await?;
-            self.store.save_refreshed(
-                account.id,
-                &pair.access_token,
-                &pair.refresh_token,
-                pair.expires_at,
-                crate::now(),
-            )?;
-            access = pair.access_token;
-        }
-
-        let ids = self
-            .upstream
-            .list_models(&access, &account.proxy_url, &account.headers)
-            .await?;
-        let model = crate::upstream::pick_chat_model(&ids)
-            .unwrap_or_else(|| crate::upstream::FALLBACK_MODEL.to_string());
-
-        let payload = serde_json::json!({
-            "model": model,
-            "messages": [{"role": "user", "content": "Reply with exactly OK"}],
-            "max_tokens": 4,
-            "stream": false,
-        });
-        self.upstream
-            .chat_completions(&access, &account.proxy_url, &account.headers, &payload)
-            .await?;
-        Ok(model)
-    }
-
-    pub async fn sweep(&self, limit: usize, concurrency: usize) -> Result<SweepReport> {
-        let accounts = self.store.list(Some(Provider::Build))?;
-        let candidates: Vec<Account> = accounts
-            .into_iter()
-            .filter(|account| !matches!(account.health, Health::Disabled | Health::NeedsReauth))
-            .take(if limit == 0 { usize::MAX } else { limit })
-            .collect();
-
-        let mut report = SweepReport {
-            checked: 0,
-            alive: 0,
-            revoked: 0,
-            other: 0,
-        };
-        let width = concurrency.clamp(1, 16);
-        for chunk in candidates.chunks(width) {
-            let mut futures = Vec::with_capacity(chunk.len());
-            for account in chunk {
-                futures.push(async move {
-                    let outcome = self
-                        .upstream
-                        .refresh_token(&account.refresh_token, &account.proxy_url)
-                        .await;
-                    (account, outcome)
-                });
-            }
-            for (account, outcome) in futures::future::join_all(futures).await {
-                report.checked += 1;
-                match outcome {
-                    Ok(pair) => {
-                        report.alive += 1;
-                        self.store.save_refreshed(
-                            account.id,
-                            &pair.access_token,
-                            &pair.refresh_token,
-                            pair.expires_at,
-                            crate::now(),
-                        )?;
-                    }
-                    Err(err) => {
-                        let failure = downcast_failure(&err);
-                        if failure == Failure::Revoked {
-                            report.revoked += 1;
-                        } else {
-                            report.other += 1;
-                        }
-                        self.report_failure(account, &failure, &err.to_string())?;
-                    }
-                }
-            }
-        }
-        Ok(report)
-    }
-
     pub fn healthy_count(&self) -> Result<usize> {
         let now = crate::now();
         Ok(self
@@ -355,44 +352,29 @@ impl Pool {
     }
 }
 
+/// Tokens an account still has to spend.
+///
+/// An unmeasured account sorts above a measured-and-drained one but below a
+/// measured-and-full one: its entitlement is unknown, not zero, and finding out
+/// is exactly what serving it a request does.
+fn remaining_budget(account: &Account) -> i64 {
+    if account.limit_tokens <= 0 {
+        return i64::MAX / 2;
+    }
+    (account.limit_tokens - account.total_tokens).max(0)
+}
+
 pub fn downcast_failure(err: &anyhow::Error) -> Failure {
     err.downcast_ref::<UpstreamError>()
         .map(UpstreamError::failure)
         .unwrap_or(Failure::Transient)
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct QuotaReport {
-    pub checked: usize,
-    /// Chat actually returned a completion.
-    pub usable: usize,
-    /// Refresh token rejected — needs new credentials, will not self-heal.
-    pub revoked: usize,
-    /// Upstream refuses chat for this account (entitlement).
-    pub no_permission: usize,
-    /// Quota/credit exhausted; recovers on its own window.
-    pub no_credit: usize,
-    pub rate_limited: usize,
-    /// Never got an answer — says nothing about the account.
-    pub unreachable: usize,
-    /// Model the upstream is currently serving.
-    pub model: String,
-}
-
-#[derive(Debug, Clone, Copy, serde::Serialize)]
-pub struct SweepReport {
-    pub checked: usize,
-    pub alive: usize,
-    /// Refresh token rejected — these will never recover on their own.
-    pub revoked: usize,
-    /// Rate limited, entitlement denied, or unreachable.
-    pub other: usize,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::AccountImport;
+    use crate::store::Usage;
 
     fn store_with(accounts: &[(&str, &str, i64)]) -> Store {
         let store = Store::open_in_memory().unwrap();
@@ -436,6 +418,224 @@ mod tests {
         assert_eq!(lease.account.access_token, "access");
     }
 
+    #[tokio::test]
+    async fn two_concurrent_requests_never_share_one_account() {
+        // Sharing would have them race the same account's rate limit while the
+        // rest of the pool sits idle.
+        let far = crate::now() + 100_000;
+        let pool = pool(store_with(&[("a@b.c", "r1", far), ("b@b.c", "r2", far)]));
+        let first = pool.acquire_build().await.unwrap();
+        let second = pool.acquire_build().await.unwrap();
+        assert_ne!(first.account.id, second.account.id);
+        assert_eq!(pool.ready_depth().1, 2, "both are in flight");
+    }
+
+    #[tokio::test]
+    async fn a_finished_request_returns_its_account_to_the_pool() {
+        let far = crate::now() + 100_000;
+        let pool = pool(store_with(&[("only@b.c", "r1", far)]));
+        let id = {
+            let lease = pool.acquire_build().await.unwrap();
+            assert_eq!(pool.ready_depth().1, 1);
+            lease.account.id
+        };
+        assert_eq!(pool.ready_depth().1, 0, "lease released on drop");
+
+        // And it is schedulable again, rather than stranded outside rotation.
+        let again = pool.acquire_build().await.unwrap();
+        assert_eq!(again.account.id, id);
+    }
+
+    #[tokio::test]
+    async fn a_single_account_pool_does_not_hand_it_out_twice_at_once() {
+        let far = crate::now() + 100_000;
+        let pool = pool(store_with(&[("only@b.c", "r1", far)]));
+        let _held = pool.acquire_build().await.unwrap();
+        let err = pool.acquire_build().await.unwrap_err();
+        assert!(err.to_string().contains("no schedulable"));
+    }
+
+    #[test]
+    fn ranking_prefers_proven_accounts_with_budget_left() {
+        let far = crate::now() + 100_000;
+        let store = store_with(&[
+            ("drained@b.c", "r1", far),
+            ("rich@b.c", "r2", far),
+            ("unproven@b.c", "r3", far),
+        ]);
+        let quota = crate::upstream::RateLimit {
+            limit_tokens: 1_000,
+            remaining_tokens: 1_000,
+            limit_requests: 21,
+            remaining_requests: 21,
+        };
+        let by_email = |email: &str| {
+            store
+                .list(None)
+                .unwrap()
+                .into_iter()
+                .find(|a| a.email == email)
+                .unwrap()
+        };
+        let spend = |email: &str, tokens: i64| {
+            store
+                .record_success_with_usage(
+                    by_email(email).id,
+                    "grok-4.6",
+                    crate::now(),
+                    &crate::store::Usage {
+                        prompt_tokens: 0,
+                        completion_tokens: 0,
+                        total_tokens: tokens,
+                        cost_ticks: 0,
+                    },
+                    Some(&quota),
+                )
+                .unwrap();
+        };
+        spend("drained@b.c", 990);
+        spend("rich@b.c", 10);
+
+        let pool = pool(store);
+        pool.refill().unwrap();
+        let order: Vec<String> = pool
+            .ready
+            .lock()
+            .unwrap()
+            .queue
+            .iter()
+            .map(|a| a.email.clone())
+            .collect();
+        assert_eq!(
+            order,
+            vec!["rich@b.c", "drained@b.c", "unproven@b.c"],
+            "proven-with-budget first, then proven-but-drained, then unproven"
+        );
+    }
+
+    #[test]
+    fn an_unmeasured_account_outranks_a_drained_one_but_not_a_full_one() {
+        // Unknown entitlement is not zero entitlement; finding out is exactly
+        // what serving it does.
+        let full = Account {
+            limit_tokens: 1_000,
+            total_tokens: 0,
+            ..Default::default()
+        };
+        let drained = Account {
+            limit_tokens: 1_000,
+            total_tokens: 1_000,
+            ..Default::default()
+        };
+        let unknown = Account {
+            limit_tokens: -1,
+            total_tokens: 0,
+            ..Default::default()
+        };
+        assert!(remaining_budget(&unknown) > remaining_budget(&drained));
+        assert!(remaining_budget(&full) < remaining_budget(&unknown));
+    }
+
+    #[test]
+    fn dead_and_still_cooling_accounts_never_reach_the_queue() {
+        let store = store_with(&[("dead@b.c", "r1", 0), ("cooling@b.c", "r2", 0)]);
+        let accounts = store.list(None).unwrap();
+        let now = crate::now();
+        store
+            .mark_health(accounts[0].id, Health::NeedsReauth, 0, "dead", now)
+            .unwrap();
+        store
+            .mark_health(accounts[1].id, Health::Cooling, now + 500, "slow down", now)
+            .unwrap();
+
+        let pool = pool(store);
+        pool.refill().unwrap();
+        assert_eq!(pool.ready_depth().0, 0, "neither is schedulable yet");
+    }
+
+    #[test]
+    fn a_cooled_account_returns_once_its_window_passes() {
+        let store = store_with(&[("cooling@b.c", "r1", 0)]);
+        let id = store.list(None).unwrap()[0].id;
+        // Already expired: cooling is a deadline, not a flag.
+        store
+            .mark_health(id, Health::Cooling, crate::now() - 1, "was busy", 0)
+            .unwrap();
+
+        let pool = pool(store);
+        pool.refill().unwrap();
+        assert_eq!(pool.ready_depth().0, 1);
+    }
+
+    #[test]
+    fn web_accounts_are_never_scheduled_on_the_build_path() {
+        let store = Store::open_in_memory().unwrap();
+        let web: AccountImport =
+            serde_json::from_value(serde_json::json!({"email":"w@b.c","sso_token":"s"})).unwrap();
+        store.import(Some(Provider::Web), &[web], 1).unwrap();
+
+        let pool = pool(store);
+        pool.refill().unwrap();
+        assert_eq!(pool.ready_depth().0, 0);
+    }
+
+    #[test]
+    fn traffic_spreads_instead_of_grinding_one_account_down() {
+        // Equal standing, so least-recently-used decides and the pool rotates.
+        let far = crate::now() + 100_000;
+        let store = store_with(&[("a@b.c", "r1", far), ("b@b.c", "r2", far)]);
+        let accounts = store.list(None).unwrap();
+        store
+            .clear_failure(accounts[0].id, "grok-4.6", 500)
+            .unwrap();
+        store
+            .record_failure(accounts[0].id, Health::Active, 0, "", 500)
+            .unwrap();
+        store
+            .record_failure(accounts[1].id, Health::Active, 0, "", 100)
+            .unwrap();
+
+        let pool = pool(store);
+        pool.refill().unwrap();
+        let order: Vec<String> = pool
+            .ready
+            .lock()
+            .unwrap()
+            .queue
+            .iter()
+            .map(|a| a.email.clone())
+            .collect();
+        assert_eq!(order, vec!["b@b.c", "a@b.c"], "oldest use goes first");
+    }
+
+    #[test]
+    fn a_failed_account_leaves_the_ready_queue_immediately() {
+        let far = crate::now() + 100_000;
+        let store = store_with(&[("bad@b.c", "r1", far), ("good@b.c", "r2", far)]);
+        let pool = pool(store.clone());
+        pool.refill().unwrap();
+        assert_eq!(pool.ready_depth().0, 2);
+
+        let bad = store
+            .list(None)
+            .unwrap()
+            .into_iter()
+            .find(|a| a.email == "bad@b.c")
+            .unwrap();
+        pool.report_failure(&bad, &Failure::Revoked, "gone")
+            .unwrap();
+
+        let queued: Vec<String> = pool
+            .ready
+            .lock()
+            .unwrap()
+            .queue
+            .iter()
+            .map(|a| a.email.clone())
+            .collect();
+        assert_eq!(queued, vec!["good@b.c"], "the revoked one was evicted");
+    }
+
     #[test]
     fn failure_classification_drives_cooldown_length() {
         let store = store_with(&[("a@b.c", "r1", 0)]);
@@ -465,7 +665,9 @@ mod tests {
         );
 
         let id = store.list(None).unwrap()[0].id;
-        store.record_success(id, "grok-4.6", 10).unwrap();
+        store
+            .record_success_with_usage(id, "grok-4.6", 10, &Usage::default(), None)
+            .unwrap();
         assert_eq!(pool.advertised_models().unwrap(), vec!["grok-4.6"]);
     }
 

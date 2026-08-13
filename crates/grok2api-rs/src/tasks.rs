@@ -540,6 +540,44 @@ mod tests {
         assert_eq!(names, vec!["build_four_pool_probe"]);
     }
 
+    /// 接线回归：给了对账依赖就必须注册 `grok_pool_reconcile`。
+    /// 少了它，管理台的账号启停在容器重启前不会生效。
+    #[tokio::test]
+    async fn register_wires_pool_reconcile_task() {
+        let mut scheduler = TaskScheduler::new();
+        let cfg = TaskConfig::new(true, Duration::from_secs(10));
+        // lazy 连接：注册阶段不实际连库。
+        let pg = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://u:p@127.0.0.1:1/db")
+            .expect("lazy pool");
+        register_tasks(
+            &mut scheduler,
+            &cfg,
+            Some(fake_four_pool()),
+            None,
+            None,
+            None,
+            Some(PoolReconcile {
+                pool: Arc::new(SimplifiedPool::new()),
+                repo: Arc::new(PgAccountRepository::new(pg)),
+            }),
+        );
+        let handles = scheduler.spawn_all();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        for h in &handles {
+            h.abort();
+        }
+        let names: Vec<String> = scheduler
+            .status_snapshot()
+            .iter()
+            .map(|s| s.name.clone())
+            .collect();
+        assert!(
+            names.iter().any(|n| n == "grok_pool_reconcile"),
+            "对账任务未注册: {names:?}"
+        );
+    }
+
     // ── spawn 后 run_once 被调 ──────────────────────────────────
 
     #[tokio::test]

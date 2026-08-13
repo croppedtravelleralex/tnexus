@@ -444,11 +444,6 @@ impl Store {
         Ok(())
     }
 
-    pub fn record_success(&self, id: i64, model: &str, now: i64) -> Result<()> {
-        self.record_success_with_usage(id, model, now, &Usage::default(), None)?;
-        Ok(())
-    }
-
     /// Success plus whatever the upstream reported it cost and how much the
     /// account is entitled to. Returns the account's running budget so the
     /// caller can retire it once it is spent.
@@ -522,6 +517,24 @@ impl Store {
         Ok(budget)
     }
 
+    /// A cheap probe came back clean: clear the error and put the account back
+    /// in rotation, without claiming it served a request. Only a real chat can
+    /// do that, so `verified_at` and the success counter are left alone.
+    pub fn clear_failure(&self, id: i64, model: &str, now: i64) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE accounts SET
+                health        = 'active',
+                cooling_until = 0,
+                last_error    = '',
+                last_model    = CASE WHEN ?1 <> '' THEN ?1 ELSE last_model END,
+                updated_at    = ?2
+             WHERE id = ?3 AND health <> 'disabled'",
+            params![model, now, id],
+        )?;
+        Ok(())
+    }
+
     pub fn record_failure(
         &self,
         id: i64,
@@ -543,43 +556,6 @@ impl Store {
             params![now, health.as_str(), cooling_until, error, id],
         )?;
         Ok(())
-    }
-
-    /// Least-recently-used available account, claimed atomically.
-    ///
-    /// Proven accounts come first. A bulk import marks everything `active`
-    /// without checking, so a pool can be mostly dead credentials; ordering by
-    /// last_used_at alone then hands every request a string of corpses and it
-    /// fails after exhausting its attempt budget. Accounts that have actually
-    /// served a request sort ahead of never-verified ones, and within each
-    /// group it is still least-recently-used.
-    ///
-    /// The claim bumps `last_used_at` inside the same lock so two concurrent
-    /// requests cannot pick the same account and double its rate.
-    pub fn claim_next(&self, provider: Provider, now: i64) -> Result<Option<Account>> {
-        let conn = self.conn.lock().unwrap();
-        let picked: Option<i64> = conn
-            .query_row(
-                "SELECT id FROM accounts
-                 WHERE provider = ?1
-                   AND (health = 'active' OR (health = 'cooling' AND cooling_until > 0 AND cooling_until <= ?2))
-                 ORDER BY (verified_at = 0), last_used_at ASC, id ASC
-                 LIMIT 1",
-                params![provider.as_str(), now],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let Some(id) = picked else { return Ok(None) };
-        conn.execute(
-            "UPDATE accounts SET last_used_at = ?1, health = 'active', cooling_until = 0
-             WHERE id = ?2",
-            params![now, id],
-        )?;
-        conn.query_row("SELECT * FROM accounts WHERE id = ?1", params![id], |row| {
-            Self::row_to_account(row)
-        })
-        .optional()
-        .map_err(Into::into)
     }
 
     /// Per-provider health mix plus the token budget behind it.
@@ -758,59 +734,6 @@ mod tests {
     }
 
     #[test]
-    fn claim_is_least_recently_used_and_exclusive() {
-        let store = Store::open_in_memory().unwrap();
-        store
-            .import(
-                Some(Provider::Build),
-                &[build_item("a@b.c", "r1"), build_item("b@b.c", "r2")],
-                1,
-            )
-            .unwrap();
-
-        let first = store.claim_next(Provider::Build, 10).unwrap().unwrap();
-        let second = store.claim_next(Provider::Build, 11).unwrap().unwrap();
-        assert_ne!(first.id, second.id);
-
-        // Round robin returns to the oldest.
-        let third = store.claim_next(Provider::Build, 12).unwrap().unwrap();
-        assert_eq!(third.id, first.id);
-    }
-
-    #[test]
-    fn claim_skips_dead_and_still_cooling_accounts() {
-        let store = Store::open_in_memory().unwrap();
-        store
-            .import(
-                Some(Provider::Build),
-                &[build_item("a@b.c", "r1"), build_item("b@b.c", "r2")],
-                1,
-            )
-            .unwrap();
-        let accounts = store.list(None).unwrap();
-        store
-            .mark_health(accounts[0].id, Health::NeedsReauth, 0, "dead", 2)
-            .unwrap();
-        store
-            .mark_health(accounts[1].id, Health::Cooling, 500, "slow down", 2)
-            .unwrap();
-
-        assert!(store.claim_next(Provider::Build, 499).unwrap().is_none());
-        let revived = store.claim_next(Provider::Build, 500).unwrap().unwrap();
-        assert_eq!(revived.id, accounts[1].id);
-    }
-
-    #[test]
-    fn claim_does_not_cross_providers() {
-        let store = Store::open_in_memory().unwrap();
-        let web: AccountImport =
-            serde_json::from_value(serde_json::json!({"email":"w@b.c","sso_token":"s"})).unwrap();
-        store.import(Some(Provider::Web), &[web], 1).unwrap();
-        assert!(store.claim_next(Provider::Build, 10).unwrap().is_none());
-        assert!(store.claim_next(Provider::Web, 10).unwrap().is_some());
-    }
-
-    #[test]
     fn same_email_can_hold_both_providers() {
         let store = Store::open_in_memory().unwrap();
         let build = build_item("a@b.c", "r1");
@@ -831,7 +754,9 @@ mod tests {
         store
             .record_failure(id, Health::Cooling, 900, "429", 2)
             .unwrap();
-        store.record_success(id, "grok-4.6", 3).unwrap();
+        store
+            .record_success_with_usage(id, "grok-4.6", 3, &Usage::default(), None)
+            .unwrap();
 
         let account = store.get(id).unwrap().unwrap();
         assert_eq!(account.health, Health::Active);
@@ -961,31 +886,6 @@ mod tests {
         };
         assert!(!budget.known());
         assert!(!budget.spent());
-    }
-
-    #[test]
-    fn proven_accounts_are_scheduled_before_never_verified_ones() {
-        // A bulk import marks everything active without checking. Ordering by
-        // last_used_at alone would hand a request a string of dead credentials.
-        let store = Store::open_in_memory().unwrap();
-        store
-            .import(
-                Some(Provider::Build),
-                &[
-                    build_item("never@b.c", "r1"),
-                    build_item("proven@b.c", "r2"),
-                ],
-                1,
-            )
-            .unwrap();
-        let accounts = store.list(None).unwrap();
-        let proven = accounts.iter().find(|a| a.email == "proven@b.c").unwrap();
-        // Mark it proven, and make it the *most* recently used so plain LRU
-        // ordering would put it last.
-        store.record_success(proven.id, "grok-4.6", 9_999).unwrap();
-
-        let picked = store.claim_next(Provider::Build, 10_000).unwrap().unwrap();
-        assert_eq!(picked.email, "proven@b.c");
     }
 
     #[test]

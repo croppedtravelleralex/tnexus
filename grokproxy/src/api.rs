@@ -31,6 +31,7 @@ pub fn router(state: Shared) -> Router {
         .route("/v1/models", get(list_models))
         .route("/v1/chat/completions", post(chat_completions))
         .route("/v1/responses", post(responses))
+        .route("/v1/messages", post(messages))
         .route("/api/v1/stats", get(stats))
         .route("/api/v1/accounts", get(list_accounts).post(import_accounts))
         .route("/api/v1/accounts/{id}/health", post(set_health))
@@ -96,16 +97,30 @@ async fn list_models(State(state): State<Shared>, headers: HeaderMap) -> Respons
     Json(json!({"object": "list", "data": data})).into_response()
 }
 
-/// Forward a chat request, retrying on the next account when the failure is
-/// the account's fault rather than the caller's.
-async fn chat_completions(
-    State(state): State<Shared>,
-    headers: HeaderMap,
-    Json(mut payload): Json<Value>,
-) -> Response {
-    if !Config::authorizes(&state.config.api_key, bearer(&headers)) {
-        return deny();
-    }
+/// Which upstream endpoint a forwarded request should land on.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Endpoint {
+    Chat,
+    Responses,
+}
+
+/// The outcome of a forwarded request, before it is dressed in whichever
+/// protocol the caller speaks.
+struct Forwarded {
+    body: Value,
+    model: String,
+}
+
+/// Send a request upstream, moving to the next account when the failure is the
+/// account's fault rather than the caller's.
+///
+/// Every protocol the proxy speaks funnels through here, so failover, model
+/// resolution and usage accounting cannot drift between them.
+async fn forward(
+    state: &Shared,
+    endpoint: Endpoint,
+    mut payload: Value,
+) -> Result<Forwarded, (StatusCode, String)> {
     let requested_model = payload
         .get("model")
         .and_then(Value::as_str)
@@ -116,90 +131,116 @@ async fn chat_completions(
     for _ in 0..state.config.max_attempts {
         let lease = match state.pool.acquire_build().await {
             Ok(lease) => lease,
-            Err(err) => return upstream_error(StatusCode::SERVICE_UNAVAILABLE, err.to_string()),
+            Err(err) => return Err((StatusCode::SERVICE_UNAVAILABLE, err.to_string())),
         };
-        let account = lease.account;
-
-        let model = resolve_model(&state, &account, &requested_model).await;
+        let account = &lease.account;
+        let model = resolve_model(state, account, &requested_model).await;
         payload["model"] = Value::from(model.clone());
 
-        match state
-            .pool
-            .upstream()
-            .chat_completions(
-                &account.access_token,
-                &account.proxy_url,
-                &account.headers,
-                &payload,
-            )
-            .await
-        {
+        let upstream = state.pool.upstream();
+        let sent = match endpoint {
+            Endpoint::Chat => {
+                upstream
+                    .chat_completions(
+                        &account.access_token,
+                        &account.proxy_url,
+                        &account.headers,
+                        &payload,
+                    )
+                    .await
+            }
+            Endpoint::Responses => {
+                upstream
+                    .responses(
+                        &account.access_token,
+                        &account.proxy_url,
+                        &account.headers,
+                        &payload,
+                    )
+                    .await
+            }
+        };
+
+        match sent {
             Ok(outcome) => {
                 let _ = state
                     .pool
-                    .report_success_with_usage(&account, &model, &outcome);
-                return Json(outcome.body).into_response();
+                    .report_success_with_usage(account, &model, &outcome);
+                return Ok(Forwarded {
+                    body: outcome.body,
+                    model,
+                });
             }
             Err(err) => {
                 let failure = downcast_failure(&err);
                 last_error = err.to_string();
-                warn!(account = %account.email, error = %last_error, "chat failed");
-                let _ = state.pool.report_failure(&account, &failure, &last_error);
+                warn!(account = %account.email, error = %last_error, "upstream call failed");
+                let _ = state.pool.report_failure(account, &failure, &last_error);
             }
         }
     }
-    upstream_error(StatusCode::BAD_GATEWAY, last_error)
+    Err((StatusCode::BAD_GATEWAY, last_error))
+}
+
+async fn chat_completions(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+    Json(payload): Json<Value>,
+) -> Response {
+    if !Config::authorizes(&state.config.api_key, bearer(&headers)) {
+        return deny();
+    }
+    match forward(&state, Endpoint::Chat, payload).await {
+        Ok(forwarded) => Json(forwarded.body).into_response(),
+        Err((status, message)) => upstream_error(status, message),
+    }
 }
 
 async fn responses(
     State(state): State<Shared>,
     headers: HeaderMap,
-    Json(mut payload): Json<Value>,
+    Json(payload): Json<Value>,
 ) -> Response {
     if !Config::authorizes(&state.config.api_key, bearer(&headers)) {
         return deny();
     }
-    let requested_model = payload
-        .get("model")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
+    match forward(&state, Endpoint::Responses, payload).await {
+        Ok(forwarded) => Json(forwarded.body).into_response(),
+        Err((status, message)) => upstream_error(status, message),
+    }
+}
 
-    let mut last_error = "no account could serve the request".to_string();
-    for _ in 0..state.config.max_attempts {
-        let lease = match state.pool.acquire_build().await {
-            Ok(lease) => lease,
-            Err(err) => return upstream_error(StatusCode::SERVICE_UNAVAILABLE, err.to_string()),
-        };
-        let account = lease.account;
-        let model = resolve_model(&state, &account, &requested_model).await;
-        payload["model"] = Value::from(model.clone());
+/// Anthropic Messages API. The upstream speaks only the OpenAI shape, so the
+/// request and reply are translated around the same forwarding path.
+async fn messages(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+    Json(payload): Json<Value>,
+) -> Response {
+    // Anthropic clients send the key as `x-api-key`, not a bearer header.
+    let presented = headers
+        .get("x-api-key")
+        .and_then(|value| value.to_str().ok())
+        .or_else(|| bearer(&headers));
+    if !Config::authorizes(&state.config.api_key, presented) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(crate::anthropic::error_body("unauthorized")),
+        )
+            .into_response();
+    }
 
-        match state
-            .pool
-            .upstream()
-            .responses(
-                &account.access_token,
-                &account.proxy_url,
-                &account.headers,
-                &payload,
-            )
-            .await
-        {
-            Ok(outcome) => {
-                let _ = state
-                    .pool
-                    .report_success_with_usage(&account, &model, &outcome);
-                return Json(outcome.body).into_response();
-            }
-            Err(err) => {
-                let failure = downcast_failure(&err);
-                last_error = err.to_string();
-                let _ = state.pool.report_failure(&account, &failure, &last_error);
-            }
+    let openai = crate::anthropic::request_to_openai(&payload);
+    match forward(&state, Endpoint::Chat, openai).await {
+        Ok(forwarded) => Json(crate::anthropic::response_to_anthropic(
+            &forwarded.body,
+            &forwarded.model,
+        ))
+        .into_response(),
+        Err((status, message)) => {
+            (status, Json(crate::anthropic::error_body(&message))).into_response()
         }
     }
-    upstream_error(StatusCode::BAD_GATEWAY, last_error)
 }
 
 /// Decide which model id to send upstream.
@@ -343,37 +384,42 @@ struct SweepQuery {
     concurrency: Option<usize>,
 }
 
-/// Refresh the pool once so dead credentials stop costing user requests.
+/// Keep-alive pass: the cheapest probe that still teaches us something about
+/// each account, so a routine sweep does not spend the pool's own budget.
 async fn sweep(
     State(state): State<Shared>,
     headers: HeaderMap,
     Query(query): Query<SweepQuery>,
 ) -> Response {
-    if !Config::authorizes(&state.config.admin_key, bearer(&headers)) {
-        return deny();
-    }
-    match state
-        .pool
-        .sweep(query.limit.unwrap_or(0), query.concurrency.unwrap_or(8))
-        .await
-    {
-        Ok(report) => Json(json!({"ok": true, "report": report})).into_response(),
-        Err(err) => upstream_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
-    }
+    run_probe(state, headers, query, None).await
 }
 
-/// Chat-probe the pool: which accounts can actually generate right now.
+/// Chat-probe the pool: which accounts can actually generate right now, and
+/// what entitlement the upstream reports for them.
 async fn quota(
     State(state): State<Shared>,
     headers: HeaderMap,
     Query(query): Query<SweepQuery>,
+) -> Response {
+    run_probe(state, headers, query, Some(crate::probe::Probe::Chat)).await
+}
+
+async fn run_probe(
+    state: Shared,
+    headers: HeaderMap,
+    query: SweepQuery,
+    probe: Option<crate::probe::Probe>,
 ) -> Response {
     if !Config::authorizes(&state.config.admin_key, bearer(&headers)) {
         return deny();
     }
     match state
         .pool
-        .probe_quota(query.limit.unwrap_or(20), query.concurrency.unwrap_or(4))
+        .probe_pool(
+            probe,
+            query.limit.unwrap_or(0),
+            query.concurrency.unwrap_or(8),
+        )
         .await
     {
         Ok(report) => Json(json!({"ok": true, "report": report})).into_response(),
@@ -386,7 +432,11 @@ async fn stats(State(state): State<Shared>, headers: HeaderMap) -> Response {
         return deny();
     }
     match state.pool.store().stats() {
-        Ok(value) => Json(value).into_response(),
+        Ok(mut value) => {
+            let (queued, in_flight) = state.pool.ready_depth();
+            value["scheduler"] = json!({"queued": queued, "in_flight": in_flight});
+            Json(value).into_response()
+        }
         Err(err) => upstream_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
     }
 }
@@ -479,6 +529,43 @@ mod tests {
         let account = shared.pool.store().list(None).unwrap().remove(0);
         let rendered = serde_json::to_string(&AccountView::from(&account)).unwrap();
         assert!(!rendered.contains("super-secret"));
+    }
+
+    #[tokio::test]
+    async fn the_anthropic_endpoint_accepts_an_x_api_key() {
+        // Anthropic clients send `x-api-key`, so requiring a bearer header
+        // would reject every well-formed request.
+        let shared = state();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-api-key", "anything".parse().unwrap());
+        let response = messages(
+            State(shared),
+            headers,
+            Json(serde_json::json!({"model": "grok-4.6", "messages": []})),
+        )
+        .await;
+        // The key is accepted (api_key is empty in tests); the pool is what is
+        // empty, so this must not be a 401.
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn anthropic_failures_use_the_anthropic_error_envelope() {
+        // An OpenAI-shaped error here reads to an Anthropic client as a
+        // malformed response rather than a failure it can report.
+        let shared = state();
+        let response = messages(
+            State(shared),
+            HeaderMap::new(),
+            Json(serde_json::json!({"messages": []})),
+        )
+        .await;
+        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["type"], "error");
+        assert_eq!(json["error"]["type"], "api_error");
     }
 
     #[tokio::test]
