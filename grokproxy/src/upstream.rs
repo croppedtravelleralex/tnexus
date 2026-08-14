@@ -581,6 +581,9 @@ pub fn disable_streaming(payload: &mut serde_json::Value) {
 
 /// One-shot OpenAI SSE from a complete chat.completion body, so a streaming
 /// client (NewAPI's model test, playground) still sees `data:` events.
+///
+/// Strict clients (pi, OpenAI SDK) expect the first chunk to carry only
+/// `delta.role`, then separate chunks for `delta.content` / `delta.tool_calls`.
 pub fn completion_to_sse(body: &serde_json::Value) -> String {
     let id = body
         .get("id")
@@ -590,10 +593,15 @@ pub fn completion_to_sse(body: &serde_json::Value) -> String {
         .get("model")
         .and_then(serde_json::Value::as_str)
         .unwrap_or(FALLBACK_MODEL);
-    let content = body
-        .pointer("/choices/0/message/content")
-        .and_then(serde_json::Value::as_str)
+    let message = body.pointer("/choices/0/message");
+    let content = message
+        .and_then(|m| m.get("content"))
+        .and_then(|c| match c {
+            serde_json::Value::String(s) => Some(s.as_str()),
+            _ => None,
+        })
         .unwrap_or("");
+    let tool_calls = message.and_then(|m| m.get("tool_calls")).cloned();
     let finish = body
         .pointer("/choices/0/finish_reason")
         .and_then(serde_json::Value::as_str)
@@ -601,17 +609,50 @@ pub fn completion_to_sse(body: &serde_json::Value) -> String {
     let created = body.get("created").cloned().unwrap_or(serde_json::json!(0));
     let usage = body.get("usage").cloned();
 
-    let first = serde_json::json!({
+    let mut events: Vec<String> = Vec::new();
+    let role_chunk = serde_json::json!({
         "id": id,
         "object": "chat.completion.chunk",
         "created": created,
         "model": model,
         "choices": [{
             "index": 0,
-            "delta": {"role": "assistant", "content": content},
+            "delta": {"role": "assistant"},
             "finish_reason": serde_json::Value::Null,
         }],
     });
+    events.push(format!("data: {role_chunk}\n\n"));
+
+    if !content.is_empty() {
+        let content_chunk = serde_json::json!({
+            "id": id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": [{
+                "index": 0,
+                "delta": {"content": content},
+                "finish_reason": serde_json::Value::Null,
+            }],
+        });
+        events.push(format!("data: {content_chunk}\n\n"));
+    }
+
+    if let Some(tool_calls) = tool_calls {
+        let tools_chunk = serde_json::json!({
+            "id": id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": [{
+                "index": 0,
+                "delta": {"tool_calls": tool_calls},
+                "finish_reason": serde_json::Value::Null,
+            }],
+        });
+        events.push(format!("data: {tools_chunk}\n\n"));
+    }
+
     let mut last = serde_json::json!({
         "id": id,
         "object": "chat.completion.chunk",
@@ -628,7 +669,9 @@ pub fn completion_to_sse(body: &serde_json::Value) -> String {
             .expect("object just constructed")
             .insert("usage".into(), usage);
     }
-    format!("data: {first}\n\ndata: {last}\n\ndata: [DONE]\n\n")
+    events.push(format!("data: {last}\n\n"));
+    events.push("data: [DONE]\n\n".into());
+    events.concat()
 }
 
 /// `HeaderName::from_static` panics on a bad name; this keeps startup safe.
@@ -905,7 +948,31 @@ mod tests {
         }));
         assert!(sse.contains("data: "));
         assert!(sse.contains("chat.completion.chunk"));
+        assert!(sse.contains("\"role\":\"assistant\""));
         assert!(sse.contains("\"content\":\"hi\""));
+        assert!(!sse.contains("\"role\":\"assistant\",\"content\""));
         assert!(sse.contains("data: [DONE]"));
+    }
+
+    #[test]
+    fn completion_to_sse_emits_tool_calls_separately() {
+        let sse = completion_to_sse(&serde_json::json!({
+            "id": "x",
+            "model": "grok-4.6",
+            "created": 1,
+            "choices": [{
+                "message": {
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "bash", "arguments": "{}"}
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }],
+        }));
+        assert!(sse.contains("tool_calls"));
+        assert!(sse.contains("\"finish_reason\":\"tool_calls\""));
     }
 }
