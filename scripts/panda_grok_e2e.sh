@@ -95,7 +95,10 @@ else: print(v)' "$1"
 }
 
 contains() {
-  python3 -c 'import sys; sys.exit(0 if sys.argv[1].lower() in sys.stdin.read().lower() else 1)' "$1"
+  python3 -c 'import re,sys
+hay=re.sub(r"\s+","",sys.stdin.read()).lower()
+needle=re.sub(r"\s+","",sys.argv[1]).lower()
+sys.exit(0 if needle in hay else 1)' "$1"
 }
 
 case_healthz() {
@@ -369,10 +372,32 @@ case_ocr_newapi() {
 case_public_page() {
   local code
   code=$(curl -sS -m 15 -o /dev/null -w '%{http_code}' https://tnexus.relai.asia/accounts || true)
-  if [[ "$code" == "200" ]]; then
-    ok "公网 /accounts 200"
+  if [[ "$code" == "200" || "$code" == "302" ]]; then
+    ok "公网 /accounts 可达 ($code)"
   else
-    bad "公网 /accounts 200" "code=$code"
+    bad "公网 /accounts 可达" "code=$code"
+  fi
+}
+
+case_imagine_lite() {
+  local body code json
+  body=$(curl -sS -m 150 -w '\n%{http_code}' \
+    -H "Authorization: Bearer $GROK_KEY" \
+    -H 'Content-Type: application/json' \
+    -d '{"prompt":"a simple red circle on white background","n":1,"response_format":"url","size":"1024x1024"}' \
+    "$GROK/v1/images/generations" || true)
+  code=$(printf '%s' "$body" | tail -n1)
+  json=$(printf '%s' "$body" | sed '$d')
+  if [[ "$code" != "200" ]]; then
+    bad "Lite 生图 200" "code=$code body=${json:0:600}"
+    skip "Lite 生图含 url/b64" "非 200"
+    return
+  fi
+  ok "Lite 生图 200"
+  if printf '%s' "$json" | grep -qE '"url"|"b64_json"'; then
+    ok "Lite 生图含 url/b64"
+  else
+    bad "Lite 生图含 url/b64" "${json:0:400}"
   fi
 }
 

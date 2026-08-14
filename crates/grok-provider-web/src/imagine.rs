@@ -17,10 +17,10 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{client_async, MaybeTlsStream, WebSocketStream};
 
 use crate::direct::HttpDirectClient;
+use crate::proxy::imagine_timeout_secs;
 use crate::statsig::BROWSER_UA;
 
 const IMAGINE_WS_PATH: &str = "/ws/imagine/listen";
-const IMAGINE_TIMEOUT: Duration = Duration::from_secs(120);
 
 impl HttpDirectClient {
     /// 直连生图：lite → chat SSE；pro → WS imagine/listen。
@@ -141,7 +141,7 @@ impl HttpDirectClient {
             "temporary": true,
         });
         let body = self
-            .fetch_chat_raw_body(
+            .fetch_chat_raw_body_imagine(
                 "/rest/app-chat/conversations/new",
                 &payload,
                 Some(sso_token),
@@ -187,7 +187,8 @@ impl HttpDirectClient {
         .await
         .map_err(ws_err)?;
 
-        let deadline = tokio::time::Instant::now() + IMAGINE_TIMEOUT;
+        let deadline =
+            tokio::time::Instant::now() + Duration::from_secs(imagine_timeout_secs());
         let mut urls = Vec::new();
         while tokio::time::Instant::now() < deadline && urls.len() < n.max(1) {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());

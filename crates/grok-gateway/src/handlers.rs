@@ -103,6 +103,15 @@ fn simplify_ratio(w: u32, h: u32) -> String {
 }
 
 /// `POST /v1/images/generations`（G2）。走 `ImageEngine.imagine`。
+///
+/// 默认 Lite HTTP SSE（`GROK_IMAGINE_LITE=1`），避开 Pro WSS 在住宅代理上的长连接 RST。
+fn imagine_lite_default() -> bool {
+    match std::env::var("GROK_IMAGINE_LITE") {
+        Ok(v) => v.trim() != "0" && !v.eq_ignore_ascii_case("false"),
+        Err(_) => true,
+    }
+}
+
 pub async fn image_generations(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ImageGenerationRequest>,
@@ -128,7 +137,7 @@ pub async fn image_generations(
         prompt: req.prompt.clone(),
         n: req.n,
         response_format: out_format.clone(),
-        lite: false,
+        lite: imagine_lite_default(),
         enhance: false,
         request_id: new_request_id(),
         aspect_ratio,

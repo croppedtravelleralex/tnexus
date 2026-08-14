@@ -250,6 +250,14 @@ impl HttpDirectClient {
         format!("sso={sanitized}; sso-rw={sanitized}")
     }
 
+    /// Lite 生图 SSE 专用 client（更长超时）；无池时回退普通 client。
+    pub(crate) fn client_for_imagine(&self, sso_cookie: &str) -> &reqwest::Client {
+        self.cfg
+            .proxy
+            .client_for_imagine(sso_cookie)
+            .unwrap_or(&self.client)
+    }
+
     /// 按 cookie（=账号身份）稳定取出口 client：有代理池 → 哈希映射；否则直连。
     pub(crate) fn client_for(&self, sso_cookie: &str) -> &reqwest::Client {
         self.cfg
@@ -472,12 +480,40 @@ impl HttpDirectClient {
         sso_token: Option<&str>,
         account_id: Option<i64>,
     ) -> Result<Vec<u8>, ProviderError> {
+        self.fetch_chat_raw_body_inner(path, payload, sso_token, account_id, false)
+            .await
+    }
+
+    /// Lite 生图 SSE：走更长 HTTP 超时的住宅代理 client。
+    pub(crate) async fn fetch_chat_raw_body_imagine(
+        &self,
+        path: &str,
+        payload: &Value,
+        sso_token: Option<&str>,
+        account_id: Option<i64>,
+    ) -> Result<Vec<u8>, ProviderError> {
+        self.fetch_chat_raw_body_inner(path, payload, sso_token, account_id, true)
+            .await
+    }
+
+    async fn fetch_chat_raw_body_inner(
+        &self,
+        path: &str,
+        payload: &Value,
+        sso_token: Option<&str>,
+        account_id: Option<i64>,
+        imagine_timeout: bool,
+    ) -> Result<Vec<u8>, ProviderError> {
         let Some(sso_token) = sso_token else {
             return Err(ProviderError::NoAvailableAccount);
         };
         let session = self.session_for(account_id);
         let cookie = Self::resolve_cookie(sso_token, session.as_ref());
-        let client = self.client_for(&cookie);
+        let client = if imagine_timeout {
+            self.client_for_imagine(&cookie)
+        } else {
+            self.client_for(&cookie)
+        };
         let mut owned = payload.clone();
         if has_uploadable_attachments(payload) {
             let ids = self

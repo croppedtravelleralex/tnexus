@@ -129,17 +129,11 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
-    // 选 BridgeClient 实现：直连（缺省）vs bridge 侧车（GROK2API_DIRECT=0 显式回退）。
-    let proxy_pool = if let Some(list) = cfg.proxy_list.as_deref() {
-        let pool = grok_provider_web::proxy::ProxyPool::from_text(&list.replace(
-            ',', "
-",
-        ));
-        tracing::info!("内联代理加载 {} 个节点", pool.len());
-        std::sync::Arc::new(pool)
-    } else {
-        grok_provider_web::proxy::proxy_pool_from_file(cfg.proxy_file.as_deref())
-    };
+    // 住宅代理：文件（webshare）+ 内联（udeal）合并，按账号哈希分散出口。
+    let proxy_pool = grok_provider_web::proxy::proxy_pool_merged(
+        cfg.proxy_file.as_deref(),
+        cfg.proxy_list.as_deref(),
+    );
     let session_store = cfg
         .pure_http_keys_dir
         .as_deref()

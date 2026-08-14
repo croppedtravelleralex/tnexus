@@ -17,6 +17,7 @@ use grok_domain::egress::Scope;
 use grok_domain::SsoTokenProvider;
 use grok_egress::{GateId, LeaseManager};
 use grok_pool::SharedPool;
+use tokio::sync::Semaphore;
 
 use crate::attachments::prepare_file_attachments;
 use crate::bridge::BridgeClient;
@@ -30,6 +31,7 @@ const DEFAULT_LEASE_DURATION: Duration = Duration::from_secs(5);
 const DEFAULT_RETRY_MAX: usize = 2;
 /// 跨账号重试硬上限（防止失控重试拖垮号池）。
 const HARD_RETRY_CAP: usize = 8;
+const DEFAULT_OCR_GLOBAL_CONCURRENCY: usize = 4;
 
 /// 账号健康写回端口（PG 持久化冷却状态）。
 ///
@@ -60,6 +62,7 @@ pub struct ChatEngine {
     retry_max: usize,
     /// PG 健康写回（可选；None 时只写内存冷却）。
     health_sink: Option<Arc<dyn AccountHealthSink>>,
+    ocr_global_gate: Arc<Semaphore>,
 }
 
 impl ChatEngine {
@@ -76,6 +79,11 @@ impl ChatEngine {
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(DEFAULT_RETRY_MAX)
             .min(HARD_RETRY_CAP);
+        let ocr_conc = std::env::var("GROK_OCR_GLOBAL_CONCURRENCY")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(DEFAULT_OCR_GLOBAL_CONCURRENCY)
+            .max(1);
         Self {
             pool,
             lease,
@@ -85,6 +93,7 @@ impl ChatEngine {
             lease_duration: DEFAULT_LEASE_DURATION,
             retry_max,
             health_sink: None,
+            ocr_global_gate: Arc::new(Semaphore::new(ocr_conc)),
         }
     }
 
@@ -128,11 +137,21 @@ impl ChatEngine {
     /// 遭遇可重试上游错误（429 / 403）时自动换账号，最多重试 `retry_max` 次。
     /// 所有尝试均失败时返回最后一次的真实上游错误，而非通用错误。
     pub async fn chat_outcome(&self, req: &ChatRequest) -> Result<ChatOutcome, ProviderError> {
+        let ocr_gate = if req.ocr {
+            Some(
+                self.ocr_global_gate
+                    .acquire()
+                    .await
+                    .map_err(|e| ProviderError::Upstream(format!("ocr global gate: {e}")))?,
+            )
+        } else {
+            None
+        };
+
         let mut tried: Vec<i64> = Vec::new();
         let mut last_err: Option<ProviderError> = None;
 
         for attempt in 0..self.retry_max {
-            // 排除已试过的账号，避免重复消耗同一账号
             let account_id = match self.select_account_with_keys_skip(&tried).await {
                 Ok(id) => id,
                 Err(e) => return Err(last_err.unwrap_or(e)),
@@ -140,16 +159,30 @@ impl ChatEngine {
             tried.push(account_id);
 
             match self.execute_for_account(account_id, req).await {
-                Ok(outcome) => return Ok(outcome),
+                Ok(outcome) if req.ocr && is_weak_ocr_text(&outcome.text) && attempt + 1 < self.retry_max => {
+                    tracing::warn!(
+                        account_id,
+                        attempt,
+                        "OCR 弱识别（空/无文字），换账号重试"
+                    );
+                    self.pool.dispatch_failure(account_id).await;
+                    last_err = Some(ProviderError::Upstream("weak ocr result".into()));
+                }
+                Ok(outcome) => {
+                    let _ = ocr_gate;
+                    return Ok(outcome);
+                }
                 Err(e) if is_retryable_upstream_error(&e) && attempt + 1 < self.retry_max => {
-                    // 限速/拒绝：换账号重试；cooldown 已在 execute_for_account 中设置
                     tracing::warn!(account_id, attempt, "上游限速/拒绝，换账号重试: {e}");
                     last_err = Some(e);
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    let _ = ocr_gate;
+                    return Err(e);
+                }
             }
         }
-        // 所有尝试均失败，返回最后一次的真实错误
+        let _ = ocr_gate;
         Err(last_err.unwrap_or(ProviderError::NoAvailableAccount))
     }
 
@@ -313,6 +346,12 @@ pub fn is_retryable_upstream_error(e: &ProviderError) -> bool {
         ProviderError::Upstream(msg) => msg.contains("429") || msg.contains("403"),
         _ => false,
     }
+}
+
+/// OCR 弱识别：空串或默认「无文字内容」→ 换号重试有意义。
+fn is_weak_ocr_text(text: &str) -> bool {
+    let t = text.trim();
+    t.is_empty() || t == "无文字内容"
 }
 
 #[async_trait::async_trait]

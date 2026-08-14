@@ -6,7 +6,8 @@
 //!     → bridge.fetch_imagine → 图片结果(url/b64)
 //!     → trace.finish + dispatch 记账 + audit
 //!
-//! 生图元数据写入 `grok_pipeline_traces` / `grok_pipeline_segments`（G2-A2 阶段耗时字段）。
+//! 跨账号重试 + 全局并发槽（对齐 GPT `IMAGE_GLOBAL_CONCURRENCY`）：
+//! env `GROK_IMAGE_GLOBAL_CONCURRENCY`（默认 2）、`GROK_IMAGE_RETRY_MAX`（默认 3）。
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,15 +19,19 @@ use grok_egress::{GateId, LeaseManager};
 use grok_image_pipeline::{ImagePipeline, Status, TraceRecorder};
 use grok_pool::SharedPool;
 use serde_json::Value;
+use tokio::sync::Semaphore;
 
 use crate::bridge::BridgeClient;
+use crate::engine::is_retryable_upstream_error;
 use crate::expand::expand_prompt;
 use grok_domain::ProviderError;
 use grok_domain::{ImageBackend, ImagineRequest, ImagineResult};
 
-/// egress lease 超时（生图可能较长）。
-const DEFAULT_LEASE_DURATION: Duration = Duration::from_secs(30);
+const DEFAULT_LEASE_SECS: u64 = 120;
 const DEFAULT_SLOT_TIMEOUT: Duration = Duration::from_secs(10);
+const DEFAULT_GLOBAL_CONCURRENCY: usize = 2;
+const DEFAULT_RETRY_MAX: usize = 3;
+const HARD_RETRY_CAP: usize = 8;
 
 /// grok Web 生图引擎（依赖池 / lease / bridge / pipeline 均可注入，便于单测）。
 pub struct ImageEngine {
@@ -43,6 +48,8 @@ pub struct ImageEngine {
     model: String,
     /// lite 模型名。
     model_lite: String,
+    global_gate: Arc<Semaphore>,
+    retry_max: usize,
 }
 
 impl ImageEngine {
@@ -55,6 +62,21 @@ impl ImageEngine {
         audit: Option<Arc<AuditSink>>,
         pipeline: ImagePipeline,
     ) -> Self {
+        let global_conc = std::env::var("GROK_IMAGE_GLOBAL_CONCURRENCY")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(DEFAULT_GLOBAL_CONCURRENCY)
+            .max(1);
+        let lease_secs = std::env::var("GROK_IMAGE_LEASE_SECS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_LEASE_SECS)
+            .max(30);
+        let retry_max = std::env::var("GROK_IMAGE_RETRY_MAX")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(DEFAULT_RETRY_MAX)
+            .clamp(1, HARD_RETRY_CAP);
         Self {
             pool,
             lease,
@@ -62,10 +84,12 @@ impl ImageEngine {
             audit,
             sso: None,
             pipeline,
-            lease_duration: DEFAULT_LEASE_DURATION,
+            lease_duration: Duration::from_secs(lease_secs),
             slot_timeout: DEFAULT_SLOT_TIMEOUT,
             model: "grok-imagine-image".to_string(),
             model_lite: "grok-imagine-lite".to_string(),
+            global_gate: Arc::new(Semaphore::new(global_conc)),
+            retry_max,
         }
     }
 
@@ -75,20 +99,53 @@ impl ImageEngine {
         self
     }
 
+    /// 覆盖跨账号重试上限（测试用）。
+    pub fn with_retry_max(mut self, n: usize) -> Self {
+        self.retry_max = n.clamp(1, HARD_RETRY_CAP);
+        self
+    }
+
     /// 注入 sso token 提供者（无 chrome 直连路径）。bridge 模式不注入。
     pub fn with_sso(mut self, sso: Arc<dyn grok_domain::SsoTokenProvider>) -> Self {
         self.sso = Some(sso);
         self
     }
 
-    /// 执行一次生图，返回图片清单。
+    /// 执行一次生图，返回图片清单（含跨号重试 + 全局并发槽）。
     pub async fn imagine(&self, req: &ImagineRequest) -> Result<ImagineResult, ProviderError> {
-        // 1) 账号 + lease（grok_web scope）。
-        let account_id = self
-            .pool
-            .select(None)
+        let _global = self
+            .global_gate
+            .acquire()
             .await
-            .ok_or(ProviderError::NoAvailableAccount)?;
+            .map_err(|e| ProviderError::Upstream(format!("image global gate: {e}")))?;
+
+        let mut tried: Vec<i64> = Vec::new();
+        let mut last_err: Option<ProviderError> = None;
+
+        for attempt in 0..self.retry_max {
+            let account_id = match self.select_account_with_keys_skip(&tried).await {
+                Ok(id) => id,
+                Err(e) => return Err(last_err.unwrap_or(e)),
+            };
+            tried.push(account_id);
+
+            match self.imagine_once(account_id, req).await {
+                Ok(result) => return Ok(result),
+                Err(e) if is_retryable_imagine_error(&e) && attempt + 1 < self.retry_max => {
+                    tracing::warn!(account_id, attempt, "生图可重试错误，换账号: {e}");
+                    last_err = Some(e);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Err(last_err.unwrap_or(ProviderError::NoAvailableAccount))
+    }
+
+    async fn imagine_once(
+        &self,
+        account_id: i64,
+        req: &ImagineRequest,
+    ) -> Result<ImagineResult, ProviderError> {
         let _lease = match self
             .lease
             .acquire(
@@ -105,7 +162,6 @@ impl ImageEngine {
             }
         };
 
-        // 2) 生图并发槽（imagine pipeline 自身槽位）。
         let _slot = match self
             .pipeline
             .reserve_slot_timeout("ps", self.slot_timeout)
@@ -118,7 +174,6 @@ impl ImageEngine {
             }
         };
 
-        // 3) trace（PS 阶段含扩写耗时）。
         let model = if req.lite {
             &self.model_lite
         } else {
@@ -126,7 +181,6 @@ impl ImageEngine {
         };
         let mut rec = self.begin_trace(req).await?;
 
-        // 4) prompt 扩写（enhance），计入 PS 段。
         let mut final_prompt = req.prompt.clone();
         if req.enhance {
             let start = Utc::now();
@@ -139,7 +193,6 @@ impl ImageEngine {
             {
                 Ok(p) => final_prompt = p,
                 Err(e) => {
-                    // 扩写失败不致命：用原 prompt 继续（Go 有回退语义）。
                     tracing::warn!(err = %e, "prompt expand failed, fall back to raw");
                 }
             }
@@ -149,11 +202,9 @@ impl ImageEngine {
                 -1,
             );
         } else {
-            // 无扩写也记一个短 PS 段（阶段耗时字段存在）。
             rec.add_segment(grok_image_pipeline::Stage::Ps, 0, -1);
         }
 
-        // 5) 组上游 payload + bridge 生图。
         let aspect_ratio = if req.aspect_ratio.trim().is_empty() {
             "1:1"
         } else {
@@ -177,14 +228,13 @@ impl ImageEngine {
         {
             Ok(v) => v,
             Err(e) => {
-                self.pool.dispatch_failure(account_id).await;
+                self.mark_imagine_failure(account_id, &e).await;
                 self.record_audit(req, account_id, model, false);
                 rec.finish(Status::Failed).await.ok();
                 return Err(e);
             }
         };
 
-        // 6) 解析图片。
         let items = extract_images(&upstream);
         if items.is_empty() {
             self.pool.dispatch_failure(account_id).await;
@@ -205,10 +255,33 @@ impl ImageEngine {
         })
     }
 
+    async fn mark_imagine_failure(&self, account_id: i64, e: &ProviderError) {
+        if is_retryable_upstream_error(e) {
+            self.pool.dispatch_rate_limited(account_id).await;
+        } else {
+            self.pool.dispatch_failure(account_id).await;
+        }
+    }
+
+    async fn select_account_with_keys_skip(&self, tried: &[i64]) -> Result<i64, ProviderError> {
+        const MAX_ATTEMPTS: usize = 64;
+        let mut skip: Vec<i64> = tried.to_vec();
+        for _ in 0..MAX_ATTEMPTS {
+            let Some(id) = self.pool.select_skip(None, &skip).await else {
+                break;
+            };
+            if self.bridge.has_pure_http_keys(id) {
+                return Ok(id);
+            }
+            skip.push(id);
+        }
+        Err(ProviderError::NoAvailableAccount)
+    }
+
     /// 开始一条 trace（记录主记录为 Running）。
     async fn begin_trace(&self, req: &ImagineRequest) -> Result<TraceRecorder, ProviderError> {
         let trace = grok_image_pipeline::PipelineTrace {
-            id: String::new(), // 自动生成 g2-<uuid>
+            id: String::new(),
             request_id: req.request_id.clone(),
             lane: 0,
             status: Status::Queued,
@@ -259,6 +332,28 @@ impl ImageEngine {
     }
 }
 
+/// 生图失败是否值得换号重试（WSS RST / 限速 / 空图 / lease 争用）。
+fn is_retryable_imagine_error(e: &ProviderError) -> bool {
+    match e {
+        ProviderError::Lease(_) => true,
+        ProviderError::Upstream(msg) => {
+            is_retryable_upstream_error(e)
+                || msg.contains("Connection reset")
+                || msg.contains("WebSocket")
+                || msg.contains("imagine ws")
+                || msg.contains("rate limit")
+                || msg.contains("no image data")
+        }
+        ProviderError::Bridge(msg) => {
+            msg.contains("imagine ws")
+                || msg.contains("Connection reset")
+                || msg.contains("WebSocket")
+                || msg.contains("timeout")
+        }
+        _ => false,
+    }
+}
+
 fn extract_images(v: &Value) -> Vec<String> {
     let mut out = Vec::new();
     if let Some(items) = v.get("data").and_then(Value::as_array) {
@@ -270,7 +365,6 @@ fn extract_images(v: &Value) -> Vec<String> {
             }
         }
     }
-    // 兼容嵌套 `images` 字段。
     if out.is_empty() {
         if let Some(imgs) = v.get("images").and_then(Value::as_array) {
             for it in imgs {
@@ -351,7 +445,6 @@ mod tests {
         let res = e.imagine(&req()).await.expect("imagine");
         assert_eq!(res.items, vec!["https://x/img.png".to_string()]);
         assert!(!res.b64);
-        // bridge 收到 imagine payload：模型 + prompt
         let got = concrete.last_imagine_payload.lock().await;
         let p = got.as_ref().unwrap();
         assert_eq!(p["model"], "grok-imagine-image");
@@ -431,5 +524,18 @@ mod tests {
             vec!["c".to_string(), "d".to_string()]
         );
         assert!(extract_images(&serde_json::json!({"x":1})).is_empty());
+    }
+
+    #[test]
+    fn retryable_imagine_errors() {
+        assert!(is_retryable_imagine_error(
+            &ProviderError::Upstream("imagine ws: Connection reset".into())
+        ));
+        assert!(is_retryable_imagine_error(
+            &ProviderError::Upstream("no image data in imagine response".into())
+        ));
+        assert!(!is_retryable_imagine_error(
+            &ProviderError::Upstream("chat status 400".into())
+        ));
     }
 }

@@ -18,6 +18,8 @@ pub struct ProxyEndpoint {
 pub struct ProxyPool {
     endpoints: Vec<ProxyEndpoint>,
     clients: Vec<reqwest::Client>,
+    /// Lite 生图 SSE 用更长超时（与 chat/OCR 的 60s 分离）。
+    imagine_clients: Vec<reqwest::Client>,
 }
 
 impl ProxyPool {
@@ -26,11 +28,17 @@ impl ProxyPool {
         Self {
             endpoints: Vec::new(),
             clients: Vec::new(),
+            imagine_clients: Vec::new(),
         }
     }
 
     /// 从文本解析（每行一个代理；支持 `host:port:user:pass` / `user:pass@host:port` / `host:port`）。
     pub fn from_text(text: &str) -> Self {
+        Self::from_text_with_timeouts(text, 60, imagine_timeout_secs())
+    }
+
+    /// chat/OCR 与 Lite 生图可设不同 HTTP 总超时。
+    pub fn from_text_with_timeouts(text: &str, timeout_secs: u64, imagine_timeout_secs: u64) -> Self {
         let endpoints: Vec<ProxyEndpoint> = text
             .lines()
             .map(str::trim)
@@ -39,16 +47,17 @@ impl ProxyPool {
             .collect();
         let clients = endpoints
             .iter()
-            .map(|e| {
-                reqwest::Client::builder()
-                    .proxy(reqwest::Proxy::all(&e.url).expect("proxy url"))
-                    .connect_timeout(std::time::Duration::from_secs(5))
-                    .timeout(std::time::Duration::from_secs(60))
-                    .build()
-                    .expect("proxy client")
-            })
+            .map(|e| build_proxy_client(&e.url, timeout_secs))
             .collect();
-        Self { endpoints, clients }
+        let imagine_clients = endpoints
+            .iter()
+            .map(|e| build_proxy_client(&e.url, imagine_timeout_secs))
+            .collect();
+        Self {
+            endpoints,
+            clients,
+            imagine_clients,
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -66,6 +75,15 @@ impl ProxyPool {
         }
         let idx = fnv1a(sso_token) as usize % self.clients.len();
         self.clients.get(idx)
+    }
+
+    /// Lite 生图 SSE 专用 client（更长超时）。
+    pub fn client_for_imagine(&self, sso_token: &str) -> Option<&reqwest::Client> {
+        if self.imagine_clients.is_empty() {
+            return None;
+        }
+        let idx = fnv1a(sso_token) as usize % self.imagine_clients.len();
+        self.imagine_clients.get(idx)
     }
 
     /// 按 sso/cookie 稳定取代理 URL（WS CONNECT 用）。
@@ -133,6 +151,24 @@ fn parse_proxy_line(line: &str) -> Option<String> {
     }
 }
 
+fn build_proxy_client(proxy_url: &str, timeout_secs: u64) -> reqwest::Client {
+    reqwest::Client::builder()
+        .proxy(reqwest::Proxy::all(proxy_url).expect("proxy url"))
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(timeout_secs.max(5)))
+        .build()
+        .expect("proxy client")
+}
+
+/// Lite 生图 HTTP 总超时（秒），默认 120。
+pub fn imagine_timeout_secs() -> u64 {
+    std::env::var("GROK_IMAGINE_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(120)
+        .max(30)
+}
+
 /// FNV-1a 64 位（稳定、跨进程一致，用于代理绑定）。
 fn fnv1a(input: &str) -> u64 {
     let mut hash: u64 = 0xcbf29ce484222325;
@@ -175,6 +211,42 @@ pub fn proxy_pool_from_file(path: Option<&str>) -> Arc<ProxyPool> {
             Arc::new(ProxyPool::empty())
         }
     }
+}
+
+/// 合并代理文件 + 内联列表（webshare 文件 + udeal 单条均可并存）。
+pub fn proxy_pool_merged(file: Option<&str>, inline_list: Option<&str>) -> Arc<ProxyPool> {
+    let mut lines: Vec<String> = Vec::new();
+    if let Some(path) = file {
+        match std::fs::read_to_string(path) {
+            Ok(text) => {
+                for line in text.lines() {
+                    let l = line.trim();
+                    if !l.is_empty() && !l.starts_with('#') {
+                        lines.push(l.to_string());
+                    }
+                }
+            }
+            Err(e) => tracing::warn!("代理文件不可读: {path}: {e}"),
+        }
+    }
+    if let Some(list) = inline_list {
+        for part in list.split(',') {
+            let p = part.trim();
+            if !p.is_empty() {
+                lines.push(p.to_string());
+            }
+        }
+    }
+    if lines.is_empty() {
+        return Arc::new(ProxyPool::empty());
+    }
+    let pool = ProxyPool::from_text(&lines.join("\n"));
+    tracing::info!(
+        "代理池合并 {} 个住宅节点: {:?}",
+        pool.len(),
+        pool.describe()
+    );
+    Arc::new(pool)
 }
 
 /// 构造直连请求错误（统一错误面）。
