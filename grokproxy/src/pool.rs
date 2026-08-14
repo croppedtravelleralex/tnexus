@@ -22,6 +22,15 @@ use crate::upstream::{Failure, Upstream, UpstreamError};
 const QUOTA_COOLDOWN_SECS: i64 = 3_600;
 /// How many accounts to pull from the database per refill.
 const REFILL_BATCH: usize = 64;
+/// Unmeasured accounts mixed into each refill so live traffic discovers their
+/// entitlement instead of the janitor having to chat-probe the whole pool.
+const EXPLORE_PER_REFILL: usize = 8;
+/// Skip a token-only keepalive if the account served traffic this recently:
+/// a live request already proved the credential.
+const KEEPALIVE_FRESH_SECS: i64 = 1_800;
+/// Adaptive sweeps chat-probe at most this many unmeasured accounts. The rest
+/// of the batch is a free token check, so upkeep cannot drain the pool.
+const MAX_CHAT_PROBES_PER_SWEEP: usize = 24;
 
 /// Accounts ready to serve, plus the ones currently serving.
 #[derive(Default)]
@@ -169,32 +178,44 @@ impl Pool {
 
     /// Pull a batch of schedulable accounts and rank them.
     ///
-    /// Ranking prefers accounts that have proven themselves and still have
-    /// budget left, then falls back to least-recently-used so traffic spreads
-    /// instead of grinding one account down.
+    /// Measured accounts with budget left carry the load. A small slice of
+    /// unmeasured accounts rides along so live traffic fills in entitlements
+    /// instead of parking them forever behind proven-first ranking.
     fn refill(&self) -> Result<()> {
         let now = crate::now();
         let mut ready = self.ready.lock().unwrap();
         if !ready.queue.is_empty() {
             return Ok(());
         }
-        let mut candidates: Vec<Account> = self
-            .store
-            .list(Some(Provider::Build))?
-            .into_iter()
-            .filter(|account| account.is_available(now) && !ready.leased.contains(&account.id))
-            .collect();
-
-        candidates.sort_by(|a, b| {
-            let proven = (b.verified_at > 0).cmp(&(a.verified_at > 0));
-            let budget = remaining_budget(b).cmp(&remaining_budget(a));
-            proven
-                .then(budget)
+        let min_budget = Probe::Chat.budget_cost();
+        let mut unknown = Vec::new();
+        let mut known = Vec::new();
+        for account in self.store.list(Some(Provider::Build))? {
+            if !account.is_available(now) || ready.leased.contains(&account.id) {
+                continue;
+            }
+            if account.limit_tokens <= 0 {
+                unknown.push(account);
+            } else if remaining_budget(&account) > min_budget {
+                known.push(account);
+            }
+        }
+        unknown.sort_by_key(|account| account.last_used_at);
+        known.sort_by(|a, b| {
+            remaining_budget(b)
+                .cmp(&remaining_budget(a))
                 .then(a.last_used_at.cmp(&b.last_used_at))
         });
-        candidates.truncate(REFILL_BATCH);
-        debug!(queued = candidates.len(), "ready pool refilled");
-        ready.queue = candidates.into();
+        let explore_n = unknown.len().min(EXPLORE_PER_REFILL).min(REFILL_BATCH / 4);
+        let mut queue: Vec<Account> = unknown.into_iter().take(explore_n).collect();
+        let known_slots = REFILL_BATCH.saturating_sub(queue.len());
+        queue.extend(known.into_iter().take(known_slots));
+        debug!(
+            queued = queue.len(),
+            exploring = explore_n,
+            "ready pool refilled"
+        );
+        ready.queue = queue.into();
         Ok(())
     }
 
@@ -286,29 +307,59 @@ impl Pool {
         limit: usize,
         concurrency: usize,
     ) -> Result<ProbeReport> {
+        let now = crate::now();
         let mut candidates: Vec<Account> = self
             .store
             .list(Some(Provider::Build))?
             .into_iter()
             .filter(|account| !matches!(account.health, Health::Disabled | Health::Forbidden))
             .collect();
-        // Unmeasured accounts first: re-probing a measured one only spends its
-        // budget to relearn a number we already hold.
-        candidates.sort_by_key(|account| account.limit_tokens > 0);
-        candidates.truncate(if limit == 0 {
+        // Unmeasured first, then tokens about to expire, then least recently
+        // used. Re-probing a measured live account teaches nothing.
+        candidates.sort_by(|a, b| {
+            let rank = |account: &Account| {
+                let unmeasured = account.limit_tokens <= 0 || account.verified_at == 0;
+                let stale = account.needs_refresh(now, REFRESH_SKEW_SECS);
+                (!unmeasured, !stale, account.last_used_at)
+            };
+            rank(a).cmp(&rank(b))
+        });
+
+        let forced_chat = matches!(probe, Some(Probe::Chat));
+        let mut chat_left = if forced_chat {
+            usize::MAX
+        } else {
+            MAX_CHAT_PROBES_PER_SWEEP
+        };
+        let want = if limit == 0 {
             candidates.len()
         } else {
             limit.min(candidates.len())
-        });
+        };
+        let mut selected: Vec<(Account, Probe)> = Vec::with_capacity(want);
+        for account in candidates {
+            let mut chosen = probe.unwrap_or_else(|| Probe::cheapest_useful_for(&account));
+            if chosen == Probe::Chat && chat_left == 0 {
+                chosen = Probe::Token;
+            }
+            if chosen == Probe::Chat {
+                chat_left = chat_left.saturating_sub(1);
+            } else if probe.is_none() && !worth_keepalive(&account, now) {
+                continue;
+            }
+            selected.push((account, chosen));
+            if selected.len() >= want {
+                break;
+            }
+        }
 
         let prober = self.prober();
         let mut report = ProbeReport::default();
         let width = concurrency.clamp(1, 16);
-        for chunk in candidates.chunks(width) {
-            let outcomes = futures::future::join_all(chunk.iter().map(|account| {
-                let probe = probe.unwrap_or_else(|| Probe::cheapest_useful_for(account));
+        for chunk in selected.chunks(width) {
+            let outcomes = futures::future::join_all(chunk.iter().map(|(account, chosen)| {
                 let prober = &prober;
-                async move { (account, prober.run(account, probe).await) }
+                async move { (account, prober.run(account, *chosen).await) }
             }))
             .await;
             for (account, outcome) in outcomes {
@@ -354,14 +405,25 @@ impl Pool {
 
 /// Tokens an account still has to spend.
 ///
-/// An unmeasured account sorts above a measured-and-drained one but below a
-/// measured-and-full one: its entitlement is unknown, not zero, and finding out
-/// is exactly what serving it a request does.
+/// Unmeasured accounts are counted at the typical Build entitlement: unknown
+/// is not zero, and serving one is how the number becomes known. They therefore
+/// rank alongside a full measured account rather than jumping the queue or
+/// sitting at the back forever.
 fn remaining_budget(account: &Account) -> i64 {
     if account.limit_tokens <= 0 {
-        return i64::MAX / 2;
+        return crate::model::TYPICAL_TOKEN_ENTITLEMENT;
     }
     (account.limit_tokens - account.total_tokens).max(0)
+}
+
+fn worth_keepalive(account: &Account, now: i64) -> bool {
+    if account.needs_refresh(now, REFRESH_SKEW_SECS) {
+        return true;
+    }
+    if account.last_used_at == 0 {
+        return true;
+    }
+    now.saturating_sub(account.last_used_at) >= KEEPALIVE_FRESH_SECS
 }
 
 pub fn downcast_failure(err: &anyhow::Error) -> Failure {
@@ -456,7 +518,10 @@ mod tests {
     }
 
     #[test]
-    fn ranking_prefers_proven_accounts_with_budget_left() {
+    fn ranking_mixes_unmeasured_accounts_and_skips_the_nearly_empty() {
+        // Proven-first parked every fresh import behind the measured slice, so
+        // entitlements never got discovered by live traffic. A drained account
+        // cannot answer a request anyway.
         let far = crate::now() + 100_000;
         let store = store_with(&[
             ("drained@b.c", "r1", far),
@@ -508,17 +573,15 @@ mod tests {
             .collect();
         assert_eq!(
             order,
-            vec!["rich@b.c", "drained@b.c", "unproven@b.c"],
-            "proven-with-budget first, then proven-but-drained, then unproven"
+            vec!["unproven@b.c", "rich@b.c"],
+            "explore the unknown, serve the rich, skip the nearly empty"
         );
     }
 
     #[test]
-    fn an_unmeasured_account_outranks_a_drained_one_but_not_a_full_one() {
-        // Unknown entitlement is not zero entitlement; finding out is exactly
-        // what serving it does.
+    fn an_unmeasured_account_ranks_like_a_full_typical_one() {
         let full = Account {
-            limit_tokens: 1_000,
+            limit_tokens: crate::model::TYPICAL_TOKEN_ENTITLEMENT,
             total_tokens: 0,
             ..Default::default()
         };
@@ -532,8 +595,45 @@ mod tests {
             total_tokens: 0,
             ..Default::default()
         };
+        assert_eq!(remaining_budget(&unknown), remaining_budget(&full));
         assert!(remaining_budget(&unknown) > remaining_budget(&drained));
-        assert!(remaining_budget(&full) < remaining_budget(&unknown));
+    }
+
+    #[test]
+    fn keepalive_skips_an_account_that_just_served_traffic() {
+        let now = 10_000;
+        let fresh = Account {
+            last_used_at: now - 60,
+            expires_at: now + 100_000,
+            access_token: "a".into(),
+            provider: Provider::Build,
+            ..Default::default()
+        };
+        let stale = Account {
+            last_used_at: now - 10_000,
+            expires_at: now + 100_000,
+            access_token: "a".into(),
+            provider: Provider::Build,
+            ..Default::default()
+        };
+        let expiring = Account {
+            last_used_at: now - 60,
+            expires_at: now + 10,
+            access_token: "a".into(),
+            provider: Provider::Build,
+            ..Default::default()
+        };
+        assert!(!worth_keepalive(&fresh, now));
+        assert!(worth_keepalive(&stale, now));
+        assert!(worth_keepalive(&expiring, now));
+        assert!(worth_keepalive(
+            &Account {
+                last_used_at: 0,
+                provider: Provider::Build,
+                ..Default::default()
+            },
+            now
+        ));
     }
 
     #[test]

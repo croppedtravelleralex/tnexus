@@ -48,11 +48,19 @@
   .tab .n{color:var(--dim);font-variant-numeric:tabular-nums;margin-left:6px;font-size:13px}
   .tab.sel .n{color:var(--accent)}
 
-  .budget{display:flex;gap:26px;align-items:baseline;flex-wrap:wrap;
+  .budget{display:flex;gap:22px;align-items:flex-end;flex-wrap:wrap;
     background:var(--panel);border:1px solid var(--line);border-radius:12px;
-    padding:14px 18px;margin-bottom:14px}
-  .budget b{font-size:20px;font-weight:650;font-variant-numeric:tabular-nums}
+    padding:16px 18px;margin-bottom:14px}
+  .budget .hero .lab{display:block;margin-bottom:4px}
+  .budget .hero b{font-size:34px;font-weight:700;font-variant-numeric:tabular-nums;
+    letter-spacing:-.4px;color:var(--ok);line-height:1.1}
+  .budget b{font-size:18px;font-weight:650;font-variant-numeric:tabular-nums}
   .budget .lab{color:var(--muted);font-size:12px;margin-right:6px}
+  .bar{height:8px;background:#1c2230;border-radius:999px;overflow:hidden;min-width:200px}
+  .bar>i{display:block;height:100%;background:var(--ok);border-radius:999px}
+  .break{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+    flex-basis:100%;margin-top:4px}
+  .break .muted{font-size:12px;margin-top:2px}
 
   .cards{display:grid;gap:12px;margin-bottom:18px;
     grid-template-columns:repeat(auto-fit,minmax(132px,1fr))}
@@ -206,9 +214,9 @@ function when(ts) {
 }
 
 const NOTE = {
-  build: '每个 Build 号有独立 token 授权额度（上游在 chat 响应头里报，通常 100 万）。'
-       + '该头<b>不会递减</b>，所以剩余额度由「授权额度 − 本地累计已用」算出，'
-       + '账号跑过至少一次请求后才有数——没跑过的显示「未探测」，点「额度探测」可批量补上。',
+  build: '总可用额度 = 可调度号上已确认的剩余 + 尚未探测的号按典型授权（通常 100 万 token/号）估算。'
+       + '上游 chat 响应头里的额度<b>不会递减</b>，所以已确认剩余用「授权 − 本地累计已用」计算。'
+       + '点「额度探测」会真发一次 chat，把未探测号补成已确认。',
   web:  'Web 号走 grok.com 的 SSO cookie，<b>没有 token 授权额度这一说</b>，'
        + '上游按对话次数在自己的窗口内限流，因此这里不显示剩余额度，只统计实际用量。',
 };
@@ -242,22 +250,44 @@ async function loadStats() {
   }
 
   $('note').innerHTML = NOTE[state.provider];
-  $('poolLine').textContent = `${state.provider} · ${total} 个号 · 可调度 ${health.active || 0}`;
+  const sched = state.stats.scheduler || {};
+  const schedBit = (sched.in_flight || sched.queued)
+    ? ` · 调度中 ${sched.in_flight || 0} / 队列 ${sched.queued || 0}` : '';
+  $('poolLine').textContent = `${state.provider} · ${total} 个号 · 可调度 ${health.active || 0}${schedBit}`;
 
   // Only Build has an entitlement to report against.
   if (state.provider === 'build') {
     const measured = quota.measured_accounts || 0;
-    const unmeasured = total - measured;
+    const unmeasuredN = quota.schedulable_unmeasured || 0;
+    const typical = quota.typical_entitlement || 1000000;
+    const confirmed = quota.schedulable_remaining || 0;
+    const estimated = quota.estimated_available || 0;
+    const projected = unmeasuredN * typical;
+    const cooling = quota.cooling_remaining || 0;
+    const entitled = quota.entitled_tokens || 0;
+    const spent = quota.spent_tokens || 0;
+    const pct = entitled ? Math.min(100, Math.round(spent / entitled * 1000) / 10) : 0;
     $('budget').classList.remove('hidden');
     $('budget').innerHTML = `
-      <div><span class="lab">剩余额度</span><b style="color:var(--ok)">${fmt(quota.remaining_tokens || 0)}</b>
-        <span class="muted"> token</span></div>
-      <div><span class="lab">已授权</span><b>${fmt(quota.entitled_tokens || 0)}</b>
-        <span class="muted"> token · 来自 ${measured} 个已探测的号</span></div>
-      <div><span class="lab">已用</span><b>${fmt(quota.spent_tokens || 0)}</b>
-        <span class="muted"> token · $${(quota.cost_usd || 0).toFixed(2)}</span></div>
-      ${unmeasured > 0 ? `<div class="muted">还有 ${unmeasured} 个号未探测额度，
-        实际盘子比上面大</div>` : ''}`;
+      <div class="hero">
+        <span class="lab">总可用额度</span>
+        <b>${fmt(estimated)}</b>
+        <span class="muted"> token</span>
+      </div>
+      <div style="flex:1;min-width:220px">
+        <div class="bar" title="已探测号的已用 / 已授权"><i style="width:${pct}%"></i></div>
+        <div class="muted" style="margin-top:6px">已探测已用 ${fmt(spent)} / 已授权 ${fmt(entitled)}（${pct}%）</div>
+      </div>
+      <div class="break">
+        <div><span class="lab">已确认剩余</span><b>${fmt(confirmed)}</b>
+          <div class="muted">${measured} 个已探测号</div></div>
+        <div><span class="lab">未探测预估</span><b>${fmt(projected)}</b>
+          <div class="muted">${unmeasuredN} 个号 × ${fmt(typical)}</div></div>
+        ${cooling > 0 ? `<div><span class="lab">冷却中</span><b>${fmt(cooling)}</b>
+          <div class="muted">窗口过后再回到可调度</div></div>` : ''}
+        <div><span class="lab">累计花费</span><b>$${(quota.cost_usd || 0).toFixed(2)}</b>
+          <div class="muted">${fmt(spent)} token 已用</div></div>
+      </div>`;
   } else {
     $('budget').innerHTML = `
       <div><span class="lab">已用</span><b>${fmt(quota.spent_tokens || 0)}</b>

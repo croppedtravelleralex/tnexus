@@ -249,6 +249,14 @@ pub struct AccountView {
 /// The upstream reports cost in ten-millionths of a dollar.
 pub const COST_TICKS_PER_USD: f64 = 1e7;
 
+/// What a never-probed Build account is assumed to hold.
+///
+/// The upstream advertises this in `x-ratelimit-limit-tokens` on the first
+/// chat call (observed 1_000_000 across the pool). Until that call, remaining
+/// is unknown rather than zero; the scheduler and the admin total both use
+/// this as the stand-in so an unmeasured pool does not look empty.
+pub const TYPICAL_TOKEN_ENTITLEMENT: i64 = 1_000_000;
+
 impl From<&Account> for AccountView {
     fn from(account: &Account) -> Self {
         AccountView {

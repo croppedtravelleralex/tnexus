@@ -9,7 +9,9 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 
-use crate::model::{Account, AccountImport, Health, ImportOutcome, Provider};
+use crate::model::{
+    Account, AccountImport, Health, ImportOutcome, Provider, TYPICAL_TOKEN_ENTITLEMENT,
+};
 
 /// What an account has spent against what the upstream says it is entitled to.
 ///
@@ -587,36 +589,98 @@ impl Store {
 
         // Entitlement is only known once an account has served a request, so
         // report the unknown share rather than implying the pool is empty.
+        // `estimated_available` is what an operator actually wants: confirmed
+        // remaining on schedulable accounts, plus unmeasured schedulable ones
+        // counted at the typical Build entitlement.
+        let now = crate::now();
         let mut stmt = conn.prepare(
             "SELECT provider,
                     SUM(CASE WHEN limit_tokens > 0 THEN 1 ELSE 0 END),
                     SUM(CASE WHEN limit_tokens > 0 THEN limit_tokens ELSE 0 END),
                     SUM(CASE WHEN limit_tokens > 0 THEN MIN(total_tokens, limit_tokens) ELSE 0 END),
                     SUM(total_tokens),
-                    SUM(cost_ticks)
-             FROM accounts GROUP BY provider",
+                    SUM(cost_ticks),
+                    AVG(CASE WHEN limit_tokens > 0 THEN limit_tokens END),
+                    SUM(CASE WHEN limit_tokens <= 0 THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN schedulable = 1 AND limit_tokens > 0
+                             THEN MAX(0, limit_tokens - MIN(total_tokens, limit_tokens))
+                             ELSE 0 END),
+                    SUM(CASE WHEN schedulable = 1 AND limit_tokens <= 0 THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN health = 'cooling'
+                              AND (cooling_until = 0 OR cooling_until > ?1)
+                              AND limit_tokens > 0
+                             THEN MAX(0, limit_tokens - MIN(total_tokens, limit_tokens))
+                             ELSE 0 END)
+             FROM (
+                SELECT *,
+                       CASE WHEN health = 'active'
+                              OR (health = 'cooling' AND cooling_until > 0 AND cooling_until <= ?1)
+                            THEN 1 ELSE 0 END AS schedulable
+                  FROM accounts
+             )
+             GROUP BY provider",
         )?;
-        let rows = stmt.query_map([], |row| {
+        let rows = stmt.query_map(params![now], |row| {
+            let n = |i: usize| row.get::<_, Option<i64>>(i).map(|v| v.unwrap_or(0));
             Ok((
                 row.get::<_, String>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, i64>(3)?,
-                row.get::<_, i64>(4)?,
-                row.get::<_, i64>(5)?,
+                n(1)?,
+                n(2)?,
+                n(3)?,
+                n(4)?,
+                n(5)?,
+                row.get::<_, Option<f64>>(6)?,
+                n(7)?,
+                n(8)?,
+                n(9)?,
+                n(10)?,
             ))
         })?;
         for row in rows {
-            let (provider, measured, entitled, counted_spend, spent, ticks) = row?;
+            let (
+                provider,
+                measured,
+                entitled,
+                counted_spend,
+                spent,
+                ticks,
+                avg_limit,
+                unmeasured,
+                schedulable_remaining,
+                schedulable_unmeasured,
+                cooling_remaining,
+            ) = row?;
             let Some(entry) = out.get_mut(&provider) else {
                 continue;
             };
+            let remaining = (entitled - counted_spend).max(0);
+            let is_build = provider == "build";
+            let typical = if is_build {
+                avg_limit
+                    .filter(|value| *value > 0.0)
+                    .map(|value| value.round() as i64)
+                    .filter(|value| *value > 0)
+                    .unwrap_or(TYPICAL_TOKEN_ENTITLEMENT)
+            } else {
+                0
+            };
+            let estimated_available = if is_build {
+                schedulable_remaining + schedulable_unmeasured.saturating_mul(typical)
+            } else {
+                0
+            };
             entry["quota"] = serde_json::json!({
                 "measured_accounts": measured,
+                "unmeasured_accounts": unmeasured,
                 "entitled_tokens": entitled,
-                "remaining_tokens": (entitled - counted_spend).max(0),
+                "remaining_tokens": remaining,
                 "spent_tokens": spent,
                 "cost_usd": ticks as f64 / crate::model::COST_TICKS_PER_USD,
+                "typical_entitlement": typical,
+                "schedulable_remaining": schedulable_remaining,
+                "schedulable_unmeasured": schedulable_unmeasured,
+                "cooling_remaining": cooling_remaining,
+                "estimated_available": estimated_available,
             });
         }
         Ok(serde_json::Value::Object(out))
@@ -1020,9 +1084,22 @@ mod tests {
         let stats = store.stats().unwrap();
         let build = &stats["build"]["quota"];
         assert_eq!(build["measured_accounts"], 1, "only one has been probed");
+        assert_eq!(build["unmeasured_accounts"], 1);
         assert_eq!(build["entitled_tokens"], 1_000);
         assert_eq!(build["remaining_tokens"], 750);
         assert_eq!(build["spent_tokens"], 250);
+        assert_eq!(build["schedulable_remaining"], 750);
+        assert_eq!(build["schedulable_unmeasured"], 1);
+        assert_eq!(
+            build["typical_entitlement"],
+            1_000,
+            "typical follows the measured accounts in this pool"
+        );
+        assert_eq!(
+            build["estimated_available"],
+            1750,
+            "unmeasured schedulable accounts count at this pool's typical entitlement"
+        );
     }
 
     #[test]
