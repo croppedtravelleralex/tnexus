@@ -3,17 +3,12 @@
 import { cn } from "@/lib/utils";
 import type { GrokQuotaWindow } from "@/lib/grok-admin";
 import { labelQuotaMode } from "@/lib/grok-labels";
+import { isQuotaStale } from "@/lib/grok-quota";
+
+export { isQuotaStale };
 
 /** total >= 1B 视为哨兵"不限"值（imagine 模式专用）。 */
 export const QUOTA_UNLIMITED_THRESHOLD = 1_000_000_000;
-
-/** 判断窗口是否超过 24h 未同步（或从未同步）。 */
-export function isQuotaStale(window: GrokQuotaWindow, now = Date.now()): boolean {
-  if (!window.synced_at) return true;
-  const syncedMs = new Date(window.synced_at).getTime();
-  if (Number.isNaN(syncedMs)) return true;
-  return now - syncedMs > 24 * 60 * 60 * 1000;
-}
 
 function fmtNum(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}m`;

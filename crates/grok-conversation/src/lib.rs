@@ -12,7 +12,9 @@
 mod error;
 mod limits;
 mod normalize;
+mod sanitize;
 
 pub use error::{ConversationError, ConversationResult};
 pub use limits::{MAX_CHAT_IMAGE_ATTACHMENTS, MAX_TOTAL_IMAGE_BYTES};
 pub use normalize::{normalize_chat_input, ChatMessage, NormalizedChatInput};
+pub use sanitize::strip_grok_markup;

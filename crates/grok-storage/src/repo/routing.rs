@@ -257,7 +257,7 @@ pub(crate) async fn fetch_quota_windows_first(
         "CASE WHEN mode = 'weekly' THEN 0 ELSE 1 END ASC"
     };
     let sql = format!(
-        "SELECT account_id, mode, remaining, total, reset_at, synced_at, source, updated_at \
+        "SELECT account_id, mode, remaining::bigint AS remaining, total::bigint AS total, reset_at, synced_at, source, updated_at \
          FROM grok_quota_windows WHERE account_id = ANY($1::bigint[]) AND mode = ANY($2::text[]) \
          ORDER BY {order}"
     );

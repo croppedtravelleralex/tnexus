@@ -74,6 +74,24 @@ function CooldownCell({ value }: { value: string | null }) {
   );
 }
 
+/** 冷却时间已过期的 last_error 视为历史残留。无冷却但有错误 = 当前故障。 */
+export function isHistoricalError(cooldownUntil: string | null, now = Date.now()): boolean {
+  return formatCooldown(cooldownUntil, now).kind === "past";
+}
+
+function LastErrorCell({ error, cooldownUntil }: { error: string | null; cooldownUntil: string | null }) {
+  if (!error) return <span className="text-[var(--neo-muted)]">—</span>;
+  const historical = isHistoricalError(cooldownUntil);
+  return (
+    <span
+      className={historical ? "text-[var(--neo-muted)]" : "text-rose-600"}
+      title={historical ? `历史残留（冷却已过）：${error}` : error}
+    >
+      {historical ? `历史：${error}` : error}
+    </span>
+  );
+}
+
 function authBadge(status: string) {
   const variant = AUTH_STATUS_VARIANT[status] ?? "muted";
   return <Badge variant={variant}>{labelAuthStatus(status)}</Badge>;
@@ -172,10 +190,9 @@ export function GrokAccountsTable({
                 <CooldownCell value={a.cooldown_until} />
               </td>
               <td
-                className="max-w-[200px] truncate px-3 py-2 text-xs text-[var(--neo-muted)]"
-                title={a.last_error ?? ""}
+                className="max-w-[200px] truncate px-3 py-2 text-xs"
               >
-                {a.last_error || "—"}
+                <LastErrorCell error={a.last_error} cooldownUntil={a.cooldown_until} />
               </td>
               <td className="px-3 py-2 whitespace-nowrap text-xs text-[var(--neo-muted)]">
                 {fmtTime(a.updated_at)}

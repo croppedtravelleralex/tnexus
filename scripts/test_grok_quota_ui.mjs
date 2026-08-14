@@ -9,14 +9,28 @@ function unwrapAdminItems(raw) {
   return [];
 }
 
-function pickDisplayQuotaWindow(windows) {
+function pickDisplayQuotaWindow(windows, now = Date.now()) {
   if (!windows || windows.length === 0) return null;
   const order = ["fast", "auto", "console", "imagine"];
+  const staleMs = 24 * 60 * 60 * 1000;
+  const hasValue = (w) => w.total > 0 || w.remaining > 0;
+  const isStale = (w) => {
+    if (!w.synced_at) return true;
+    const syncedMs = new Date(w.synced_at).getTime();
+    if (Number.isNaN(syncedMs)) return true;
+    return now - syncedMs > staleMs;
+  };
   for (const mode of order) {
-    const hit = windows.find((w) => w.mode === mode && (w.total > 0 || w.remaining > 0));
+    const hit = windows.find((w) => w.mode === mode && hasValue(w) && !isStale(w));
     if (hit) return hit;
   }
-  return windows.find((w) => w.total > 0 || w.remaining > 0) ?? windows[0] ?? null;
+  const anyFresh = windows.find((w) => hasValue(w) && !isStale(w));
+  if (anyFresh) return anyFresh;
+  for (const mode of order) {
+    const hit = windows.find((w) => w.mode === mode && hasValue(w));
+    if (hit) return hit;
+  }
+  return windows.find((w) => hasValue(w)) ?? windows[0] ?? null;
 }
 
 // ── helpers inlined from grok-accounts-table.tsx ────────────────────────────
@@ -163,4 +177,68 @@ test("synced_at 23h59m ago is NOT stale", () => {
 
 test("invalid synced_at string is stale", () => {
   assert.equal(isQuotaStale({ synced_at: "bad-date" }, NOW), true);
+});
+
+test("prefer fresh fast over stale auto", () => {
+  const windows = [
+    { mode: "auto", remaining: 7, total: 7, synced_at: new Date(NOW - 5 * 86400 * 1000).toISOString() },
+    { mode: "fast", remaining: 29, total: 30, synced_at: new Date(NOW - 60 * 60 * 1000).toISOString() },
+  ];
+  assert.equal(pickDisplayQuotaWindow(windows, NOW)?.mode, "fast");
+  assert.equal(pickDisplayQuotaWindow(windows, NOW)?.remaining, 29);
+});
+
+test("fallback to stale auto when no fresh window", () => {
+  const windows = [
+    { mode: "auto", remaining: 7, total: 7, synced_at: new Date(NOW - 5 * 86400 * 1000).toISOString() },
+    { mode: "imagine", remaining: 0, total: 0, synced_at: new Date(NOW - 5 * 86400 * 1000).toISOString() },
+  ];
+  assert.equal(pickDisplayQuotaWindow(windows, NOW)?.mode, "auto");
+});
+
+test("historical error when cooldown is past", () => {
+  function isHistoricalError(cooldownUntil, now = Date.now()) {
+    const state = formatCooldown(cooldownUntil, now);
+    return state.kind === "past";
+  }
+  assert.equal(isHistoricalError("2026-08-08T01:00:00Z", NOW), true);
+  assert.equal(isHistoricalError(new Date(NOW + 60_000).toISOString(), NOW), false);
+  assert.equal(isHistoricalError(null, NOW), false);
+});
+
+// ── grok markup strip (inlined from grok-text.ts) ────────────────────────────
+
+function stripGrokMarkup(input) {
+  const complete =
+    /<grok:[A-Za-z0-9_.-]+(?:\s[^>]*)?\/>|<grok:([A-Za-z0-9_.-]+)(?:\s[^>]*)?>[\s\S]*?<\/grok:\1>/gi;
+  let stripped = input.replace(complete, "");
+  const lastOpen = stripped.lastIndexOf("<grok:");
+  if (lastOpen >= 0) {
+    const tail = stripped.slice(lastOpen);
+    if (!/<\/grok:[A-Za-z0-9_.-]+>/.test(tail) || !tail.includes(">")) {
+      stripped = stripped.slice(0, lastOpen);
+    }
+  }
+  return stripped;
+}
+
+test("strip citation card from grok chat screenshot", () => {
+  const raw =
+    "**是的**，目前公开标价一致" +
+    '<grok:render card_id="69b0ae" card_type="citation_card" type="render_inline_citation">' +
+    '<argument name="citation_id">0</argument></grok:render>。';
+  assert.equal(stripGrokMarkup(raw), "**是的**，目前公开标价一致。");
+});
+
+test("strip self-closing grok tag", () => {
+  assert.equal(stripGrokMarkup("A<grok:render x=\"1\"/>B"), "AB");
+});
+
+test("drop incomplete trailing grok tag", () => {
+  assert.equal(stripGrokMarkup("hello<grok:ren"), "hello");
+});
+
+test("leave markdown headings and lists", () => {
+  const s = "### 其他方面\n- **速度**";
+  assert.equal(stripGrokMarkup(s), s);
 });

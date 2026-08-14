@@ -210,12 +210,20 @@ pub trait AdminStore: Send + Sync {
 pub struct QuotaModeSummary {
     pub mode: String,
     pub accounts: i64,
+    /// 排除 0/0 与「不限」哨兵（total ≥ 1e9）后的剩余合计。
     pub remaining: i64,
+    /// 排除 0/0 与「不限」哨兵后的总额合计。
     pub total: i64,
     /// remaining=0 且 total>0。
     pub exhausted: i64,
     /// synced_at 为空或早于 24h。
     pub stale: i64,
+    /// 24h 内同步且可加总的账号数。
+    pub accounts_fresh: i64,
+    /// 24h 内同步窗口的剩余合计（号池「可用额度」）。
+    pub remaining_fresh: i64,
+    /// 24h 内同步窗口的总额合计。
+    pub total_fresh: i64,
     pub oldest_synced_at: Option<DateTime<Utc>>,
     pub newest_synced_at: Option<DateTime<Utc>>,
 }

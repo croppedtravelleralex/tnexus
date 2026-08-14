@@ -5,8 +5,23 @@
 //! 使 `grok-gateway` 不再反向依赖 `grok-provider-web` 的具体引擎实现
 //! （低耦合高内聚：依赖方向 domain ← provider / gateway，无反向边）。
 
+use std::fmt;
+use std::sync::Arc;
+
 use serde::Serialize;
 use thiserror::Error;
+
+/// 对话流式事件：选号后即可下发，随后推 token 增量。
+#[derive(Debug, Clone)]
+pub enum ChatStreamEvent {
+    /// 已选中的调度账号。
+    Account(i64),
+    /// 已剥离 grok markup 的文本增量。
+    Token(String),
+}
+
+/// 网关注入的流式回调（`Arc` 以便 `ChatRequest` 可 `Clone`）。
+pub type ChatEventSink = Arc<dyn Fn(ChatStreamEvent) + Send + Sync>;
 
 /// OCR 对外别名（`grok-vision-ocr` → 上游 `grok-chat-fast` + 禁生图）。
 pub const ALIAS_OCR: &str = "grok-vision-ocr";
@@ -22,7 +37,7 @@ pub fn public_models() -> Vec<(&'static str, &'static str)> {
 }
 
 /// 对话请求（网关归一化后的输入，`grok-provider-web::engine::ChatEngine` 消费）。
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ChatRequest {
     /// 归一化 prompt（`[role]\ntext` 段落拼接）。
     pub prompt: String,
@@ -34,6 +49,21 @@ pub struct ChatRequest {
     pub system_prompt: Option<String>,
     /// 审计请求 ID。
     pub request_id: String,
+    /// 流式增量回调；`None` 时引擎仍返回完整文本。
+    pub event_sink: Option<ChatEventSink>,
+}
+
+impl fmt::Debug for ChatRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ChatRequest")
+            .field("prompt", &self.prompt)
+            .field("images", &self.images)
+            .field("ocr", &self.ocr)
+            .field("system_prompt", &self.system_prompt)
+            .field("request_id", &self.request_id)
+            .field("event_sink", &self.event_sink.is_some())
+            .finish()
+    }
 }
 
 /// 生图请求（`grok-provider-web::image::ImageEngine` 消费）。

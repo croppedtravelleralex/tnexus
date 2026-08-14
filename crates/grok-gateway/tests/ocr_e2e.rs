@@ -298,3 +298,39 @@ async fn empty_pool_returns_503() {
     let (status, _) = post(&app, "/v1/chat/completions", req).await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
 }
+
+#[tokio::test]
+async fn stream_and_json_strip_grok_render_markup() {
+    let mut mock = MockBridgeClient::new();
+    mock.chat_text =
+        "**是的**<grok:render card_id=\"1\"><argument name=\"citation_id\">0</argument></grok:render>价格"
+            .to_string();
+    let app = app_with(mock).await;
+    let payload = json!({
+        "model": "grok-chat",
+        "stream": true,
+        "messages": [{"role": "user", "content": "价格一样吗"}]
+    });
+    let (status, body) = post(&app, "/v1/chat/completions", payload).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert!(body.contains("**是的**"), "missing markdown: {body}");
+    assert!(body.contains("价格"), "missing rest: {body}");
+    assert!(
+        !body.contains("grok:render"),
+        "markup leaked into SSE: {body}"
+    );
+    assert!(body.contains("[DONE]"));
+
+    let mut mock = MockBridgeClient::new();
+    mock.chat_text = "A<grok:render/>B".to_string();
+    let app = app_with(mock).await;
+    let payload = json!({
+        "model": "grok-chat",
+        "stream": false,
+        "messages": [{"role": "user", "content": "hi"}]
+    });
+    let (status, body) = post(&app, "/v1/chat/completions", payload).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert!(body.contains("AB"), "expected stripped text: {body}");
+    assert!(!body.contains("grok:render"));
+}

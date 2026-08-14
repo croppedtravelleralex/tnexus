@@ -2,6 +2,7 @@
 
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { stripGrokMarkup } from "@/lib/grok-text";
 
 type Props = {
   content: string;
@@ -15,11 +16,16 @@ export function ChatMessageContent({ content, role }: Props) {
     return <div className="whitespace-pre-wrap break-words text-white">{content}</div>;
   }
 
+  const markdown = stripGrokMarkup(content);
+
   return (
     <div className="chat-prose break-words text-[15px] leading-relaxed text-[var(--neo-ink)]">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
+          h1: ({ children }) => <h1 className="mb-2 text-base font-semibold last:mb-0">{children}</h1>,
+          h2: ({ children }) => <h2 className="mb-2 text-[15px] font-semibold last:mb-0">{children}</h2>,
+          h3: ({ children }) => <h3 className="mb-2 text-sm font-semibold last:mb-0">{children}</h3>,
           p: ({ children }) => <p className="mb-3 last:mb-0">{children}</p>,
           ul: ({ children }) => <ul className="mb-3 list-disc space-y-1 pl-5 last:mb-0">{children}</ul>,
           ol: ({ children }) => <ol className="mb-3 list-decimal space-y-1 pl-5 last:mb-0">{children}</ol>,
@@ -52,7 +58,7 @@ export function ChatMessageContent({ content, role }: Props) {
           strong: ({ children }) => <strong className="font-semibold text-[var(--neo-ink)]">{children}</strong>,
         }}
       >
-        {content}
+        {markdown}
       </ReactMarkdown>
     </div>
   );

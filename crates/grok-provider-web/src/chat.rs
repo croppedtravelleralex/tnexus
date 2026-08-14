@@ -34,9 +34,9 @@ pub fn build_frontend_chat_payload(
             "viewportWidth": 2056,
         },
         "disableMemory": true,
-        "disableSearch": false,
+        "disableSearch": true,
         "disableSelfHarmShortCircuit": false,
-        "disableTextFollowUps": false,
+        "disableTextFollowUps": true,
         "enableImageGeneration": enable_image_generation,
         "enableImageStreaming": enable_image_generation,
         "enableSideBySide": true,
@@ -143,5 +143,14 @@ mod tests {
     fn public_models_contains_ocr_alias() {
         let models = public_models();
         assert!(models.contains(&(ALIAS_OCR, UPSTREAM_OCR_MODEL)));
+    }
+
+    #[test]
+    fn text_chat_disables_search_and_followups() {
+        let p = build_web_chat_payload("hello", &[], false, "");
+        assert_eq!(p["disableSearch"], true, "搜索会拉长耗时并注入 grok:render");
+        assert_eq!(p["disableTextFollowUps"], true);
+        assert_eq!(p["modeId"], "fast");
+        assert_eq!(p["forceConcise"], false);
     }
 }

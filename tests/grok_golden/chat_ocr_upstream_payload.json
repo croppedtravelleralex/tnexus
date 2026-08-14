@@ -10,9 +10,9 @@
     "viewportWidth": 2056
   },
   "disableMemory": true,
-  "disableSearch": false,
+  "disableSearch": true,
   "disableSelfHarmShortCircuit": false,
-  "disableTextFollowUps": false,
+  "disableTextFollowUps": true,
   "enableImageGeneration": false,
   "enableImageStreaming": false,
   "enableSideBySide": true,

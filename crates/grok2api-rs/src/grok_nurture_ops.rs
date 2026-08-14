@@ -110,6 +110,7 @@ impl GrokNurtureService {
                 job.account_id,
                 chrono::Utc::now().timestamp_millis()
             ),
+            event_sink: None,
         };
         match self.engine.chat_for_account(job.account_id, &req).await {
             Ok(outcome) => {

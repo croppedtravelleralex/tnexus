@@ -89,6 +89,58 @@ fn admin_err(e: impl std::fmt::Display) -> AdminError {
     AdminError::RuntimeUnavailable(e.to_string())
 }
 
+/// PostgreSQL `SUM(bigint)` 返回 NUMERIC；生产列也可能仍是 INTEGER/NUMERIC。
+fn sql_i64(row: &sqlx::postgres::PgRow, col: &str) -> AdminResult<i64> {
+    if let Ok(v) = row.try_get::<i64, _>(col) {
+        return Ok(v);
+    }
+    if let Ok(v) = row.try_get::<Option<i64>, _>(col) {
+        return Ok(v.unwrap_or(0));
+    }
+    if let Ok(v) = row.try_get::<i32, _>(col) {
+        return Ok(i64::from(v));
+    }
+    if let Ok(v) = row.try_get::<Option<i32>, _>(col) {
+        return Ok(i64::from(v.unwrap_or(0)));
+    }
+    Err(admin_err(format!(
+        "column {col}: expected integer remaining/total"
+    )))
+}
+
+/// 额度窗口 SELECT：强制 `::bigint`，避免 NUMERIC/INT4 与 Rust i64 解码失败。
+pub(crate) const QUOTA_WINDOW_SELECT_SQL: &str = "SELECT account_id, mode, \
+     remaining::bigint AS remaining, total::bigint AS total, \
+     reset_at, synced_at, source, updated_at \
+     FROM grok_quota_windows WHERE account_id = $1 ORDER BY mode ASC";
+
+/// 号池 summary 按 mode 聚合。`SUM(...)::bigint` 是 admin 500 的修复点
+///（PG 对 SUM(bigint) 推断为 NUMERIC）。
+pub(crate) const POOL_SUMMARY_QUOTA_SQL: &str = "SELECT \
+     w.mode, \
+     COUNT(DISTINCT w.account_id)::bigint AS accounts, \
+     COALESCE(SUM(w.remaining::bigint) FILTER ( \
+         WHERE w.total > 0 AND w.total < 1000000000), 0)::bigint AS remaining, \
+     COALESCE(SUM(w.total::bigint) FILTER ( \
+         WHERE w.total > 0 AND w.total < 1000000000), 0)::bigint AS total, \
+     COUNT(*) FILTER (WHERE w.remaining = 0 AND w.total > 0)::bigint AS exhausted, \
+     COUNT(*) FILTER (WHERE w.synced_at IS NULL \
+         OR w.synced_at < now() - interval '24 hours')::bigint AS stale, \
+     COUNT(*) FILTER (WHERE w.synced_at >= now() - interval '24 hours' \
+         AND w.total > 0 AND w.total < 1000000000)::bigint AS accounts_fresh, \
+     COALESCE(SUM(w.remaining::bigint) FILTER ( \
+         WHERE w.synced_at >= now() - interval '24 hours' \
+           AND w.total > 0 AND w.total < 1000000000), 0)::bigint AS remaining_fresh, \
+     COALESCE(SUM(w.total::bigint) FILTER ( \
+         WHERE w.synced_at >= now() - interval '24 hours' \
+           AND w.total > 0 AND w.total < 1000000000), 0)::bigint AS total_fresh, \
+     MIN(w.synced_at) AS oldest_synced_at, \
+     MAX(w.synced_at) AS newest_synced_at \
+ FROM grok_quota_windows w \
+ JOIN grok_accounts a ON a.id = w.account_id AND a.enabled = true \
+ GROUP BY w.mode \
+ ORDER BY w.mode ASC";
+
 const ACCOUNT_COLS: &str = "id, identity_key, provider, enabled, auth_status, priority, \
      observed_model, name, email, user_id, team_id, source_key, observed_model_at, \
      max_concurrent, minimum_remaining::bigint AS minimum_remaining, failure_count, cooldown_until, last_error, \
@@ -260,21 +312,18 @@ impl AdminStore for PgAdminStore {
     }
 
     async fn list_quota_windows(&self, account_id: i64) -> AdminResult<Vec<QuotaWindow>> {
-        let rows = sqlx::query(
-            "SELECT account_id, mode, remaining, total, reset_at, synced_at, source, updated_at \
-             FROM grok_quota_windows WHERE account_id = $1 ORDER BY mode ASC",
-        )
-        .bind(account_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(admin_err)?;
+        let rows = sqlx::query(QUOTA_WINDOW_SELECT_SQL)
+            .bind(account_id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(admin_err)?;
         rows.iter()
             .map(|row| {
                 Ok(QuotaWindow {
                     account_id: row.try_get("account_id").map_err(admin_err)?,
                     mode: row.try_get("mode").map_err(admin_err)?,
-                    remaining: row.try_get("remaining").map_err(admin_err)?,
-                    total: row.try_get("total").map_err(admin_err)?,
+                    remaining: sql_i64(row, "remaining")?,
+                    total: sql_i64(row, "total")?,
                     reset_at: row.try_get("reset_at").map_err(admin_err)?,
                     synced_at: row.try_get("synced_at").map_err(admin_err)?,
                     source: quota_source_from_str(
@@ -296,7 +345,8 @@ impl AdminStore for PgAdminStore {
                remaining = EXCLUDED.remaining, total = EXCLUDED.total, \
                reset_at = EXCLUDED.reset_at, synced_at = EXCLUDED.synced_at, \
                source = EXCLUDED.source, updated_at = now() \
-             RETURNING account_id, mode, remaining, total, reset_at, synced_at, source, updated_at",
+             RETURNING account_id, mode, remaining::bigint AS remaining, total::bigint AS total, \
+               reset_at, synced_at, source, updated_at",
         )
         .bind(window.account_id)
         .bind(window.mode)
@@ -311,8 +361,8 @@ impl AdminStore for PgAdminStore {
         Ok(QuotaWindow {
             account_id: row.try_get("account_id").map_err(admin_err)?,
             mode: row.try_get("mode").map_err(admin_err)?,
-            remaining: row.try_get("remaining").map_err(admin_err)?,
-            total: row.try_get("total").map_err(admin_err)?,
+            remaining: sql_i64(&row, "remaining")?,
+            total: sql_i64(&row, "total")?,
             reset_at: row.try_get("reset_at").map_err(admin_err)?,
             synced_at: row.try_get("synced_at").map_err(admin_err)?,
             source: quota_source_from_str(&row.try_get::<String, _>("source").map_err(admin_err)?),
@@ -402,34 +452,23 @@ impl AdminStore for PgAdminStore {
         .map_err(admin_err)?;
         summary.quota_exhausted = exhausted.try_get("n").map_err(admin_err)?;
         // 各 mode 额度聚合（仅 enabled 账号；按 mode 分组）。
-        let quota_rows = sqlx::query(
-            "SELECT \
-                 w.mode, \
-                 COUNT(DISTINCT w.account_id)::bigint AS accounts, \
-                 COALESCE(SUM(w.remaining::bigint), 0) AS remaining, \
-                 COALESCE(SUM(w.total::bigint), 0) AS total, \
-                 COUNT(*) FILTER (WHERE w.remaining = 0 AND w.total > 0)::bigint AS exhausted, \
-                 COUNT(*) FILTER (WHERE w.synced_at IS NULL \
-                     OR w.synced_at < now() - interval '24 hours')::bigint AS stale, \
-                 MIN(w.synced_at) AS oldest_synced_at, \
-                 MAX(w.synced_at) AS newest_synced_at \
-             FROM grok_quota_windows w \
-             JOIN grok_accounts a ON a.id = w.account_id AND a.enabled = true \
-             GROUP BY w.mode \
-             ORDER BY w.mode ASC",
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(admin_err)?;
+        // 加总排除 0/0（未知）与 total≥1e9（imagine「不限」哨兵），避免把 ETL 冻结行算进可用额度。
+        let quota_rows = sqlx::query(POOL_SUMMARY_QUOTA_SQL)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(admin_err)?;
         let mut quota = Vec::with_capacity(quota_rows.len());
         for row in &quota_rows {
             quota.push(QuotaModeSummary {
                 mode: row.try_get("mode").map_err(admin_err)?,
-                accounts: row.try_get("accounts").map_err(admin_err)?,
-                remaining: row.try_get("remaining").map_err(admin_err)?,
-                total: row.try_get("total").map_err(admin_err)?,
-                exhausted: row.try_get("exhausted").map_err(admin_err)?,
-                stale: row.try_get("stale").map_err(admin_err)?,
+                accounts: sql_i64(row, "accounts")?,
+                remaining: sql_i64(row, "remaining")?,
+                total: sql_i64(row, "total")?,
+                exhausted: sql_i64(row, "exhausted")?,
+                stale: sql_i64(row, "stale")?,
+                accounts_fresh: sql_i64(row, "accounts_fresh")?,
+                remaining_fresh: sql_i64(row, "remaining_fresh")?,
+                total_fresh: sql_i64(row, "total_fresh")?,
                 oldest_synced_at: row.try_get("oldest_synced_at").map_err(admin_err)?,
                 newest_synced_at: row.try_get("newest_synced_at").map_err(admin_err)?,
             });
@@ -440,7 +479,9 @@ impl AdminStore for PgAdminStore {
 
     async fn analytics(&self) -> AdminResult<AccountAnalytics> {
         let rows = sqlx::query(
-            "SELECT a.id AS account_id, a.observed_model, w.remaining, w.total, \
+            "SELECT a.id AS account_id, a.observed_model, \
+                    COALESCE(w.remaining::bigint, 0) AS remaining, \
+                    COALESCE(w.total::bigint, 0) AS total, \
                     (b.account_id IS NOT NULL) AS has_billing \
              FROM grok_accounts a \
              LEFT JOIN grok_quota_windows w ON w.account_id = a.id AND w.mode = 'imagine' \
@@ -451,8 +492,8 @@ impl AdminStore for PgAdminStore {
         .map_err(admin_err)?;
         let mut out = AccountAnalytics::default();
         for row in &rows {
-            let remaining: i64 = row.try_get("remaining").map_err(admin_err)?;
-            let total: i64 = row.try_get("total").map_err(admin_err)?;
+            let remaining = sql_i64(row, "remaining")?;
+            let total = sql_i64(row, "total")?;
             if total > 0 && remaining <= 0 {
                 out.quota_exhausted += 1;
             } else if total == 0 && remaining == 0 {
@@ -1700,5 +1741,27 @@ mod tests {
         );
         assert!(domains.media.is_some(), "media 应已接线（内存占位）");
         assert!(domains.system.is_some(), "system 应已接线");
+    }
+
+    #[test]
+    fn pool_summary_quota_sql_casts_sum_to_bigint() {
+        let sql = POOL_SUMMARY_QUOTA_SQL.to_ascii_lowercase();
+        assert!(
+            sql.contains(")::bigint as remaining"),
+            "SUM(remaining) 必须外层 ::bigint，否则 PG 返回 NUMERIC 导致 admin 500"
+        );
+        assert!(sql.contains(")::bigint as total"));
+        assert!(sql.contains(")::bigint as remaining_fresh"));
+        assert!(sql.contains(")::bigint as total_fresh"));
+        assert!(sql.contains("w.remaining::bigint"));
+        assert!(sql.contains("interval '24 hours'"));
+        assert!(sql.contains("a.enabled = true"));
+    }
+
+    #[test]
+    fn quota_window_select_sql_casts_columns() {
+        let sql = QUOTA_WINDOW_SELECT_SQL.to_ascii_lowercase();
+        assert!(sql.contains("remaining::bigint as remaining"));
+        assert!(sql.contains("total::bigint as total"));
     }
 }

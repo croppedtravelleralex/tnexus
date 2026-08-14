@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { ChatImageThumb } from "@/components/chat/chat-image-thumb";
+import { ChatMessageContent } from "@/components/chat/chat-message-content";
 import { ImageLightbox, type LightboxImage } from "@/components/image-lightbox";
 import { estimateBase64Bytes, formatBytes } from "@/lib/chat-conversations";
 
@@ -375,16 +376,24 @@ export function GrokChatPanel({
                 </span>
                 <div
                   className={cn(
-                    "max-w-[85%] whitespace-pre-wrap break-words rounded-2xl px-4 py-2.5 text-sm leading-relaxed shadow-sm",
+                    "max-w-[85%] break-words rounded-2xl px-4 py-2.5 text-sm leading-relaxed shadow-sm",
                     m.role === "user"
-                      ? "rounded-tr-sm bg-[var(--neo-primary)] text-white"
+                      ? "whitespace-pre-wrap rounded-tr-sm bg-[var(--neo-primary)] text-white"
                       : cn(
                           "rounded-tl-sm border border-[var(--neo-border)] bg-white text-[var(--neo-ink)]",
                           m.error && "border-rose-200 bg-rose-50 text-rose-700",
                         ),
                   )}
                 >
-                  {m.content || <span className="text-[var(--neo-muted)]">…</span>}
+                  {m.role === "assistant" && !m.error ? (
+                    m.content.trim() ? (
+                      <ChatMessageContent content={m.content} role="assistant" />
+                    ) : (
+                      <span className="text-[var(--neo-muted)]">…</span>
+                    )
+                  ) : (
+                    m.content || <span className="text-[var(--neo-muted)]">…</span>
+                  )}
                   {m.images && m.images.length > 0 && (
                     <div className="mt-2 flex flex-wrap gap-2">
                       {m.images.map((b64, j) => {

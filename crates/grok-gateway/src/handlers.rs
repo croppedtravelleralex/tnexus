@@ -8,20 +8,23 @@
 //! 请求 enableImageGeneration=true 可能触发上游生图副作用，移植时需显式治理」——
 //! 在 gateway 边界把带图请求统一送 OCR/识图路径（禁生图），避免意外生图。
 
+use std::convert::Infallible;
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
-use axum::http::header;
+use axum::http::{header, StatusCode};
 use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use futures::stream;
+use futures::{stream, StreamExt};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tokio::sync::mpsc;
 
-use grok_conversation::{normalize_chat_input, ChatMessage, NormalizedChatInput};
+use grok_conversation::{normalize_chat_input, strip_grok_markup, ChatMessage, NormalizedChatInput};
 use grok_domain::{
-    public_models, ChatBackend, ChatRequest as ProviderChatRequest, ImagineRequest, ALIAS_OCR,
+    public_models, ChatBackend, ChatRequest as ProviderChatRequest, ChatStreamEvent, ImagineRequest,
+    ProviderError, ALIAS_OCR,
 };
 
 use crate::error::GatewayError;
@@ -176,8 +179,6 @@ pub async fn media_images(State(state): State<Arc<AppState>>, Path(id): Path<Str
     }
 }
 
-use axum::http::StatusCode;
-
 /// 媒体取回抽象（G2-A4 `GET /v1/media/images/{id}`）。按 id 返回字节与 Content-Type。
 #[async_trait::async_trait]
 pub trait MediaFetcher: Send + Sync {
@@ -304,15 +305,12 @@ fn is_ocr_request(model: &str, normalized_images: &[String]) -> bool {
     model == ALIAS_OCR || !normalized_images.is_empty()
 }
 
-/// `POST /v1/chat/completions`（含 OCR）。stream=true 走 SSE。
+/// `POST /v1/chat/completions`（含 OCR）。stream=true 走上游增量 SSE。
 pub async fn chat_completions(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ChatCompletionsRequest>,
 ) -> Result<axum::response::Response, GatewayError> {
-    // 1) 协议归一化（图片数/大小/file_id 校验，conversation 层）。
     let normalized = normalize_chat_input(req.messages).map_err(GatewayError::from)?;
-
-    // 2) OCR 判定 + 组装引擎请求。
     let ocr = is_ocr_request(&req.model, &normalized.images);
     let provider_req = ProviderChatRequest {
         prompt: normalized.prompt,
@@ -320,37 +318,163 @@ pub async fn chat_completions(
         ocr,
         system_prompt: None,
         request_id: new_request_id(),
+        event_sink: None,
     };
 
-    let engine: &dyn ChatBackend = state
+    let engine = state
         .engine
-        .as_deref()
+        .clone()
         .ok_or_else(|| GatewayError::Internal("ChatEngine not configured".into()))?;
 
-    // 3) 执行推理（池 / lease / payload / bridge）。
-    let outcome = engine.chat_outcome(&provider_req).await?;
-
-    // 4) 组装 OpenAI 兼容响应 / SSE。
     let model_out = if ocr { ALIAS_OCR } else { "grok-chat" };
-    let mut response = if req.stream {
-        stream_response(provider_req.request_id, model_out, outcome.text).into_response()
-    } else {
-        Json(chat_completion_json(
-            provider_req.request_id,
-            model_out,
-            outcome.text,
-            outcome.account_id,
-        ))
-        .into_response()
+    if req.stream {
+        return stream_chat_completions(engine, provider_req, model_out).await;
+    }
+
+    let outcome = engine.chat_outcome(&provider_req).await?;
+    let text = strip_grok_markup(&outcome.text);
+    let mut response = Json(chat_completion_json(
+        provider_req.request_id,
+        model_out,
+        text,
+        outcome.account_id,
+    ))
+    .into_response();
+    set_account_header(&mut response, outcome.account_id);
+    Ok(response)
+}
+
+enum StreamMsg {
+    Account(i64),
+    Delta(String),
+    End,
+    Failed(ProviderError),
+}
+
+async fn stream_chat_completions(
+    engine: Arc<dyn ChatBackend>,
+    mut provider_req: ProviderChatRequest,
+    model_out: &'static str,
+) -> Result<Response, GatewayError> {
+    let (tx, mut rx) = mpsc::unbounded_channel::<StreamMsg>();
+    let sink = {
+        let tx = tx.clone();
+        Arc::new(move |ev: ChatStreamEvent| {
+            let msg = match ev {
+                ChatStreamEvent::Account(id) => StreamMsg::Account(id),
+                ChatStreamEvent::Token(t) => StreamMsg::Delta(t),
+            };
+            let _ = tx.send(msg);
+        })
     };
-    if let Some(id) = outcome.account_id {
+    provider_req.event_sink = Some(sink);
+    let request_id = provider_req.request_id.clone();
+    tokio::spawn(async move {
+        match engine.chat_outcome(&provider_req).await {
+            Ok(outcome) => {
+                if let Some(id) = outcome.account_id {
+                    let _ = tx.send(StreamMsg::Account(id));
+                }
+                let _ = tx.send(StreamMsg::End);
+            }
+            Err(e) => {
+                let _ = tx.send(StreamMsg::Failed(e));
+            }
+        }
+    });
+
+    let mut account_id = None;
+    let first = loop {
+        match rx.recv().await {
+            Some(StreamMsg::Account(id)) => {
+                account_id = Some(id);
+                break StreamMsg::Account(id);
+            }
+            Some(StreamMsg::Failed(e)) => return Err(e.into()),
+            Some(other) => break other,
+            None => {
+                return Err(GatewayError::Internal("chat stream closed".into()));
+            }
+        }
+    };
+
+    let mut response =
+        live_stream_response(request_id, model_out.to_string(), first, rx).into_response();
+    set_account_header(&mut response, account_id);
+    Ok(response)
+}
+
+fn set_account_header(response: &mut Response, account_id: Option<i64>) {
+    if let Some(id) = account_id {
         response.headers_mut().insert(
             header::HeaderName::from_static("x-grok-account-id"),
             header::HeaderValue::from_str(&id.to_string())
                 .unwrap_or(header::HeaderValue::from_static("0")),
         );
     }
-    Ok(response)
+}
+
+fn sse_delta_event(id: &str, model: &str, content: &str, finish: bool) -> Event {
+    let chunk = json!({
+        "id": id,
+        "object": "chat.completion.chunk",
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "delta": { "role": "assistant", "content": content },
+            "finish_reason": if finish { Value::from("stop") } else { Value::Null },
+        }],
+    });
+    Event::default().data(chunk.to_string())
+}
+
+fn live_stream_response(
+    id: String,
+    model: String,
+    first: StreamMsg,
+    rx: mpsc::UnboundedReceiver<StreamMsg>,
+) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
+    let prelude: Vec<Result<Event, Infallible>> = match &first {
+        StreamMsg::Delta(text) => vec![Ok(sse_delta_event(&id, &model, text, false))],
+        StreamMsg::End => vec![
+            Ok(sse_delta_event(&id, &model, "", true)),
+            Ok(Event::default().data("[DONE]")),
+        ],
+        StreamMsg::Account(_) | StreamMsg::Failed(_) => vec![],
+    };
+    let already_done = matches!(first, StreamMsg::End);
+    let rest = stream::unfold(
+        (rx, id, model, already_done),
+        |(mut rx, id, model, done)| async move {
+            if done {
+                return None;
+            }
+            loop {
+                match rx.recv().await {
+                    Some(StreamMsg::Account(_)) => continue,
+                    Some(StreamMsg::Delta(text)) => {
+                        return Some((
+                            Ok(sse_delta_event(&id, &model, &text, false)),
+                            (rx, id, model, false),
+                        ));
+                    }
+                    Some(StreamMsg::Failed(e)) => {
+                        return Some((
+                            Ok(sse_delta_event(&id, &model, &e.to_string(), true)),
+                            (rx, id, model, false),
+                        ));
+                    }
+                    Some(StreamMsg::End) | None => {
+                        return Some((
+                            Ok(Event::default().data("[DONE]")),
+                            (rx, id, model, true),
+                        ));
+                    }
+                }
+            }
+        },
+    );
+    Sse::new(stream::iter(prelude).chain(rest))
 }
 
 /// 非流式 OpenAI 兼容 `chat.completion`。
@@ -376,25 +500,34 @@ fn chat_completion_json(
     })
 }
 
-/// 流式：完整文本以单个 chunk 的 delta 发出，然后 `[DONE]`（G-OCR-9）。
-fn stream_response(
-    id: String,
-    model: &str,
-    content: String,
-) -> Sse<impl futures::Stream<Item = Result<Event, std::convert::Infallible>>> {
-    let chunk = json!({
-        "id": id,
-        "object": "chat.completion.chunk",
-        "model": model,
-        "choices": [{
-            "index": 0,
-            "delta": { "role": "assistant", "content": content },
-            "finish_reason": "stop",
-        }],
-    });
-    let s = stream::iter(vec![
-        Ok(Event::default().data(chunk.to_string())),
-        Ok(Event::default().data("[DONE]")),
-    ]);
-    Sse::new(s)
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sse_delta_event_omits_finish_until_stop() {
+        let chunk = json!({
+            "id": "id-1",
+            "object": "chat.completion.chunk",
+            "model": "grok-chat",
+            "choices": [{
+                "index": 0,
+                "delta": { "role": "assistant", "content": "**hi**" },
+                "finish_reason": Value::Null,
+            }],
+        });
+        assert_eq!(chunk["choices"][0]["finish_reason"], Value::Null);
+        assert_eq!(chunk["choices"][0]["delta"]["content"], "**hi**");
+        let ev = sse_delta_event("id-1", "grok-chat", "**hi**", false);
+        let _ = ev;
+    }
+
+    #[test]
+    fn non_stream_json_strips_via_helper() {
+        let text = strip_grok_markup("**是的**<grok:render>x</grok:render>");
+        let body = chat_completion_json("x".into(), "grok-chat", text, Some(7));
+        assert_eq!(body["choices"][0]["message"]["content"], "**是的**");
+        assert_eq!(body["account_id"], 7);
+        assert!(!body.to_string().contains("grok:render"));
+    }
 }

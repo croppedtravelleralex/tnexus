@@ -118,10 +118,56 @@ impl WebQuotaService {
                 Err(e) => {
                     fail += 1;
                     tracing::debug!(account_id = id, "quota refresh skip/fail: {e}");
+                    if let Err(write_err) = self.record_refresh_failure(id, &e).await {
+                        tracing::debug!(
+                            account_id = id,
+                            "quota refresh 失败写 last_error 失败: {write_err}"
+                        );
+                    }
                 }
             }
         }
+        if let Err(e) = self.sweep_stale_health().await {
+            tracing::warn!("quota sweep stale health failed: {e}");
+        }
         (ok, fail)
+    }
+
+    /// 额度刷新失败写入 last_error（不改 enabled / 不拉长冷却）。
+    async fn record_refresh_failure(
+        &self,
+        account_id: i64,
+        err: &ProviderError,
+    ) -> Result<(), sqlx::Error> {
+        let mut reason = format!("web dispatch probe: {err}");
+        reason.truncate(512);
+        sqlx::query("UPDATE grok_accounts SET last_error = $2, updated_at = now() WHERE id = $1")
+            .bind(account_id)
+            .bind(reason)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// 清掉已过期冷却上的 last_error，并把超过 24h 仍停在 soft_stop 的模型状态标为过期。
+    pub async fn sweep_stale_health(&self) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE grok_accounts \
+             SET last_error = NULL, cooldown_until = NULL, updated_at = now() \
+             WHERE cooldown_until IS NOT NULL AND cooldown_until <= now()",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "UPDATE grok_model_states \
+             SET status = 'unknown', reason = 'expired_soft_stop', updated_at = now() \
+             WHERE status = 'soft_stop' \
+               AND (cooldown_until IS NULL OR cooldown_until <= now()) \
+               AND updated_at < now() - interval '24 hours'",
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 }
 
@@ -209,6 +255,24 @@ mod tests {
             "应过滤 grok_web provider"
         );
         assert!(sql.contains("enabled = true"), "应过滤启用账号");
+    }
+
+    #[test]
+    fn sweep_sql_expires_old_soft_stop() {
+        // 锁住 janitor 语义：过期冷却清 last_error；陈旧 imagine soft_stop 改 unknown。
+        let account_sql = "UPDATE grok_accounts SET last_error = NULL, cooldown_until = NULL, updated_at = now() WHERE cooldown_until IS NOT NULL AND cooldown_until <= now()";
+        let model_sql = "UPDATE grok_model_states SET status = 'unknown', reason = 'expired_soft_stop' WHERE status = 'soft_stop'";
+        assert!(account_sql.contains("cooldown_until <= now()"));
+        assert!(model_sql.contains("expired_soft_stop"));
+    }
+
+    #[test]
+    fn refresh_failure_reason_keeps_403_text() {
+        let err = ProviderError::Upstream("Grok Web 额度接口返回 403".into());
+        let mut reason = format!("web dispatch probe: {err}");
+        reason.truncate(512);
+        assert!(reason.contains("403"));
+        assert!(reason.contains("web dispatch probe"));
     }
 
     #[test]

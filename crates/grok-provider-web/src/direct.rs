@@ -12,7 +12,9 @@
 
 use std::sync::Arc;
 
-use grok_domain::{ProviderError, SsoTokenProvider};
+use futures_util::StreamExt;
+use grok_conversation::strip_grok_markup;
+use grok_domain::{ChatEventSink, ChatStreamEvent, ProviderError, SsoTokenProvider};
 use serde_json::{json, Value};
 
 use crate::bridge::BridgeClient;
@@ -349,6 +351,18 @@ impl HttpDirectClient {
         sso_token: Option<&str>,
         account_id: Option<i64>,
     ) -> Result<SseChatParse, ProviderError> {
+        self.fetch_chat_turn_sink(path, payload, sso_token, account_id, None)
+            .await
+    }
+
+    async fn fetch_chat_turn_sink(
+        &self,
+        path: &str,
+        payload: &Value,
+        sso_token: Option<&str>,
+        account_id: Option<i64>,
+        on_token: Option<&ChatEventSink>,
+    ) -> Result<SseChatParse, ProviderError> {
         let Some(sso_token) = sso_token else {
             return Err(ProviderError::NoAvailableAccount);
         };
@@ -377,14 +391,29 @@ impl HttpDirectClient {
         if !status.is_success() {
             return Err(ProviderError::Upstream(format!("chat status {status}")));
         }
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| ProviderError::Bridge(format!("chat body: {e}")))?;
-        if bytes.len() > MAX_BITSTREAM_READ_LIMIT {
-            return Err(ProviderError::Upstream("chat stream over limit".into()));
+        let mut stream = resp.bytes_stream();
+        let mut parser = SseChatParser::default();
+        let mut buf: Vec<u8> = Vec::new();
+        let mut total = 0usize;
+        while let Some(chunk) = stream.next().await {
+            let chunk =
+                chunk.map_err(|e| ProviderError::Bridge(format!("chat body: {e}")))?;
+            total += chunk.len();
+            if total > MAX_BITSTREAM_READ_LIMIT {
+                return Err(ProviderError::Upstream("chat stream over limit".into()));
+            }
+            buf.extend_from_slice(&chunk);
+            while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+                let line: Vec<u8> = buf.drain(..=pos).collect();
+                let line = String::from_utf8_lossy(&line);
+                parser.feed_line(&line, on_token)?;
+            }
         }
-        parse_sse_chat(&bytes)
+        if !buf.is_empty() {
+            let line = String::from_utf8_lossy(&buf);
+            parser.feed_line(&line, on_token)?;
+        }
+        parser.finish(None, on_token)
     }
 
     /// POST `/rest/rate-limits` 拉取对话额度（对齐 Python `grok_quota_probe.probe_rate_limits`）。
@@ -404,6 +433,7 @@ impl HttpDirectClient {
             .sign_path(&cookie, "POST", path, session.as_ref())
             .await?;
         let endpoint = format!("{}{}", self.cfg.base_url.trim_end_matches('/'), path);
+        let mut last_status: Option<u16> = None;
         for body in [json!({}), json!({"modelName": "grok-3"})] {
             let resp = client
                 .post(&endpoint)
@@ -418,6 +448,7 @@ impl HttpDirectClient {
                 .await
                 .map_err(|e| ProviderError::Bridge(format!("rate-limits body: {e}")))?;
             if !status.is_success() {
+                last_status = Some(status.as_u16());
                 continue;
             }
             let value: Value = serde_json::from_slice(&bytes)
@@ -426,9 +457,11 @@ impl HttpDirectClient {
                 return Ok(value);
             }
         }
-        Err(ProviderError::Upstream(
-            "rate-limits empty or failed".into(),
-        ))
+        Err(ProviderError::Upstream(match last_status {
+            Some(403) => "Grok Web 额度接口返回 403".into(),
+            Some(s) => format!("rate-limits HTTP {s}"),
+            None => "rate-limits empty or failed".into(),
+        }))
     }
 
     /// POST chat 路径并返回原始响应体（lite 生图从 SSE 提取 imageUrl）。
@@ -545,24 +578,33 @@ pub struct SseChatParse {
     pub parent_response_id: Option<String>,
 }
 
-/// 解析 grok chat SSE：兼容 `data:` 前缀与裸 JSON 行；嵌套/扁平 `result` 结构。
-pub fn parse_sse_chat(body: &[u8]) -> Result<SseChatParse, ProviderError> {
-    let text = String::from_utf8_lossy(body);
-    let mut out = SseChatParse::default();
-    let mut saw_line = false;
-    let mut text_parts: Vec<String> = Vec::new();
+#[derive(Default)]
+struct SseChatParser {
+    out: SseChatParse,
+    text_parts: Vec<String>,
+    saw_line: bool,
+    emitted: String,
+}
 
-    for line in text.lines() {
+impl SseChatParser {
+    fn feed_line(
+        &mut self,
+        line: &str,
+        on_token: Option<&ChatEventSink>,
+    ) -> Result<(), ProviderError> {
         let mut line = line.trim();
         if line.is_empty() || line == "[DONE]" {
-            continue;
+            return Ok(());
         }
         if let Some(data) = line.strip_prefix("data:") {
             line = data.trim();
         }
-        saw_line = true;
+        if line.is_empty() || line == "[DONE]" {
+            return Ok(());
+        }
+        self.saw_line = true;
         let Ok(root) = serde_json::from_str::<Value>(line) else {
-            continue;
+            return Ok(());
         };
         if let Some(err) = root.get("error") {
             let msg = err
@@ -572,11 +614,11 @@ pub fn parse_sse_chat(body: &[u8]) -> Result<SseChatParse, ProviderError> {
             return Err(ProviderError::Upstream(msg.to_string()));
         }
         let Some(res) = root.get("result").and_then(|v| v.as_object()) else {
-            continue;
+            return Ok(());
         };
         if let Some(conv) = res.get("conversation").and_then(|v| v.as_object()) {
             if let Some(id) = conv.get("conversationId").and_then(|v| v.as_str()) {
-                out.conversation_id = Some(id.to_string());
+                self.out.conversation_id = Some(id.to_string());
             }
         }
         let blocks: Vec<&serde_json::Map<String, Value>> = res
@@ -586,22 +628,22 @@ pub fn parse_sse_chat(body: &[u8]) -> Result<SseChatParse, ProviderError> {
             .unwrap_or_else(|| vec![res]);
         for block in blocks {
             if let Some(id) = block.get("responseId").and_then(|v| v.as_str()) {
-                out.response_id = Some(id.to_string());
+                self.out.response_id = Some(id.to_string());
             }
             if let Some(mr) = block.get("modelResponse").and_then(|v| v.as_object()) {
                 if let Some(id) = mr.get("responseId").and_then(|v| v.as_str()) {
-                    out.response_id = Some(id.to_string());
+                    self.out.response_id = Some(id.to_string());
                 }
                 if let Some(msg) = mr.get("message").and_then(|v| v.as_str()) {
-                    text_parts = vec![msg.to_string()];
+                    self.text_parts = vec![msg.to_string()];
                 }
                 if let Some(pid) = mr.get("parentResponseId").and_then(|v| v.as_str()) {
-                    out.parent_response_id = Some(pid.to_string());
+                    self.out.parent_response_id = Some(pid.to_string());
                 }
             }
             if let Some(ur) = block.get("userResponse").and_then(|v| v.as_object()) {
                 if let Some(pid) = ur.get("responseId").and_then(|v| v.as_str()) {
-                    out.parent_response_id = Some(pid.to_string());
+                    self.out.parent_response_id = Some(pid.to_string());
                 }
             }
             let thinking = block
@@ -614,41 +656,81 @@ pub fn parse_sse_chat(body: &[u8]) -> Result<SseChatParse, ProviderError> {
                 .unwrap_or("");
             if let Some(tok) = block.get("token").and_then(|v| v.as_str()) {
                 if !thinking && matches!(tag, "final" | "response_start" | "") && !tok.is_empty() {
-                    if text_parts.is_empty() || text_parts.last().map(|s| s.as_str()) != Some(tok) {
-                        text_parts.push(tok.to_string());
+                    if self.text_parts.is_empty()
+                        || self.text_parts.last().map(|s| s.as_str()) != Some(tok)
+                    {
+                        self.text_parts.push(tok.to_string());
                     }
                 }
             }
         }
+        self.emit(on_token);
+        Ok(())
     }
 
-    if !saw_line {
-        if let Ok(root) = serde_json::from_str::<Value>(&text) {
-            if let Some(msg) = root
-                .get("error")
-                .and_then(|e| e.get("message"))
-                .and_then(|v| v.as_str())
-            {
-                return Err(ProviderError::Upstream(msg.to_string()));
+    fn emit(&mut self, on_token: Option<&ChatEventSink>) {
+        let raw = self.text_parts.join("");
+        let sanitized = strip_grok_markup(&raw);
+        if sanitized.starts_with(&self.emitted) {
+            let delta = &sanitized[self.emitted.len()..];
+            if !delta.is_empty() {
+                if let Some(sink) = on_token {
+                    sink(ChatStreamEvent::Token(delta.to_string()));
+                }
+                self.emitted.push_str(delta);
             }
-            if let Some(content) = root
-                .get("choices")
-                .and_then(|c| c.get(0))
-                .and_then(|c| c.get("message"))
-                .and_then(|m| m.get("content"))
-                .and_then(|v| v.as_str())
-            {
-                out.text = content.to_string();
-                return Ok(out);
+        } else if self.emitted.is_empty() && !sanitized.is_empty() {
+            if let Some(sink) = on_token {
+                sink(ChatStreamEvent::Token(sanitized.clone()));
             }
+            self.emitted = sanitized;
         }
     }
 
-    out.text = text_parts.join("");
-    if out.text.is_empty() && !saw_line {
-        return Err(ProviderError::Upstream("empty chat response".into()));
+    fn finish(
+        mut self,
+        raw_body: Option<&str>,
+        on_token: Option<&ChatEventSink>,
+    ) -> Result<SseChatParse, ProviderError> {
+        self.emit(on_token);
+        self.out.text = strip_grok_markup(&self.text_parts.join(""));
+        if self.out.text.is_empty() {
+            if let Some(text) = raw_body {
+                if let Ok(root) = serde_json::from_str::<Value>(text.trim()) {
+                    if let Some(msg) = root
+                        .get("error")
+                        .and_then(|e| e.get("message"))
+                        .and_then(|v| v.as_str())
+                    {
+                        return Err(ProviderError::Upstream(msg.to_string()));
+                    }
+                    if let Some(content) = root
+                        .get("choices")
+                        .and_then(|c| c.get(0))
+                        .and_then(|c| c.get("message"))
+                        .and_then(|m| m.get("content"))
+                        .and_then(|v| v.as_str())
+                    {
+                        self.out.text = strip_grok_markup(content);
+                    }
+                }
+            }
+        }
+        if self.out.text.is_empty() && !self.saw_line {
+            return Err(ProviderError::Upstream("empty chat response".into()));
+        }
+        Ok(self.out)
     }
-    Ok(out)
+}
+
+/// 解析 grok chat SSE：兼容 `data:` 前缀与裸 JSON 行；嵌套/扁平 `result` 结构。
+pub fn parse_sse_chat(body: &[u8]) -> Result<SseChatParse, ProviderError> {
+    let text = String::from_utf8_lossy(body);
+    let mut parser = SseChatParser::default();
+    for line in text.lines() {
+        parser.feed_line(line, None)?;
+    }
+    parser.finish(Some(text.as_ref()), None)
 }
 
 /// 快速解析 SSE 文本（仅正文，兼容旧调用方）。
@@ -698,6 +780,24 @@ impl BridgeClient for HttpDirectClient {
             payload,
             sso_token,
             account_id,
+        )
+        .await
+        .map(|p| p.text)
+    }
+
+    async fn fetch_chat_sink(
+        &self,
+        payload: &Value,
+        sso_token: Option<&str>,
+        account_id: Option<i64>,
+        on_token: Option<&ChatEventSink>,
+    ) -> Result<String, ProviderError> {
+        self.fetch_chat_turn_sink(
+            "/rest/app-chat/conversations/new",
+            payload,
+            sso_token,
+            account_id,
+            on_token,
         )
         .await
         .map(|p| p.text)
@@ -766,6 +866,29 @@ data: {"result":{"response":{"token":"答","isThinking":false,"messageTag":""}}}
 "#;
         let err = parse_sse_text(body.as_bytes()).unwrap_err();
         assert!(err.to_string().contains("boom"));
+    }
+
+    #[test]
+    fn parse_sse_strips_grok_render_tags() {
+        let body = concat!(
+            r#"data: {"result":{"response":{"token":"**是的**","isThinking":false,"messageTag":"final"}}}"#,
+            "\n",
+            r#"data: {"result":{"response":{"token":"<grok:render card_id=\"1\"><argument name=\"citation_id\">0</argument></grok:render>","isThinking":false,"messageTag":"final"}}}"#,
+            "\n",
+            r#"data: {"result":{"response":{"token":"价格一样","isThinking":false,"messageTag":"final"}}}"#,
+            "\n",
+        );
+        let out = parse_sse_text(body.as_bytes()).unwrap();
+        assert_eq!(out, "**是的**价格一样");
+        assert!(!out.contains("grok:render"));
+        assert!(!out.contains("citation_id"));
+    }
+
+    #[test]
+    fn parse_sse_openai_json_also_strips_markup() {
+        let body = r#"{"choices":[{"message":{"content":"hi<grok:render/>"}}]}"#;
+        let out = parse_sse_text(body.as_bytes()).unwrap();
+        assert_eq!(out, "hi");
     }
 
     #[test]

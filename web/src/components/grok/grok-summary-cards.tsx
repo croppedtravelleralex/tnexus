@@ -39,7 +39,11 @@ function fmtNum(value: number): string {
 
 function QuotaModeBar({ q }: { q: GrokQuotaModeSummary }) {
   const unlimited = q.total >= QUOTA_UNLIMITED_THRESHOLD;
-  const ratio = !unlimited && q.total > 0 ? Math.min(1, q.remaining / q.total) : 1;
+  const freshRemaining = q.remaining_fresh ?? 0;
+  const freshTotal = q.total_fresh ?? 0;
+  const freshAccounts = q.accounts_fresh ?? 0;
+  const hasFresh = freshAccounts > 0 && freshTotal > 0;
+  const ratio = !unlimited && hasFresh ? Math.min(1, freshRemaining / freshTotal) : hasFresh ? 1 : 0;
   const barColor =
     ratio > 0.3 ? "bg-[var(--neo-primary)]/80" : ratio > 0.05 ? "bg-amber-500/80" : "bg-rose-500/80";
 
@@ -48,11 +52,15 @@ function QuotaModeBar({ q }: { q: GrokQuotaModeSummary }) {
       <div className="flex items-center justify-between gap-2 text-[11px]">
         <span className="font-medium text-[var(--neo-ink)]">{labelQuotaMode(q.mode)}</span>
         <span className="tabular-nums text-[var(--neo-muted)]">
-          {unlimited ? "不限" : `${fmtNum(q.remaining)} / ${fmtNum(q.total)}`}
+          {unlimited && !hasFresh
+            ? "不限（陈旧）"
+            : hasFresh
+              ? `${fmtNum(freshRemaining)} / ${fmtNum(freshTotal)}`
+              : "无新鲜窗口"}
         </span>
       </div>
 
-      {!unlimited && (
+      {hasFresh && !unlimited && (
         <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-[var(--neo-surface-muted)]">
           <div
             className={`absolute inset-y-0 left-0 rounded-full transition-all ${barColor}`}
@@ -62,29 +70,52 @@ function QuotaModeBar({ q }: { q: GrokQuotaModeSummary }) {
       )}
 
       <div className="flex flex-wrap gap-x-2 text-[10px] text-[var(--neo-muted)]">
+        {hasFresh && <span>{freshAccounts} 个号 24h 内同步</span>}
+        {q.stale > 0 && (
+          <span className="text-amber-500">{q.stale} 个窗口超 24h</span>
+        )}
         {q.exhausted > 0 && (
           <span className="text-rose-500">{q.exhausted} 个耗尽</span>
-        )}
-        {q.stale > 0 && (
-          <span className="text-amber-500">{q.stale} 个窗口超 24h 未刷新</span>
         )}
       </div>
     </div>
   );
 }
 
-/** 总额度面板（quota 字段可选；旧服务端不返回则不渲染） */
+/** 总额度面板：主数字用 24h 内同步的 fast 窗口。 */
 function QuotaPanel({ quota }: { quota: GrokQuotaModeSummary[] | undefined }) {
   if (!quota || quota.length === 0) return null;
+  const fast = quota.find((q) => q.mode === "fast");
+  const remaining = fast?.remaining_fresh ?? 0;
+  const total = fast?.total_fresh ?? 0;
+  const accounts = fast?.accounts_fresh ?? 0;
 
   return (
     <div className="neo-card px-4 py-3">
-      <div className="mb-2.5 text-[11px] uppercase tracking-wide text-[var(--neo-muted)]">总额度</div>
+      <div className="mb-2.5 flex flex-wrap items-end justify-between gap-2">
+        <div>
+          <div className="text-[11px] uppercase tracking-wide text-[var(--neo-muted)]">
+            可用对话额度
+          </div>
+          <div className="mt-0.5 text-2xl font-semibold tabular-nums text-pink-500">
+            {fmtNum(remaining)}
+            <span className="ml-1 text-base font-medium text-[var(--neo-muted)]">
+              / {fmtNum(total)}
+            </span>
+          </div>
+          <div className="text-[10px] text-[var(--neo-muted)]">
+            {accounts} 个启用号 · 仅统计 24h 内同步的 fast（/rest/rate-limits）
+          </div>
+        </div>
+      </div>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {quota.map((q) => (
           <QuotaModeBar key={q.mode} q={q} />
         ))}
       </div>
+      <p className="mt-2 text-[10px] text-[var(--neo-muted)]">
+        auto / imagine 窗口目前不会被刷新，数字为 ETL 冻结值时显示「无新鲜窗口」。
+      </p>
     </div>
   );
 }

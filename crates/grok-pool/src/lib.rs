@@ -59,9 +59,8 @@ struct Inner {
     select_seq: u64,
     /// 每个账号最近一次被选中时的 select_seq（0 / 缺省 = 从未选中，优先级最高）。
     last_selected_seq: HashMap<i64, u64>,
-    /// 最近一次 `reconcile` 的时刻与结果；None = 启动后从未对账。
-    /// 供健康端点回答「号池还在不在跟 PG 对齐」。
-    last_reconcile: Option<(chrono::DateTime<chrono::Utc>, ReconcileReport)>,
+    /// 最近一次成功 `load` / `reconcile` 的墙钟时间；供 `/readyz` 判断选号器是否跟上 PG。
+    last_reconciled_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// 池加载结果；`load` 时 `account` 为 None 代表加载失败。
@@ -111,6 +110,7 @@ impl SimplifiedPool {
         inner.rl_failure_count.clear();
         inner.select_seq = 0;
         inner.last_selected_seq.clear();
+        inner.last_reconciled_at = Some(chrono::Utc::now());
         Ok(())
     }
 
@@ -173,19 +173,13 @@ impl SimplifiedPool {
         }
 
         inner.accounts = accounts;
-        let report = ReconcileReport {
+        inner.last_reconciled_at = Some(now_wall);
+        Ok(ReconcileReport {
             total: inner.accounts.len(),
             added,
             removed: removed.len(),
             cooldowns_applied,
-        };
-        inner.last_reconcile = Some((now_wall, report));
-        Ok(report)
-    }
-
-    /// 最近一次对账的时刻与结果；`None` = 启动后从未对账（号池仍是启动快照）。
-    pub async fn last_reconcile(&self) -> Option<(chrono::DateTime<chrono::Utc>, ReconcileReport)> {
-        self.inner.read().await.last_reconcile
+        })
     }
 
     /// 直接注入内存账号（测试 / 单测直达，不依赖 PG）。
@@ -199,11 +193,17 @@ impl SimplifiedPool {
         inner.rl_failure_count.clear();
         inner.select_seq = 0;
         inner.last_selected_seq.clear();
+        inner.last_reconciled_at = Some(chrono::Utc::now());
     }
 
     /// 池内账号数量（已启用的 grok_web 账号总数）。
     pub async fn len(&self) -> usize {
         self.inner.read().await.accounts.len()
+    }
+
+    /// 最近一次成功载入/对账的墙钟时间。`None` 表示从未成功 load/reconcile。
+    pub async fn last_reconciled_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.inner.read().await.last_reconciled_at
     }
 
     /// 是否为空池。
@@ -381,7 +381,7 @@ impl SimplifiedPool {
                 rl_failure_count: HashMap::new(),
                 select_seq: 0,
                 last_selected_seq: HashMap::new(),
-                last_reconcile: None,
+                last_reconciled_at: None,
             }),
             cooldown,
         }
@@ -582,6 +582,17 @@ mod tests {
         let report = pool.reconcile(&FakeRepo::with_ids(&[1, 2])).await.unwrap();
         assert!(!report.changed());
         assert_eq!(report.total, 2);
+        assert!(
+            pool.last_reconciled_at().await.is_some(),
+            "对账成功必须记下时间，否则 /readyz 无法判断选号器是否跟上 PG"
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_pool_has_no_reconcile_timestamp() {
+        let p = SimplifiedPool::new();
+        assert!(p.last_reconciled_at().await.is_none());
+        assert_eq!(p.len().await, 0);
     }
 
     #[tokio::test]

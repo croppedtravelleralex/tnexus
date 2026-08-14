@@ -202,7 +202,7 @@ async fn main() -> anyhow::Result<()> {
             shared_pool.clone(),
             lease.clone(),
             bridge.clone(),
-            audit_sink,
+            audit_sink.clone(),
         )
         .with_sso_opt(sso.clone())
         .with_health_sink(Arc::new(PgHealthSink(Arc::new(PgAccountRepository::new(
@@ -297,7 +297,11 @@ async fn main() -> anyhow::Result<()> {
         tasks::BackgroundTasks::empty()
     };
 
-    let state = Arc::new(http::AppState { pool: pool.clone() });
+    let state = Arc::new(
+        http::AppState::new(pool.clone())
+            .with_grok_pool(shared_pool.clone())
+            .with_audit_opt(audit_sink.clone()),
+    );
     let health_app = build_router(state);
 
     let v1_addr: SocketAddr = cfg.server_addr.parse()?;
@@ -522,7 +526,7 @@ mod tests {
         let lease: Arc<dyn LeaseManager> =
             Arc::new(InMemoryLeaseManager::new(&[(Scope::GrokWeb, 4)]));
         let cfg = test_cfg();
-        let state = Arc::new(http::AppState { pool: lazy_pool() });
+        let state = Arc::new(http::AppState::new(lazy_pool()));
         let bundle = build_admin_bundle(
             &cfg.admin_username,
             cfg.admin_password.as_deref(),

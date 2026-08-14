@@ -31,7 +31,7 @@ impl PgQuotaRepository {
 impl QuotaRepository for PgQuotaRepository {
     async fn get_windows(&self, account_id: i64) -> Result<Vec<QuotaWindow>, StorageError> {
         let rows = sqlx::query(
-            "SELECT account_id, remaining, reset_at \
+            "SELECT account_id, remaining::bigint AS remaining, reset_at \
              FROM grok_quota_windows WHERE account_id = $1",
         )
         .bind(account_id)

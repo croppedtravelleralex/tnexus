@@ -4,8 +4,10 @@ import { LoaderCircle, X } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
-import { grokAdminApi, type GrokAccountView, type GrokAccountDetail } from "@/lib/grok-admin";
+import { grokAdminApi, type GrokAccountView, type GrokAccountDetail, type GrokQuotaWindow } from "@/lib/grok-admin";
 import { labelModelStatusLine, labelQuotaMode, labelQuotaSource } from "@/lib/grok-labels";
+import { isQuotaStale } from "@/lib/grok-quota";
+import { QUOTA_UNLIMITED_THRESHOLD } from "@/components/grok/grok-quota-heatstrip";
 
 type Props = {
   open: boolean;
@@ -21,6 +23,7 @@ const MODEL_STATUS_VARIANT: Record<string, string> = {
   quota_available: "text-emerald-600",
   unknown: "text-stone-400",
   soft_stop: "text-amber-600",
+  expired_soft_stop: "text-stone-400",
   quota_exhausted: "text-rose-600",
   auth_failed: "text-rose-600",
   signature_failed: "text-rose-600",
@@ -31,6 +34,22 @@ function fmtTime(value: string | null | undefined): string {
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return value;
   return d.toLocaleString("zh-CN", { hour12: false });
+}
+
+function isSoftStopCurrent(cooldownUntil: string | null | undefined, updatedAt: string, now = Date.now()): boolean {
+  if (cooldownUntil) {
+    const t = new Date(cooldownUntil).getTime();
+    return !Number.isNaN(t) && t > now;
+  }
+  const upd = new Date(updatedAt).getTime();
+  if (Number.isNaN(upd)) return false;
+  return now - upd < 24 * 60 * 60 * 1000;
+}
+
+function quotaRemainingLabel(w: GrokQuotaWindow): string {
+  if (w.total >= QUOTA_UNLIMITED_THRESHOLD) return "不限";
+  if (w.total === 0 && w.remaining === 0) return "未知";
+  return `${w.remaining} / ${w.total}`;
 }
 
 /** 账号详情：额度窗口 + 模型状态（GET /admin/accounts/:id）。 */
@@ -116,19 +135,36 @@ export function GrokAccountDetailDialog({ open, account, token, onOpenChange, on
                       </tr>
                     </thead>
                     <tbody>
-                      {windows.map((w) => (
-                        <tr key={w.mode} className="border-b border-[var(--neo-border)] last:border-0">
-                          <td className="px-3 py-2 font-medium text-[var(--neo-ink)]">{labelQuotaMode(w.mode)}</td>
-                          <td className="px-3 py-2 tabular-nums">
-                            <span className={w.total > 0 && w.remaining <= 0 ? "text-rose-600" : ""}>
-                              {w.remaining} / {w.total}
-                            </span>
-                          </td>
-                          <td className="px-3 py-2 whitespace-nowrap text-xs">{fmtTime(w.reset_at)}</td>
-                          <td className="px-3 py-2">{labelQuotaSource(w.source)}</td>
-                          <td className="px-3 py-2 whitespace-nowrap text-xs">{fmtTime(w.synced_at)}</td>
-                        </tr>
-                      ))}
+                      {windows.map((w) => {
+                        const stale = isQuotaStale(w);
+                        const unknown = w.total === 0 && w.remaining === 0;
+                        return (
+                          <tr key={w.mode} className="border-b border-[var(--neo-border)] last:border-0">
+                            <td className="px-3 py-2 font-medium text-[var(--neo-ink)]">
+                              {labelQuotaMode(w.mode)}
+                              {stale ? (
+                                <span className="ml-1 text-[10px] font-normal text-amber-600">陈旧</span>
+                              ) : null}
+                            </td>
+                            <td className="px-3 py-2 tabular-nums">
+                              <span
+                                className={
+                                  unknown || stale
+                                    ? "text-[var(--neo-muted)]"
+                                    : w.total > 0 && w.remaining <= 0
+                                      ? "text-rose-600"
+                                      : ""
+                                }
+                              >
+                                {quotaRemainingLabel(w)}
+                              </span>
+                            </td>
+                            <td className="px-3 py-2 whitespace-nowrap text-xs">{fmtTime(w.reset_at)}</td>
+                            <td className="px-3 py-2">{labelQuotaSource(w.source)}</td>
+                            <td className="px-3 py-2 whitespace-nowrap text-xs">{fmtTime(w.synced_at)}</td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -143,20 +179,32 @@ export function GrokAccountDetailDialog({ open, account, token, onOpenChange, on
                 <p className="text-sm text-[var(--neo-muted)]">无模型状态记录</p>
               ) : (
                 <div className="space-y-2">
-                  {states.map((s) => (
-                    <div
-                      key={s.upstream_model}
-                      className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[var(--neo-border)] px-3 py-2 text-sm"
-                    >
-                      <span className="font-medium text-[var(--neo-ink)]">{s.upstream_model}</span>
-                      <span className={MODEL_STATUS_VARIANT[s.status] ?? "text-stone-500"}>
-                        {labelModelStatusLine(s.status, s.reason)}
-                      </span>
-                      <span className="text-xs text-[var(--neo-muted)]">
-                        失败 {s.consecutive_failures} · 冷却至 {fmtTime(s.cooldown_until)}
-                      </span>
-                    </div>
-                  ))}
+                  {states.map((s) => {
+                    const currentSoftStop =
+                      s.status === "soft_stop" && isSoftStopCurrent(s.cooldown_until, s.updated_at);
+                    const statusLabel = currentSoftStop
+                      ? labelModelStatusLine(s.status, s.reason)
+                      : s.status === "soft_stop"
+                        ? labelModelStatusLine("unknown", "expired_soft_stop")
+                        : labelModelStatusLine(s.status, s.reason);
+                    const statusClass = currentSoftStop
+                      ? MODEL_STATUS_VARIANT.soft_stop
+                      : s.status === "soft_stop"
+                        ? MODEL_STATUS_VARIANT.expired_soft_stop
+                        : (MODEL_STATUS_VARIANT[s.status] ?? "text-stone-500");
+                    return (
+                      <div
+                        key={s.upstream_model}
+                        className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[var(--neo-border)] px-3 py-2 text-sm"
+                      >
+                        <span className="font-medium text-[var(--neo-ink)]">{s.upstream_model}</span>
+                        <span className={statusClass}>{statusLabel}</span>
+                        <span className="text-xs text-[var(--neo-muted)]">
+                          失败 {s.consecutive_failures} · 冷却至 {fmtTime(s.cooldown_until)}
+                        </span>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </section>

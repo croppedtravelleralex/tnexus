@@ -17,6 +17,7 @@ const MODEL_STATUS: Record<string, string> = {
   probe_chat_ok: "对话探针通过",
   unknown: "未知",
   soft_stop: "软停用",
+  expired_soft_stop: "软停用已过期",
   quota_exhausted: "额度耗尽",
   auth_failed: "认证失败",
   signature_failed: "签名失败",

@@ -7,7 +7,7 @@
 //! audit 异步写（`grok-audit`）；dispatch 记账（成功/失败 → 冷却）。
 //!
 //! 跨账号重试（item 1）：`chat_outcome` 在可重试上游错误（429 / 403）时
-//! 自动换账号重试，最多 `retry_max` 次（env `GROK_CHAT_RETRY_MAX`，默认 4，硬上限 8）。
+//! 自动换账号重试，最多 `retry_max` 次（env `GROK_CHAT_RETRY_MAX`，默认 2，硬上限 8）。
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,12 +22,12 @@ use crate::attachments::prepare_file_attachments;
 use crate::bridge::BridgeClient;
 use crate::chat::{build_web_chat_payload, DEFAULT_OCR_SYSTEM_PROMPT};
 use grok_domain::ProviderError;
-use grok_domain::{ChatBackend, ChatOutcome, ChatRequest};
+use grok_domain::{ChatBackend, ChatOutcome, ChatRequest, ChatStreamEvent};
 
 /// egress lease 获取超时（G1 单槽 web scope；时长可经构造覆盖）。
 const DEFAULT_LEASE_DURATION: Duration = Duration::from_secs(5);
 /// 跨账号重试默认次数（可通过 GROK_CHAT_RETRY_MAX 覆盖）。
-const DEFAULT_RETRY_MAX: usize = 4;
+const DEFAULT_RETRY_MAX: usize = 2;
 /// 跨账号重试硬上限（防止失控重试拖垮号池）。
 const HARD_RETRY_CAP: usize = 8;
 
@@ -70,7 +70,7 @@ impl ChatEngine {
         bridge: Arc<dyn BridgeClient>,
         audit: Option<Arc<AuditSink>>,
     ) -> Self {
-        // 从环境变量读取重试次数（默认 4，硬上限 8）
+        // 从环境变量读取重试次数（默认 2，硬上限 8）
         let retry_max = std::env::var("GROK_CHAT_RETRY_MAX")
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
@@ -186,6 +186,10 @@ impl ChatEngine {
             }
         };
 
+        if let Some(sink) = &req.event_sink {
+            sink(ChatStreamEvent::Account(account_id));
+        }
+
         let attachments = match prepare_file_attachments(&req.images, self.bridge.as_ref()).await {
             Ok(a) => a,
             Err(e) => {
@@ -206,7 +210,12 @@ impl ChatEngine {
         };
         let result = self
             .bridge
-            .fetch_chat(&payload, sso_token.as_deref(), Some(account_id))
+            .fetch_chat_sink(
+                &payload,
+                sso_token.as_deref(),
+                Some(account_id),
+                req.event_sink.as_ref(),
+            )
             .await;
 
         match result {
@@ -361,6 +370,7 @@ mod tests {
             ocr: true,
             system_prompt: None,
             request_id: "req-1".to_string(),
+            event_sink: None,
         }
     }
 
@@ -548,5 +558,37 @@ mod tests {
             matches!(&err, ProviderError::Upstream(_)),
             "retry_max=1 时应直接返回错误"
         );
+    }
+
+    #[tokio::test]
+    async fn event_sink_gets_account_then_stripped_token() {
+        let pool: SharedPool = Arc::new(grok_pool::SimplifiedPool::new());
+        pool.load_in_memory(vec![sample_account(7)]).await;
+        let mut mock = MockBridgeClient::new();
+        mock.chat_text = "hi<grok:render>x</grok:render>".to_string();
+        let bridge: Arc<dyn BridgeClient> = Arc::new(mock);
+        let e = engine(pool, bridge);
+        let events = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let ev2 = Arc::clone(&events);
+        let mut r = req();
+        r.event_sink = Some(Arc::new(move |ev| {
+            ev2.lock().unwrap().push(match ev {
+                ChatStreamEvent::Account(id) => format!("account:{id}"),
+                ChatStreamEvent::Token(t) => format!("token:{t}"),
+            });
+        }));
+        let out = e.chat_outcome(&r).await.unwrap();
+        assert_eq!(out.text, "hi");
+        assert_eq!(out.account_id, Some(7));
+        let got = events.lock().unwrap().clone();
+        assert!(
+            got.iter().any(|s| s == "account:7"),
+            "应先推送选中账号, got={got:?}"
+        );
+        assert!(
+            got.iter().any(|s| s == "token:hi"),
+            "应推送剥离后的 token, got={got:?}"
+        );
+        assert!(!got.iter().any(|s| s.contains("grok:render")));
     }
 }

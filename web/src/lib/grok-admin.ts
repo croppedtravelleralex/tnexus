@@ -273,6 +273,9 @@ export type GrokQuotaModeSummary = {
   total: number;
   exhausted: number;
   stale: number;
+  accounts_fresh?: number;
+  remaining_fresh?: number;
+  total_fresh?: number;
   oldest_synced_at: string | null;
   newest_synced_at: string | null;
 };

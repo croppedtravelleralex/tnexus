@@ -59,6 +59,26 @@ pub trait BridgeClient: Send + Sync {
         account_id: Option<i64>,
     ) -> Result<String, ProviderError>;
 
+    /// 与 [`fetch_chat`] 相同，但把已剥离 markup 的增量推给 `on_token`。
+    /// 默认实现：收齐全文后一次性回调。
+    async fn fetch_chat_sink(
+        &self,
+        payload: &Value,
+        sso_token: Option<&str>,
+        account_id: Option<i64>,
+        on_token: Option<&grok_domain::ChatEventSink>,
+    ) -> Result<String, ProviderError> {
+        let text = grok_conversation::strip_grok_markup(
+            &self.fetch_chat(payload, sso_token, account_id).await?,
+        );
+        if let Some(sink) = on_token {
+            if !text.is_empty() {
+                sink(grok_domain::ChatStreamEvent::Token(text.clone()));
+            }
+        }
+        Ok(text)
+    }
+
     /// 发送生图（imagine）请求到 bridge，返回上游 JSON（含 data[].url / b64_json）。
     async fn fetch_imagine(
         &self,
