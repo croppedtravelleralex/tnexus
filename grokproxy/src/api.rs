@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -124,6 +124,10 @@ async fn forward(
     endpoint: Endpoint,
     mut payload: Value,
 ) -> Result<Forwarded, (StatusCode, String)> {
+    // cli-chat-proxy answers stream:true with SSE (or an empty 200). We always
+    // ask it for a complete JSON object and, if the caller wanted a stream,
+    // dress that object as SSE on the way out.
+    crate::upstream::disable_streaming(&mut payload);
     let requested_model = payload
         .get("model")
         .and_then(Value::as_str)
@@ -193,7 +197,11 @@ async fn chat_completions(
     if !Config::authorizes(&state.config.api_key, bearer(&headers)) {
         return deny();
     }
+    let stream = crate::upstream::wants_stream(&payload);
     match forward(&state, Endpoint::Chat, payload).await {
+        Ok(forwarded) if stream => {
+            sse_response(crate::upstream::completion_to_sse(&forwarded.body))
+        }
         Ok(forwarded) => Json(forwarded.body).into_response(),
         Err((status, message)) => upstream_error(status, message),
     }
@@ -211,6 +219,18 @@ async fn responses(
         Ok(forwarded) => Json(forwarded.body).into_response(),
         Err((status, message)) => upstream_error(status, message),
     }
+}
+
+fn sse_response(body: String) -> Response {
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "text/event-stream"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        body,
+    )
+        .into_response()
 }
 
 /// Anthropic Messages API. The upstream speaks only the OpenAI shape, so the
@@ -233,13 +253,18 @@ async fn messages(
             .into_response();
     }
 
+    let stream = crate::upstream::wants_stream(&payload);
     let openai = crate::anthropic::request_to_openai(&payload);
     match forward(&state, Endpoint::Chat, openai).await {
-        Ok(forwarded) => Json(crate::anthropic::response_to_anthropic(
-            &forwarded.body,
-            &forwarded.model,
-        ))
-        .into_response(),
+        Ok(forwarded) => {
+            let message =
+                crate::anthropic::response_to_anthropic(&forwarded.body, &forwarded.model);
+            if stream {
+                sse_response(crate::anthropic::response_to_sse(&message))
+            } else {
+                Json(message).into_response()
+            }
+        }
         Err((status, message)) => {
             (status, Json(crate::anthropic::error_body(&message))).into_response()
         }
@@ -694,6 +719,19 @@ mod tests {
             State(state()),
             HeaderMap::new(),
             Json(serde_json::json!({"model": "grok-4.6"})),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn a_stream_request_on_an_empty_pool_is_still_503() {
+        // Streaming must not change the empty-pool status; NewAPI treats 502
+        // as a channel fault and 503 as retryable unavailability.
+        let response = chat_completions(
+            State(state()),
+            HeaderMap::new(),
+            Json(serde_json::json!({"model": "grok-4.6", "stream": true})),
         )
         .await;
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);

@@ -110,6 +110,49 @@ pub fn response_to_anthropic(openai: &Value, model: &str) -> Value {
     })
 }
 
+/// Anthropic SSE from a complete message, so NewAPI's stream test does not
+/// have to speak a different protocol than the non-stream path.
+pub fn response_to_sse(message: &Value) -> String {
+    let text = message
+        .pointer("/content/0/text")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let mut start = message.clone();
+    if let Some(object) = start.as_object_mut() {
+        object.insert("content".into(), json!([]));
+        object.insert("stop_reason".into(), Value::Null);
+        if let Some(usage) = object.get_mut("usage").and_then(Value::as_object_mut) {
+            usage.insert("output_tokens".into(), json!(0));
+        }
+    }
+    let output_tokens = message
+        .pointer("/usage/output_tokens")
+        .cloned()
+        .unwrap_or(json!(0));
+    let stop = message
+        .get("stop_reason")
+        .cloned()
+        .unwrap_or(json!("end_turn"));
+    [
+        format!(
+            "event: message_start\ndata: {}\n\n",
+            json!({"type": "message_start", "message": start})
+        ),
+        "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n".into(),
+        format!(
+            "event: content_block_delta\ndata: {}\n\n",
+            json!({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": text}})
+        ),
+        "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n".into(),
+        format!(
+            "event: message_delta\ndata: {}\n\n",
+            json!({"type": "message_delta", "delta": {"stop_reason": stop, "stop_sequence": Value::Null}, "usage": {"output_tokens": output_tokens}})
+        ),
+        "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n".into(),
+    ]
+    .concat()
+}
+
 /// Anthropic's vocabulary for why generation ended.
 fn stop_reason(finish_reason: &str) -> &'static str {
     match finish_reason {
@@ -273,5 +316,21 @@ mod tests {
         let body = error_body("pool empty");
         assert_eq!(body["type"], "error");
         assert_eq!(body["error"]["message"], "pool empty");
+    }
+
+    #[test]
+    fn a_stream_reply_carries_the_text_in_a_delta() {
+        let message = response_to_anthropic(
+            &json!({
+                "id": "chatcmpl-1",
+                "choices": [{"message": {"content": "hello"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 2, "completion_tokens": 1},
+            }),
+            "grok-4.6",
+        );
+        let sse = response_to_sse(&message);
+        assert!(sse.contains("event: message_start"));
+        assert!(sse.contains("\"text\":\"hello\""));
+        assert!(sse.contains("event: message_stop"));
     }
 }

@@ -1,0 +1,7 @@
+# crates.io is frequently 403 / TLS-reset from this network (and from Docker).
+# rsproxy is the sparse index mirror cargo actually completes against.
+[source.crates-io]
+replace-with = "rsproxy-sparse"
+
+[source.rsproxy-sparse]
+registry = "sparse+https://rsproxy.cn/index/"

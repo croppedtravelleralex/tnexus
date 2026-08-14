@@ -441,10 +441,194 @@ impl Upstream {
             return Err(UpstreamError { status, body: text }.into());
         }
         Ok(ChatOutcome {
-            body: serde_json::from_str(&text).map_err(|err| anyhow!("bad upstream json: {err}"))?,
+            body: parse_chat_body(&text)?,
             rate_limit,
         })
     }
+}
+
+/// The Build upstream returns JSON for `stream: false` and SSE for
+/// `stream: true`. Callers of this crate always ask for JSON, but if a
+/// `stream: true` still leaks through we assemble the chunks rather than
+/// failing with "expected value at line 1 column 1" on the `data:` prefix.
+pub fn parse_chat_body(text: &str) -> Result<serde_json::Value> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow!("bad upstream json: empty body"));
+    }
+    if let Ok(value) = serde_json::from_str(trimmed) {
+        return Ok(value);
+    }
+    if looks_like_sse(trimmed) {
+        return assemble_sse(trimmed);
+    }
+    Err(anyhow!(
+        "bad upstream json: not an object (prefix={:?})",
+        truncate(trimmed, 80)
+    ))
+}
+
+fn looks_like_sse(text: &str) -> bool {
+    text.lines().any(|line| {
+        let line = line.trim_start();
+        line.starts_with("data:") || line.starts_with("event:")
+    })
+}
+
+fn assemble_sse(text: &str) -> Result<serde_json::Value> {
+    let mut content = String::new();
+    let mut id = None;
+    let mut model = None;
+    let mut finish = String::from("stop");
+    let mut usage = None;
+    let mut saw_chunk = false;
+
+    for line in text.lines() {
+        let Some(data) = line.trim_start().strip_prefix("data:") else {
+            continue;
+        };
+        let data = data.trim();
+        if data.is_empty() || data == "[DONE]" {
+            continue;
+        }
+        let chunk: serde_json::Value = serde_json::from_str(data).map_err(|err| {
+            anyhow!(
+                "bad upstream json: sse chunk: {err} (prefix={:?})",
+                truncate(data, 80)
+            )
+        })?;
+        if let Some(error) = chunk.get("error") {
+            return Err(anyhow!("upstream stream error: {error}"));
+        }
+        // A full chat.completion object stuffed into one SSE event.
+        if chunk.pointer("/choices/0/message").is_some() {
+            return Ok(chunk);
+        }
+        saw_chunk = true;
+        if id.is_none() {
+            id = chunk
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+        }
+        if model.is_none() {
+            model = chunk
+                .get("model")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+        }
+        if let Some(reported) = chunk.get("usage") {
+            usage = Some(reported.clone());
+        }
+        if let Some(piece) = chunk
+            .pointer("/choices/0/delta/content")
+            .and_then(serde_json::Value::as_str)
+        {
+            content.push_str(piece);
+        }
+        if let Some(reason) = chunk
+            .pointer("/choices/0/finish_reason")
+            .and_then(serde_json::Value::as_str)
+        {
+            if !reason.is_empty() {
+                finish = reason.to_string();
+            }
+        }
+    }
+
+    if !saw_chunk {
+        return Err(anyhow!(
+            "bad upstream json: empty sse (prefix={:?})",
+            truncate(text, 80)
+        ));
+    }
+
+    Ok(serde_json::json!({
+        "id": id.unwrap_or_else(|| "chatcmpl-grokproxy".into()),
+        "object": "chat.completion",
+        "model": model.unwrap_or_else(|| FALLBACK_MODEL.to_string()),
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": content},
+            "finish_reason": finish,
+        }],
+        "usage": usage.unwrap_or_else(|| serde_json::json!({
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        })),
+    }))
+}
+
+/// Whether the caller asked for SSE. The upstream is always called with
+/// `stream: false`; this flag only changes how we dress the reply.
+pub fn wants_stream(payload: &serde_json::Value) -> bool {
+    payload
+        .get("stream")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// The Build chat proxy answers `stream: true` with SSE (or an empty 200).
+/// We never ask it for a stream; if the client wanted one, we synthesize SSE
+/// from the complete JSON after the fact.
+pub fn disable_streaming(payload: &mut serde_json::Value) {
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("stream".into(), serde_json::Value::Bool(false));
+        object.remove("stream_options");
+    }
+}
+
+/// One-shot OpenAI SSE from a complete chat.completion body, so a streaming
+/// client (NewAPI's model test, playground) still sees `data:` events.
+pub fn completion_to_sse(body: &serde_json::Value) -> String {
+    let id = body
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("chatcmpl-grokproxy");
+    let model = body
+        .get("model")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(FALLBACK_MODEL);
+    let content = body
+        .pointer("/choices/0/message/content")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let finish = body
+        .pointer("/choices/0/finish_reason")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("stop");
+    let created = body.get("created").cloned().unwrap_or(serde_json::json!(0));
+    let usage = body.get("usage").cloned();
+
+    let first = serde_json::json!({
+        "id": id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "delta": {"role": "assistant", "content": content},
+            "finish_reason": serde_json::Value::Null,
+        }],
+    });
+    let mut last = serde_json::json!({
+        "id": id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "delta": {},
+            "finish_reason": finish,
+        }],
+    });
+    if let Some(usage) = usage {
+        last.as_object_mut()
+            .expect("object just constructed")
+            .insert("usage".into(), usage);
+    }
+    format!("data: {first}\n\ndata: {last}\n\ndata: [DONE]\n\n")
 }
 
 /// `HeaderName::from_static` panics on a bad name; this keeps startup safe.
@@ -667,5 +851,61 @@ mod tests {
             upstream.effective_proxy("http://mail-a:sticky@172.20.0.1:18100"),
             "http://mail-a:sticky@172.20.0.1:18100"
         );
+    }
+
+    #[test]
+    fn json_chat_bodies_parse_as_objects() {
+        let body = parse_chat_body(r#"{"choices":[{"message":{"content":"ping"}}]}"#).unwrap();
+        assert_eq!(body["choices"][0]["message"]["content"], "ping");
+    }
+
+    #[test]
+    fn sse_chat_bodies_are_assembled_instead_of_rejected() {
+        // This is what NewAPI's stream test used to surface as
+        // "bad upstream json: expected value at line 1 column 1".
+        let sse = concat!(
+            "data: {\"id\":\"abc\",\"model\":\"grok-4.6\",\"choices\":[{\"delta\":{\"content\":\"pi\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"ng\"},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let body = parse_chat_body(sse).unwrap();
+        assert_eq!(body["choices"][0]["message"]["content"], "ping");
+        assert_eq!(body["choices"][0]["finish_reason"], "stop");
+        assert_eq!(body["id"], "abc");
+    }
+
+    #[test]
+    fn empty_bodies_are_a_parse_error_not_a_silent_object() {
+        assert!(parse_chat_body("").is_err());
+        assert!(parse_chat_body("   \n").is_err());
+    }
+
+    #[test]
+    fn disable_streaming_strips_the_flag_newapi_sends() {
+        let mut payload = serde_json::json!({
+            "model": "grok-4.6",
+            "stream": true,
+            "stream_options": {"include_usage": true},
+        });
+        assert!(wants_stream(&payload));
+        disable_streaming(&mut payload);
+        assert_eq!(payload["stream"], false);
+        assert!(payload.get("stream_options").is_none());
+        assert!(!wants_stream(&payload));
+    }
+
+    #[test]
+    fn completion_to_sse_is_something_a_stream_client_can_read() {
+        let sse = completion_to_sse(&serde_json::json!({
+            "id": "x",
+            "model": "grok-4.6",
+            "created": 1,
+            "choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }));
+        assert!(sse.contains("data: "));
+        assert!(sse.contains("chat.completion.chunk"));
+        assert!(sse.contains("\"content\":\"hi\""));
+        assert!(sse.contains("data: [DONE]"));
     }
 }

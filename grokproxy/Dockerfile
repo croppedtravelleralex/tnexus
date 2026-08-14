@@ -9,6 +9,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends pkg-config clang cmake \
     && rm -rf /var/lib/apt/lists/*
 COPY Cargo.toml Cargo.lock ./
+COPY .cargo .cargo
 COPY src ./src
 # Same gates the (currently billing-disabled) CI job ran: tests share the
 # release artifacts with the binary so BoringSSL is only built once.

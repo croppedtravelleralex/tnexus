@@ -126,4 +126,4 @@ bash deploy/panda/deploy.sh rollback # 回滚上一版
 - **Web SSO 账号只入库和调度，chat 路径未实现。** grok.com 的 Web 接口需要请求
   签名（statsig / 指纹），那是独立的一大块；当前 `provider=web` 的号可以存、可以
   在状态页看到，但 `/v1/chat/completions` 只走 Build 通道。
-- 流式响应（`stream: true`）目前按非流式转发。
+- 流式响应（`stream: true`）：上游仍按非流式取完整 JSON，再包装成 SSE 回给 NewAPI / 客户端。直接把 `stream: true` 交给 cli-chat-proxy 会得到空 body 或 `data:` 前缀， grokProxy 解析失败后 NewAPI 看到 502 `bad upstream json: expected value at line 1 column 1`。
