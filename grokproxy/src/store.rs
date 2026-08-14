@@ -320,6 +320,29 @@ impl Store {
         Ok(n as usize)
     }
 
+    /// Drop accounts that cannot serve and never will: revoked credentials,
+    /// chat-denied entitlements, and Web rows whose Build sibling is gone.
+    /// Returns how many rows were removed.
+    pub fn purge_unusable(&self) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let terminal = conn.execute(
+            "DELETE FROM accounts WHERE health IN ('needs_reauth', 'forbidden')",
+            [],
+        )?;
+        let orphans = conn.execute(
+            "DELETE FROM accounts
+              WHERE provider = 'web'
+                AND NOT EXISTS (
+                  SELECT 1 FROM accounts b
+                   WHERE b.provider = 'build'
+                     AND b.email = accounts.email
+                     AND b.health IN ('active', 'cooling')
+                )",
+            [],
+        )?;
+        Ok(terminal + orphans)
+    }
+
     pub fn list(&self, provider: Option<Provider>) -> Result<Vec<Account>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -1297,5 +1320,86 @@ mod tests {
         assert_eq!(found[0].email, "keep@b.c");
         assert_eq!(found[0].sso_token, "sso-keep-token");
         assert_eq!(found[0].proxy_url, "http://u:p@host:1");
+    }
+
+    #[test]
+    fn purge_drops_terminal_accounts_and_orphan_web() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .import(
+                Some(Provider::Build),
+                &[
+                    build_item("live@b.c", "r-live"),
+                    build_item("dead@b.c", "r-dead"),
+                    build_item("denied@b.c", "r-denied"),
+                ],
+                1,
+            )
+            .unwrap();
+        store
+            .import(
+                Some(Provider::Web),
+                &[
+                    serde_json::from_value(serde_json::json!({
+                        "email": "live@b.c",
+                        "sso_token": "sso-live-token"
+                    }))
+                    .unwrap(),
+                    serde_json::from_value(serde_json::json!({
+                        "email": "dead@b.c",
+                        "sso_token": "sso-dead-token"
+                    }))
+                    .unwrap(),
+                    serde_json::from_value(serde_json::json!({
+                        "email": "only-web@b.c",
+                        "sso_token": "sso-orphan-token"
+                    }))
+                    .unwrap(),
+                ],
+                1,
+            )
+            .unwrap();
+        let by_email = |email: &str, provider: Provider| {
+            store
+                .list(Some(provider))
+                .unwrap()
+                .into_iter()
+                .find(|a| a.email == email)
+                .unwrap()
+        };
+        store
+            .mark_health(
+                by_email("dead@b.c", Provider::Build).id,
+                Health::NeedsReauth,
+                0,
+                "revoked",
+                2,
+            )
+            .unwrap();
+        store
+            .mark_health(
+                by_email("denied@b.c", Provider::Build).id,
+                Health::Forbidden,
+                0,
+                "permission-denied",
+                2,
+            )
+            .unwrap();
+
+        assert_eq!(store.purge_unusable().unwrap(), 4);
+        let build: Vec<_> = store
+            .list(Some(Provider::Build))
+            .unwrap()
+            .into_iter()
+            .map(|a| a.email)
+            .collect();
+        let web: Vec<_> = store
+            .list(Some(Provider::Web))
+            .unwrap()
+            .into_iter()
+            .map(|a| a.email)
+            .collect();
+        assert_eq!(build, vec!["live@b.c"]);
+        assert_eq!(web, vec!["live@b.c"]);
     }
 }

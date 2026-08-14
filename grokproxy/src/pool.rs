@@ -316,9 +316,7 @@ impl Pool {
             .store
             .list(Some(Provider::Build))?
             .into_iter()
-            // Terminal and still-cooling accounts teach the sweep nothing and
-            // steal the chat-probe budget from accounts that can still serve.
-            .filter(|account| account.is_available(now))
+            .filter(|account| probe_eligible(account, probe, now))
             .collect();
         // Unmeasured first, then tokens about to expire, then least recently
         // used. Re-probing a measured live account teaches nothing.
@@ -380,6 +378,16 @@ impl Pool {
         Ok(report)
     }
 
+    /// Remove accounts that cannot serve. The in-memory ready queue is dropped
+    /// so the next request refills from whatever is still in the store.
+    pub fn purge_unusable(&self) -> Result<usize> {
+        let deleted = self.store.purge_unusable()?;
+        if deleted > 0 {
+            self.ready.lock().unwrap().queue.clear();
+        }
+        Ok(deleted)
+    }
+
     /// Models advertised across the pool, newest first.
     ///
     /// Served from the last observed value per account so `/v1/models` stays
@@ -406,6 +414,22 @@ impl Pool {
             .iter()
             .filter(|account| account.is_available(now))
             .count())
+    }
+}
+
+fn probe_eligible(account: &Account, probe: Option<Probe>, now: i64) -> bool {
+    if !account.is_available(now) {
+        return false;
+    }
+    let unmeasured = account.limit_tokens <= 0 || account.verified_at == 0;
+    match probe {
+        // Quota discovery: never spend a measured account's budget proving
+        // what we already know.
+        Some(Probe::Chat) => unmeasured,
+        // Keepalive: skip unmeasured accounts that still have a live access
+        // token; the measure loop chats those instead.
+        Some(Probe::Token) => !unmeasured || account.needs_refresh(now, REFRESH_SKEW_SECS),
+        Some(Probe::Models) | None => true,
     }
 }
 
@@ -823,5 +847,33 @@ mod tests {
         let pool = pool(store);
         let report = pool.probe_pool(None, 200, 1).await.unwrap();
         assert_eq!(report.checked, 0);
+    }
+
+    #[test]
+    fn chat_probes_skip_accounts_we_already_measured() {
+        let now = 10_000;
+        let measured = Account {
+            limit_tokens: 1_000_000,
+            verified_at: now,
+            provider: Provider::Build,
+            health: Health::Active,
+            ..Default::default()
+        };
+        let unknown = Account {
+            limit_tokens: -1,
+            verified_at: 0,
+            provider: Provider::Build,
+            health: Health::Active,
+            access_token: "a".into(),
+            expires_at: now + 100_000,
+            ..Default::default()
+        };
+        assert!(!probe_eligible(&measured, Some(Probe::Chat), now));
+        assert!(probe_eligible(&unknown, Some(Probe::Chat), now));
+        assert!(probe_eligible(&measured, Some(Probe::Token), now));
+        assert!(
+            !probe_eligible(&unknown, Some(Probe::Token), now),
+            "a live unmeasured token is the measure loop's job, not keepalive"
+        );
     }
 }

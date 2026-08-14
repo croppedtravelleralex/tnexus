@@ -132,9 +132,9 @@
     <span class="muted" id="poolLine">—</span>
     <div class="spacer"></div>
     <button id="btnRefresh">刷新</button>
-    <button id="btnSweep" title="只体检可调度号：刷新 token，把已吊销的号移出调度">体检</button>
-    <button id="btnQuota" title="对可调度未探测号真发一次 chat，补额度">额度探测</button>
-    <button id="btnRemint" title="用同邮箱 Web SSO 给需重新授权的 Build 号重新换票">重新授权</button>
+    <button id="btnSweep" title="只刷新已探测号的 token，把已吊销的号删掉">体检</button>
+    <button id="btnQuota" title="对可调度未探测号真发一次 chat，补额度；禁聊号会删掉">额度探测</button>
+    <button id="btnPurge" title="删除需重新授权、禁聊、以及没有可用 Build 的 Web 号">清理死号</button>
     <button id="btnLogout">退出</button>
   </header>
 
@@ -218,7 +218,7 @@ const NOTE = {
   build: '总可用额度 = 可调度号上已确认的剩余 + 尚未探测的<strong>可调度</strong>号按典型授权估算。'
        + '需重新授权 / 禁聊的号不计入探测，也不会进调度。'
        + '上游 chat 响应头里的额度<b>不会递减</b>，所以已确认剩余用「授权 − 本地累计已用」计算。'
-       + '点「额度探测」会真发一次 chat；点「重新授权」会用同邮箱 Web SSO 给死号重新换 Build 票。',
+       + '点「额度探测」会真发一次 chat；禁聊 / 吊销的号会自动删掉。',
   web:  'Web 号走 grok.com 的 SSO cookie，<b>没有 token 授权额度这一说</b>，'
        + '上游按对话次数在自己的窗口内限流，因此这里不显示剩余额度，只统计实际用量。',
 };
@@ -444,8 +444,21 @@ $('btnSweep').onclick = (e) =>
   runJob(e.currentTarget, '体检', '/api/v1/sweep?limit=200&concurrency=8');
 $('btnQuota').onclick = (e) =>
   runJob(e.currentTarget, '额度探测', '/api/v1/quota?limit=80&concurrency=8');
-$('btnRemint').onclick = (e) =>
-  runJob(e.currentTarget, '重新授权', '/api/v1/remint?limit=12&concurrency=3');
+$('btnPurge').onclick = async (e) => {
+  const button = e.currentTarget;
+  const original = button.textContent;
+  button.disabled = true;
+  try {
+    const data = await api('/api/v1/purge', { method: 'POST' });
+    toast('已删除 ' + (data.deleted || 0) + ' 个不能用的号', 'ok');
+    await refresh();
+  } catch (err) {
+    toast('清理失败：' + (err.message || err), 'err');
+  } finally {
+    button.disabled = false;
+    button.textContent = original;
+  }
+};
 
 $('search').oninput = (e) => {
   clearTimeout(searchTimer);

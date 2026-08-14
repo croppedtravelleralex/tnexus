@@ -39,6 +39,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/v1/quota", post(quota))
         .route("/api/v1/mint", post(mint))
         .route("/api/v1/remint", post(remint))
+        .route("/api/v1/purge", post(purge))
         .with_state(state)
 }
 
@@ -386,14 +387,13 @@ struct SweepQuery {
     concurrency: Option<usize>,
 }
 
-/// Keep-alive pass: the cheapest probe that still teaches us something about
-/// each account, so a routine sweep does not spend the pool's own budget.
+/// Token keepalive: refresh measured accounts without spending their budget.
 async fn sweep(
     State(state): State<Shared>,
     headers: HeaderMap,
     Query(query): Query<SweepQuery>,
 ) -> Response {
-    run_probe(state, headers, query, None).await
+    run_probe(state, headers, query, Some(crate::probe::Probe::Token)).await
 }
 
 /// Chat-probe the pool: which accounts can actually generate right now, and
@@ -424,7 +424,10 @@ async fn run_probe(
         )
         .await
     {
-        Ok(report) => Json(json!({"ok": true, "report": report})).into_response(),
+        Ok(report) => {
+            let purged = state.pool.purge_unusable().unwrap_or(0);
+            Json(json!({"ok": true, "report": report, "purged": purged})).into_response()
+        }
         Err(err) => upstream_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
     }
 }
@@ -448,6 +451,17 @@ async fn remint(
     .await
     {
         Ok(report) => Json(json!({"ok": true, "report": report})).into_response(),
+        Err(err) => upstream_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
+}
+
+/// Drop revoked / chat-denied accounts and Web rows with no usable Build.
+async fn purge(State(state): State<Shared>, headers: HeaderMap) -> Response {
+    if !Config::authorizes(&state.config.admin_key, bearer(&headers)) {
+        return deny();
+    }
+    match state.pool.purge_unusable() {
+        Ok(deleted) => Json(json!({"ok": true, "deleted": deleted})).into_response(),
         Err(err) => upstream_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
     }
 }
