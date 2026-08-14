@@ -335,8 +335,9 @@ pub fn extract_image_urls(body: &str) -> Vec<String> {
     static RE_URL: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
     static RE_PATH: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
     let re_url = RE_URL.get_or_init(|| Regex::new(r#""imageUrl"\s*:\s*"([^"]+)""#).expect("re"));
-    let re_path =
-        RE_PATH.get_or_init(|| Regex::new(r"users/[^\"\s]+/generated/[^\"\s]+").expect("re"));
+    let re_path = RE_PATH.get_or_init(|| {
+        Regex::new(r#"users/[^\s"]+/generated/[^\s"]+"#).expect("re")
+    });
     let mut out = Vec::new();
     for cap in re_url.captures_iter(body) {
         if let Some(m) = cap.get(1) {
