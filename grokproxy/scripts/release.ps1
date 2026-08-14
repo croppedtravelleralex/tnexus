@@ -31,6 +31,8 @@ finally {
 Write-Host "`n=== git push (Windows side) ===" -ForegroundColor Cyan
 $pushed = $false
 foreach ($attempt in 1..5) {
+    git -C $repo -c http.sslBackend=openssl -c http.proxy=http://127.0.0.1:7897 push origin main
+    if ($LASTEXITCODE -eq 0) { $pushed = $true; break }
     git -C $repo -c http.sslBackend=openssl push origin main
     if ($LASTEXITCODE -eq 0) { $pushed = $true; break }
     Write-Host "push attempt $attempt failed, retrying..." -ForegroundColor Yellow
