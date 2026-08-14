@@ -106,8 +106,12 @@ impl HttpDirectClient {
         account_id: Option<i64>,
     ) -> Result<Vec<String>, ProviderError> {
         // Lite 走普通对话接口，payload 没有比例字段，只能把画幅写进提示词。
-        let prompt = apply_aspect_hint(prompt, aspect_ratio);
-        let prompt = prompt.as_str();
+        let hinted = apply_aspect_hint(prompt, aspect_ratio);
+        let message = if hinted.trim_start().starts_with("Drawing:") {
+            hinted
+        } else {
+            format!("Drawing: {}", hinted.trim())
+        };
         let payload = json!({
             "collectionIds": [],
             "disabledConnectorIds": [],
@@ -132,7 +136,7 @@ impl HttpDirectClient {
             "imageAttachments": [],
             "imageGenerationCount": n.max(1).min(4),
             "isAsyncChat": false,
-            "message": prompt,
+            "message": message,
             "modeId": "fast",
             "responseMetadata": {},
             "returnImageBytes": false,
@@ -328,11 +332,27 @@ fn request_ws_msg(prompt: &str, aspect_ratio: &str, generations: usize) -> Strin
 }
 
 pub fn extract_image_urls(body: &str) -> Vec<String> {
-    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-    let re = RE.get_or_init(|| Regex::new(r#""imageUrl"\s*:\s*"([^"]+)""#).expect("re"));
-    re.captures_iter(body)
-        .filter_map(|c| c.get(1).map(|m| m.as_str().to_string()))
-        .collect()
+    static RE_URL: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    static RE_PATH: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let re_url = RE_URL.get_or_init(|| Regex::new(r#""imageUrl"\s*:\s*"([^"]+)""#).expect("re"));
+    let re_path =
+        RE_PATH.get_or_init(|| Regex::new(r"users/[^\"\s]+/generated/[^\"\s]+").expect("re"));
+    let mut out = Vec::new();
+    for cap in re_url.captures_iter(body) {
+        if let Some(m) = cap.get(1) {
+            let u = m.as_str();
+            if !u.is_empty() && !out.contains(&u.to_string()) {
+                out.push(u.to_string());
+            }
+        }
+    }
+    for m in re_path.find_iter(body) {
+        let u = m.as_str();
+        if !out.contains(&u.to_string()) {
+            out.push(u.to_string());
+        }
+    }
+    out
 }
 
 async fn connect_imagine_ws(
@@ -446,6 +466,8 @@ mod tests {
         let urls = extract_image_urls(body);
         assert_eq!(urls.len(), 2);
         assert_eq!(urls[0], "https://x/a.jpg");
+        let path_body = r#"{"path":"users/u1/generated/img.png"}"#;
+        assert!(extract_image_urls(path_body).contains(&"users/u1/generated/img.png".to_string()));
     }
 
     #[test]

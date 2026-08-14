@@ -41,6 +41,7 @@ services:
       RUST_LOG: ${GROK_LOG:-info}
     volumes:
       - ${GROK_PURE_HTTP_KEYS_DIR:-/opt/tnexus/pure_http_keys}:${GROK_PURE_HTTP_KEYS_DIR:-/opt/tnexus/pure_http_keys}:ro
+      - ${GROK2API_PROXY_FILE:-/opt/tnexus/webshare_proxies.txt}:${GROK2API_PROXY_FILE:-/opt/tnexus/webshare_proxies.txt}:ro
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://127.0.0.1:8000/readyz"]
       interval: 30s
