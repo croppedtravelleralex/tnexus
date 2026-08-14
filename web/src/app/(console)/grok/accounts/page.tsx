@@ -57,32 +57,28 @@ export default function GrokAccountsPage() {
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
 
   const refreshPageQuota = useCallback(async () => {
-    if (!token || items.length === 0) return;
-    const settled = await Promise.allSettled(
-      items.map((a) => grokAdminApi.getQuotaWindows(token, a.id)),
-    );
-    setQuotaByAccount((prev) => {
-      const next: Record<number, GrokQuotaWindow | null> = { ...prev };
-      items.forEach((a, i) => {
-        if (settled[i].status === "fulfilled") {
-          next[a.id] = pickDisplayQuotaWindow((settled[i] as PromiseFulfilledResult<GrokQuotaWindow[]>).value);
-        }
+    if (!token) return;
+    try {
+      const data = await grokAdminApi.listAccounts(token, {
+        page,
+        pageSize,
+        provider: filter.provider || undefined,
+        enabled: filter.enabled || undefined,
+        authStatus: filter.authStatus || undefined,
       });
-      return next;
-    });
-    setQuotaErrorByAccount((prev) => {
-      const next: Record<number, string> = { ...prev };
-      items.forEach((a, i) => {
-        if (settled[i].status === "rejected") {
-          const reason = (settled[i] as PromiseRejectedResult).reason;
-          next[a.id] = reason instanceof Error ? reason.message : String(reason);
-        } else {
-          delete next[a.id];
-        }
-      });
-      return next;
-    });
-  }, [token, items]);
+      const rows = data.items ?? [];
+      setItems(rows);
+      setTotal(data.total ?? 0);
+      const nextQuota: Record<number, GrokQuotaWindow | null> = {};
+      for (const a of rows) {
+        nextQuota[a.id] = pickDisplayQuotaWindow(a.quota_windows ?? []);
+      }
+      setQuotaByAccount(nextQuota);
+      setQuotaErrorByAccount({});
+    } catch {
+      // 后台轮询失败不打断当前页
+    }
+  }, [token, page, pageSize, filter]);
 
   const load = useCallback(
     async (pageNum: number, currentToken: string, size: number, f: PoolFilter) => {
@@ -103,31 +99,12 @@ export default function GrokAccountsPage() {
         if (data.page_size && data.page_size !== size) {
           setPageSize(data.page_size);
         }
-
-        const settled = await Promise.allSettled(
-          rows.map((a) => grokAdminApi.getQuotaWindows(currentToken, a.id)),
-        );
-        setQuotaByAccount((prev) => {
-          const next: Record<number, GrokQuotaWindow | null> = { ...prev };
-          rows.forEach((a, i) => {
-            if (settled[i].status === "fulfilled") {
-              next[a.id] = pickDisplayQuotaWindow((settled[i] as PromiseFulfilledResult<GrokQuotaWindow[]>).value);
-            }
-          });
-          return next;
-        });
-        setQuotaErrorByAccount((prev) => {
-          const next: Record<number, string> = { ...prev };
-          rows.forEach((a, i) => {
-            if (settled[i].status === "rejected") {
-              const reason = (settled[i] as PromiseRejectedResult).reason;
-              next[a.id] = reason instanceof Error ? reason.message : String(reason);
-            } else {
-              delete next[a.id];
-            }
-          });
-          return next;
-        });
+        const nextQuota: Record<number, GrokQuotaWindow | null> = {};
+        for (const a of rows) {
+          nextQuota[a.id] = pickDisplayQuotaWindow(a.quota_windows ?? []);
+        }
+        setQuotaByAccount(nextQuota);
+        setQuotaErrorByAccount({});
       } catch (err) {
         if (err instanceof GrokAdminAuthError) {
           clearGrokAdminToken();
@@ -189,10 +166,10 @@ export default function GrokAccountsPage() {
   }, [token, pageSize, filter.provider, filter.enabled, filter.authStatus, load]);
 
   useEffect(() => {
-    if (!token || items.length === 0) return;
+    if (!token) return;
     const timer = setInterval(() => void refreshPageQuota(), 60_000);
     return () => clearInterval(timer);
-  }, [token, items, refreshPageQuota]);
+  }, [token, refreshPageQuota]);
 
   const goPage = (next: number) => {
     if (!token || next < 1 || next > pageCount) return;

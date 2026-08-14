@@ -79,15 +79,31 @@ export function isHistoricalError(cooldownUntil: string | null, now = Date.now()
   return formatCooldown(cooldownUntil, now).kind === "past";
 }
 
+/** 额度同步失败曾被误写成「无可用 grok_web」；启用账号仍可调度。 */
+export function formatPoolLastError(error: string | null): {
+  text: string;
+  tone: "none" | "quota" | "current";
+} {
+  if (!error) return { text: "", tone: "none" };
+  const quotaNoise =
+    /web dispatch probe|no available grok_web|当前没有可用的 grok_web|额度同步失败/i.test(error);
+  if (quotaNoise) {
+    return { text: "额度同步失败（账号仍可调度）", tone: "quota" };
+  }
+  return { text: error, tone: "current" };
+}
+
 function LastErrorCell({ error, cooldownUntil }: { error: string | null; cooldownUntil: string | null }) {
-  if (!error) return <span className="text-[var(--neo-muted)]">—</span>;
+  const formatted = formatPoolLastError(error);
+  if (formatted.tone === "none") return <span className="text-[var(--neo-muted)]">—</span>;
   const historical = isHistoricalError(cooldownUntil);
+  const muted = historical || formatted.tone === "quota";
   return (
     <span
-      className={historical ? "text-[var(--neo-muted)]" : "text-rose-600"}
-      title={historical ? `历史残留（冷却已过）：${error}` : error}
+      className={muted ? "text-[var(--neo-muted)]" : "text-rose-600"}
+      title={historical ? `历史残留（冷却已过）：${error}` : error ?? ""}
     >
-      {historical ? `历史：${error}` : error}
+      {historical ? `历史：${formatted.text}` : formatted.text}
     </span>
   );
 }

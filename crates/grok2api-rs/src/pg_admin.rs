@@ -12,7 +12,7 @@
 //! 注：`grok-storage` 的行映射辅助均为 `pub(crate)`，本 crate 无法复用，故此处
 //! 内联最小映射（provider / auth_status / quota_source / model_status 字符串 ↔ 枚举）。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -209,6 +209,45 @@ impl PgAdminStore {
             .map_err(admin_err)?;
         row.as_ref().map(map_account_row).transpose()
     }
+
+    /// 一次查出本页全部额度窗口，避免列表接口后再打 200 次 `/quota`。
+    async fn attach_quota_windows(&self, items: &mut [AccountView]) -> AdminResult<()> {
+        if items.is_empty() {
+            return Ok(());
+        }
+        let ids: Vec<i64> = items.iter().map(|a| a.id).collect();
+        let rows = sqlx::query(
+            "SELECT account_id, mode, remaining::bigint AS remaining, total::bigint AS total, \
+             reset_at, synced_at, source, updated_at \
+             FROM grok_quota_windows WHERE account_id = ANY($1) ORDER BY account_id, mode ASC",
+        )
+        .bind(&ids)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(admin_err)?;
+        let mut by_id: HashMap<i64, Vec<QuotaWindow>> = HashMap::new();
+        for row in &rows {
+            let window = QuotaWindow {
+                account_id: row.try_get("account_id").map_err(admin_err)?,
+                mode: row.try_get("mode").map_err(admin_err)?,
+                remaining: sql_i64(row, "remaining")?,
+                total: sql_i64(row, "total")?,
+                reset_at: row.try_get("reset_at").map_err(admin_err)?,
+                synced_at: row.try_get("synced_at").map_err(admin_err)?,
+                source: quota_source_from_str(
+                    &row.try_get::<String, _>("source").map_err(admin_err)?,
+                ),
+                updated_at: row.try_get("updated_at").map_err(admin_err)?,
+            };
+            by_id.entry(window.account_id).or_default().push(window);
+        }
+        for item in items.iter_mut() {
+            if let Some(windows) = by_id.remove(&item.id) {
+                item.quota_windows = windows;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -243,6 +282,8 @@ impl AdminStore for PgAdminStore {
             .iter()
             .map(map_account_row)
             .collect::<AdminResult<Vec<_>>>()?;
+        let mut views: Vec<AccountView> = items.iter().map(AccountView::from).collect();
+        self.attach_quota_windows(&mut views).await?;
 
         let count_sql = "SELECT count(*) AS total FROM grok_accounts \
              WHERE ($1::text IS NULL OR provider = $1) \
@@ -258,7 +299,7 @@ impl AdminStore for PgAdminStore {
         let total: i64 = row.try_get("total").map_err(admin_err)?;
 
         Ok(AccountPage {
-            items: items.into_iter().map(|a| AccountView::from(&a)).collect(),
+            items: views,
             page,
             page_size,
             total,

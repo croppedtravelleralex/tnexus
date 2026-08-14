@@ -115,8 +115,8 @@ pub enum ProviderError {
     #[error("invalid request: {0}")]
     InvalidRequest(String),
 
-    /// 号池没有可用账号（空池或全部冷却）。
-    #[error("no available grok_web account in pool")]
+    /// 号池没有可用账号（空池或全部冷却）。仅用于选号失败，不要写到单个账号 last_error。
+    #[error("当前没有可用的 grok_web 账号（空池或全部冷却）")]
     NoAvailableAccount,
 
     /// 未能在 lease 时限内获得 egress 并发槽位。gateway 应映射 429/502。

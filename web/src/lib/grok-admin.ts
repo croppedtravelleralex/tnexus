@@ -45,6 +45,7 @@ export type GrokAccountView = {
   last_error: string | null;
   created_at: string | null;
   updated_at: string | null;
+  quota_windows?: GrokQuotaWindow[];
 };
 
 /** 分页列表（对齐 grok-admin `AccountPage`） */

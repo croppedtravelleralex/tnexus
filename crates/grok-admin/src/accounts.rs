@@ -30,6 +30,9 @@ pub struct AccountView {
     pub last_error: Option<String>,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
+    /// 列表一次带出额度窗口，避免前端按账号 N+1 打 `/quota`。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quota_windows: Vec<QuotaWindow>,
 }
 
 impl From<&Account> for AccountView {
@@ -48,6 +51,7 @@ impl From<&Account> for AccountView {
             last_error: account.last_error.clone(),
             created_at: account.created_at,
             updated_at: account.updated_at,
+            quota_windows: Vec::new(),
         }
     }
 }

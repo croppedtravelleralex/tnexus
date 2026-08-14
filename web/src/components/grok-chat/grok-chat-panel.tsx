@@ -11,6 +11,7 @@ import { ChatImageThumb } from "@/components/chat/chat-image-thumb";
 import { ChatMessageContent } from "@/components/chat/chat-message-content";
 import { ImageLightbox, type LightboxImage } from "@/components/image-lightbox";
 import { estimateBase64Bytes, formatBytes } from "@/lib/chat-conversations";
+import { formatReplyDuration, looksLikeImaginePrompt } from "@/lib/grok-text";
 
 /** Grok 对话模型选项（gateway 非 OCR 时会归一化到上游 grok-chat；下拉保留可读性/未来透传）。 */
 export const GROK_CHAT_MODELS = [
@@ -31,6 +32,8 @@ interface ChatMessage {
   images?: string[];
   /** data URL 附件（纯 HTTP OCR 默认走 upload-file） */
   attachments?: string[];
+  /** 助手回复耗时（毫秒） */
+  durationMs?: number;
 }
 
 let nextId = 1;
@@ -52,6 +55,7 @@ export type GrokChatPanelProps = {
     error?: boolean;
     images?: string[];
     attachments?: string[];
+    durationMs?: number;
   }>;
   /** 消息或模型变更后回调（供 workbench 写 conversations API） */
   onPersist?: (state: {
@@ -99,6 +103,20 @@ export function GrokChatPanel({
   useEffect(() => {
     imaginingRef.current = imagining;
   }, [imagining]);
+  const [liveMs, setLiveMs] = useState(0);
+  const busyStartedAt = useRef<number | null>(null);
+  useEffect(() => {
+    if (!sending && !imagining) {
+      busyStartedAt.current = null;
+      setLiveMs(0);
+      return;
+    }
+    if (busyStartedAt.current == null) busyStartedAt.current = Date.now();
+    const id = window.setInterval(() => {
+      if (busyStartedAt.current != null) setLiveMs(Date.now() - busyStartedAt.current);
+    }, 200);
+    return () => window.clearInterval(id);
+  }, [sending, imagining]);
 
   const hydrateFromInitial = useCallback(() => {
     setModel(initialModel);
@@ -110,6 +128,7 @@ export function GrokChatPanel({
         error: m.error,
         images: m.images,
         attachments: m.attachments,
+        durationMs: typeof m.durationMs === "number" ? m.durationMs : undefined,
       })),
     );
     setError("");
@@ -138,6 +157,19 @@ export function GrokChatPanel({
         return next;
       }
       return [...prev, { id: nextId++, role: "assistant" as const, content, error: isError }];
+    });
+  }, []);
+
+  const stampDuration = useCallback((ms: number) => {
+    setMessages((prev) => {
+      const next = [...prev];
+      for (let i = next.length - 1; i >= 0; i -= 1) {
+        if (next[i].role === "assistant") {
+          next[i] = { ...next[i], durationMs: ms };
+          break;
+        }
+      }
+      return next;
     });
   }, []);
 
@@ -175,10 +207,59 @@ export function GrokChatPanel({
     [model, appendAssistant, buildUpstreamMessages],
   );
 
+  const runImagine = useCallback(
+    async (text: string) => {
+      if (!text || sendingRef.current || imaginingRef.current) return;
+      setError("");
+      setMessages((prev) => [...prev, makeMessage("user", text)]);
+      setImagining(true);
+      const t0 = Date.now();
+      try {
+        const items = await grokApi.generateImage(text, imageCount, { aspectRatio });
+        if (items.length === 0) throw new Error("生图返回空结果");
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: nextId++,
+            role: "assistant" as const,
+            content: `已生成 ${items.length} 张图片`,
+            images: items,
+            durationMs: Date.now() - t0,
+          },
+        ]);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        setError(msg);
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: nextId++,
+            role: "assistant" as const,
+            content: msg,
+            error: true,
+            durationMs: Date.now() - t0,
+          },
+        ]);
+      } finally {
+        setImagining(false);
+        setMessages((prev) => {
+          persistNow(prev);
+          return prev;
+        });
+      }
+    },
+    [imageCount, aspectRatio, persistNow],
+  );
+
   const send = useCallback(async () => {
     const text = draft.trim();
-    if (!text || sendingRef.current) return;
+    if (!text || sendingRef.current || imaginingRef.current) return;
     const attachments = [...pendingImages];
+    if (attachments.length === 0 && looksLikeImaginePrompt(text)) {
+      setDraft("");
+      await runImagine(text);
+      return;
+    }
     setDraft("");
     setPendingImages([]);
     setError("");
@@ -186,6 +267,7 @@ export function GrokChatPanel({
     setMessages((prev) => [...prev, userMsg]);
     setSending(true);
     setMessages((prev) => [...prev, makeMessage("assistant", "")]);
+    const t0 = Date.now();
     try {
       const history = [...messages, userMsg];
       await runCompletion(history);
@@ -194,13 +276,14 @@ export function GrokChatPanel({
       setError(msg);
       appendAssistant(msg, true);
     } finally {
+      stampDuration(Date.now() - t0);
       setSending(false);
       setMessages((prev) => {
         persistNow(prev);
         return prev;
       });
     }
-  }, [draft, messages, pendingImages, appendAssistant, persistNow, runCompletion]);
+  }, [draft, messages, pendingImages, appendAssistant, persistNow, runCompletion, runImagine, stampDuration]);
 
   useEffect(() => {
     if (resendIndex == null || sendingRef.current) return;
@@ -212,6 +295,7 @@ export function GrokChatPanel({
     const history = messages.slice(0, resendIndex + 1);
     setSending(true);
     setMessages([...history, makeMessage("assistant", "")]);
+    const t0 = Date.now();
     void (async () => {
       try {
         await runCompletion(history);
@@ -220,6 +304,7 @@ export function GrokChatPanel({
         setError(msg);
         appendAssistant(msg, true);
       } finally {
+        stampDuration(Date.now() - t0);
         setSending(false);
         setMessages((prev) => {
           persistNow(prev);
@@ -228,7 +313,7 @@ export function GrokChatPanel({
         onResendDone?.();
       }
     })();
-  }, [resendIndex, messages, runCompletion, appendAssistant, persistNow, onResendDone]);
+  }, [resendIndex, messages, runCompletion, appendAssistant, persistNow, onResendDone, stampDuration]);
 
   const clear = useCallback(() => {
     if (sendingRef.current || imaginingRef.current) return;
@@ -260,38 +345,10 @@ export function GrokChatPanel({
   /** 生图：prompt 取 draft，结果以独立 assistant 消息呈现（不走流式）。 */
   const imagine = useCallback(async () => {
     const text = draft.trim();
-    if (!text || sendingRef.current || imaginingRef.current) return;
+    if (!text) return;
     setDraft("");
-    setError("");
-    setMessages((prev) => [...prev, makeMessage("user", text)]);
-    setImagining(true);
-    try {
-      const items = await grokApi.generateImage(text, imageCount, { aspectRatio });
-      if (items.length === 0) throw new Error("生图返回空结果");
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: nextId++,
-          role: "assistant" as const,
-          content: `已生成 ${items.length} 张图片`,
-          images: items,
-        },
-      ]);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setError(msg);
-      setMessages((prev) => [
-        ...prev,
-        { id: nextId++, role: "assistant" as const, content: msg, error: true },
-      ]);
-    } finally {
-      setImagining(false);
-      setMessages((prev) => {
-        persistNow(prev);
-        return prev;
-      });
-    }
-  }, [draft, imageCount, aspectRatio, persistNow]);
+    await runImagine(text);
+  }, [draft, runImagine]);
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -419,19 +476,24 @@ export function GrokChatPanel({
                       从此重发
                     </button>
                   )}
+                  {m.role === "assistant" && m.durationMs != null && m.durationMs >= 0 && (
+                    <p className="mt-1 text-[11px] text-[var(--neo-muted)]">
+                      耗时 {formatReplyDuration(m.durationMs)}
+                    </p>
+                  )}
                 </div>
               </div>
             ))}
             {sending && (
               <div className="flex items-center gap-2 pl-10 text-sm text-[var(--neo-muted)]">
                 <Loader2 className="size-4 animate-spin" />
-                生成中…
+                生成中…{liveMs > 0 ? ` ${formatReplyDuration(liveMs)}` : ""}
               </div>
             )}
             {imagining && (
               <div className="flex items-center gap-2 pl-10 text-sm text-[var(--neo-muted)]">
                 <Loader2 className="size-4 animate-spin" />
-                正在生成图片…
+                正在生成图片…{liveMs > 0 ? ` ${formatReplyDuration(liveMs)}` : ""}
               </div>
             )}
           </div>
@@ -513,13 +575,15 @@ export function GrokChatPanel({
             ))}
           </select>
           <Button
-            size="icon"
+            size="sm"
+            variant="outline"
             onClick={() => void imagine()}
             disabled={sending || imagining || !draft.trim()}
             aria-label="生成图片"
-            title="生成图片（/v1/images/generations）"
+            title="调用 Grok Imagine（/v1/images/generations）"
           >
             {imagining ? <Loader2 className="size-4 animate-spin" /> : <ImageIcon className="size-4" />}
+            生图
           </Button>
           <Button
             size="icon"
@@ -541,8 +605,8 @@ export function GrokChatPanel({
           <p className="mx-auto mt-2 max-w-3xl text-xs text-rose-600">{error}</p>
         )}
         <p className="mx-auto mt-2 max-w-3xl text-[11px] text-[var(--neo-muted)]">
-          模型下拉为文本对话通道，不做识图；提取图片文字请用工作台的 OCR 面板。
-          请求由 TNexus 代理转发到 Grok，无需单独配置密钥。
+          输入「生成一张…图」或点「生图」走 Imagine；普通回车仍是文本对话。
+          提取图片文字请用工作台 OCR。请求由 TNexus 代理转发，无需单独配密钥。
         </p>
       </div>
     </div>

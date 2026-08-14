@@ -242,3 +242,50 @@ test("leave markdown headings and lists", () => {
   const s = "### 其他方面\n- **速度**";
   assert.equal(stripGrokMarkup(s), s);
 });
+
+function formatPoolLastError(error) {
+  if (!error) return { text: "", tone: "none" };
+  const quotaNoise =
+    /web dispatch probe|no available grok_web|当前没有可用的 grok_web|额度同步失败/i.test(error);
+  if (quotaNoise) return { text: "额度同步失败（账号仍可调度）", tone: "quota" };
+  return { text: error, tone: "current" };
+}
+
+test("pool last_error web dispatch probe is quota noise", () => {
+  const r = formatPoolLastError("web dispatch probe: 当前没有可用的 grok_web 账号");
+  assert.equal(r.tone, "quota");
+  assert.match(r.text, /仍可调度/);
+});
+
+test("pool last_error real failure stays current", () => {
+  const r = formatPoolLastError("Grok Web 额度接口返回 403");
+  assert.equal(r.tone, "current");
+  assert.equal(r.text, "Grok Web 额度接口返回 403");
+});
+
+function formatReplyDuration(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return "";
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const sec = ms / 1000;
+  if (sec < 10) return `${sec.toFixed(1)}s`;
+  return `${Math.round(sec)}s`;
+}
+
+test("reply duration formatting", () => {
+  assert.equal(formatReplyDuration(320), "320ms");
+  assert.equal(formatReplyDuration(1800), "1.8s");
+  assert.equal(formatReplyDuration(12300), "12s");
+});
+
+function looksLikeImaginePrompt(text) {
+  const t = text.trim();
+  if (!t) return false;
+  return /生成.{0,8}(图|图片|照片|壁纸|插画)|画一[张幅]|帮我画|imagine\b|generate (an? )?(image|picture)|draw (me |an? )/i.test(
+    t,
+  );
+}
+
+test("imagine prompt detection", () => {
+  assert.equal(looksLikeImaginePrompt("生成一张美女图片"), true);
+  assert.equal(looksLikeImaginePrompt("今天天气怎么样"), false);
+});

@@ -139,8 +139,9 @@ impl WebQuotaService {
         account_id: i64,
         err: &ProviderError,
     ) -> Result<(), sqlx::Error> {
-        let mut reason = format!("web dispatch probe: {err}");
-        reason.truncate(512);
+        let Some(reason) = quota_refresh_last_error(err) else {
+            return Ok(());
+        };
         sqlx::query("UPDATE grok_accounts SET last_error = $2, updated_at = now() WHERE id = $1")
             .bind(account_id)
             .bind(reason)
@@ -158,6 +159,15 @@ impl WebQuotaService {
         )
         .execute(&self.pool)
         .await?;
+        // 历史误把「号池空」写到单个账号上；额度同步失败也不该伪装成 dispatch 探针。
+        sqlx::query(
+            "UPDATE grok_accounts SET last_error = NULL, updated_at = now() \
+             WHERE last_error LIKE 'web dispatch probe:%' \
+                OR last_error LIKE '%no available grok_web%' \
+                OR last_error LIKE '%当前没有可用的 grok_web%'",
+        )
+        .execute(&self.pool)
+        .await?;
         sqlx::query(
             "UPDATE grok_model_states \
              SET status = 'unknown', reason = 'expired_soft_stop', updated_at = now() \
@@ -169,6 +179,16 @@ impl WebQuotaService {
         .await?;
         Ok(())
     }
+}
+
+/// 额度刷新失败写回文案。号池空不是单账号故障，不落 last_error。
+pub(crate) fn quota_refresh_last_error(err: &ProviderError) -> Option<String> {
+    if matches!(err, ProviderError::NoAvailableAccount) {
+        return None;
+    }
+    let mut reason = format!("额度同步失败: {err}");
+    reason.truncate(512);
+    Some(reason)
 }
 
 /// synced_at 为空或早于 24 小时 → 视为过期。
@@ -269,10 +289,15 @@ mod tests {
     #[test]
     fn refresh_failure_reason_keeps_403_text() {
         let err = ProviderError::Upstream("Grok Web 额度接口返回 403".into());
-        let mut reason = format!("web dispatch probe: {err}");
-        reason.truncate(512);
+        let reason = quota_refresh_last_error(&err).expect("403 应落 last_error");
         assert!(reason.contains("403"));
-        assert!(reason.contains("web dispatch probe"));
+        assert!(reason.starts_with("额度同步失败"));
+        assert!(!reason.contains("web dispatch probe"));
+    }
+
+    #[test]
+    fn refresh_failure_skips_empty_pool_error() {
+        assert!(quota_refresh_last_error(&ProviderError::NoAvailableAccount).is_none());
     }
 
     #[test]
