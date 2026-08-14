@@ -150,11 +150,18 @@ impl ChatEngine {
 
         let mut tried: Vec<i64> = Vec::new();
         let mut last_err: Option<ProviderError> = None;
+        let mut last_weak: Option<ChatOutcome> = None;
 
         for attempt in 0..self.retry_max {
             let account_id = match self.select_account_with_keys_skip(&tried).await {
                 Ok(id) => id,
-                Err(e) => return Err(last_err.unwrap_or(e)),
+                Err(e) => {
+                    let _ = ocr_gate;
+                    if let Some(o) = last_weak {
+                        return Ok(o);
+                    }
+                    return Err(last_err.unwrap_or(e));
+                }
             };
             tried.push(account_id);
 
@@ -165,8 +172,8 @@ impl ChatEngine {
                         attempt,
                         "OCR 弱识别（空/无文字），换账号重试"
                     );
-                    self.pool.dispatch_failure(account_id).await;
-                    last_err = Some(ProviderError::Upstream("weak ocr result".into()));
+                    last_weak = Some(outcome);
+                    // 弱识别不算账号硬失败，避免单账号池被冷却耗尽。
                 }
                 Ok(outcome) => {
                     let _ = ocr_gate;
@@ -183,6 +190,9 @@ impl ChatEngine {
             }
         }
         let _ = ocr_gate;
+        if let Some(o) = last_weak {
+            return Ok(o);
+        }
         Err(last_err.unwrap_or(ProviderError::NoAvailableAccount))
     }
 
