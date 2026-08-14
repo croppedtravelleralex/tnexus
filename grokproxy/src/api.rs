@@ -441,7 +441,7 @@ async fn mint(
     if !Config::authorizes(&state.config.admin_key, bearer(&headers)) {
         return deny();
     }
-    match crate::xai::mint::mint(state.pool.store(), &request).await {
+    match crate::xai::mint::mint(state.pool.store(), &request, &state.config.sticky_relay).await {
         Ok(outcome) => Json(json!({"ok": true, "account": outcome})).into_response(),
         Err(err) => {
             warn!(email = %request.email, error = %format!("{err:#}"), "mint failed");
