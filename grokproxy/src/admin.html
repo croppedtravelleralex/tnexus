@@ -132,8 +132,9 @@
     <span class="muted" id="poolLine">—</span>
     <div class="spacer"></div>
     <button id="btnRefresh">刷新</button>
-    <button id="btnSweep" title="批量刷新 token，把已吊销的号移出调度">体检</button>
-    <button id="btnQuota" title="真发一次 chat，看哪些号还有额度">额度探测</button>
+    <button id="btnSweep" title="只体检可调度号：刷新 token，把已吊销的号移出调度">体检</button>
+    <button id="btnQuota" title="对可调度未探测号真发一次 chat，补额度">额度探测</button>
+    <button id="btnRemint" title="用同邮箱 Web SSO 给需重新授权的 Build 号重新换票">重新授权</button>
     <button id="btnLogout">退出</button>
   </header>
 
@@ -214,9 +215,10 @@ function when(ts) {
 }
 
 const NOTE = {
-  build: '总可用额度 = 可调度号上已确认的剩余 + 尚未探测的号按典型授权（通常 100 万 token/号）估算。'
+  build: '总可用额度 = 可调度号上已确认的剩余 + 尚未探测的<strong>可调度</strong>号按典型授权估算。'
+       + '需重新授权 / 禁聊的号不计入探测，也不会进调度。'
        + '上游 chat 响应头里的额度<b>不会递减</b>，所以已确认剩余用「授权 − 本地累计已用」计算。'
-       + '点「额度探测」会真发一次 chat，把未探测号补成已确认。',
+       + '点「额度探测」会真发一次 chat；点「重新授权」会用同邮箱 Web SSO 给死号重新换 Build 票。',
   web:  'Web 号走 grok.com 的 SSO cookie，<b>没有 token 授权额度这一说</b>，'
        + '上游按对话次数在自己的窗口内限流，因此这里不显示剩余额度，只统计实际用量。',
 };
@@ -282,7 +284,7 @@ async function loadStats() {
         <div><span class="lab">已确认剩余</span><b>${fmt(confirmed)}</b>
           <div class="muted">${measured} 个已探测号</div></div>
         <div><span class="lab">未探测预估</span><b>${fmt(projected)}</b>
-          <div class="muted">${unmeasuredN} 个号 × ${fmt(typical)}</div></div>
+          <div class="muted">${unmeasuredN} 个可调度号 × ${fmt(typical)}</div></div>
         ${cooling > 0 ? `<div><span class="lab">冷却中</span><b>${fmt(cooling)}</b>
           <div class="muted">窗口过后再回到可调度</div></div>` : ''}
         <div><span class="lab">累计花费</span><b>$${(quota.cost_usd || 0).toFixed(2)}</b>
@@ -315,7 +317,7 @@ async function loadStats() {
 function quotaCell(a) {
   if (a.provider !== 'build') return '<span class="muted" title="Web 号没有 token 授权额度">—</span>';
   const total = a.limit_tokens;
-  if (!total) {
+  if (total == null || total <= 0) {
     return '<span class="muted" title="该号还没跑过请求，上游只在 chat 响应头里报额度；'
          + '点顶部「额度探测」可批量补上">未探测</span>';
   }
@@ -441,7 +443,9 @@ $('btnLogout').onclick = () => logout();
 $('btnSweep').onclick = (e) =>
   runJob(e.currentTarget, '体检', '/api/v1/sweep?limit=200&concurrency=8');
 $('btnQuota').onclick = (e) =>
-  runJob(e.currentTarget, '额度探测', '/api/v1/quota?limit=200&concurrency=8');
+  runJob(e.currentTarget, '额度探测', '/api/v1/quota?limit=80&concurrency=8');
+$('btnRemint').onclick = (e) =>
+  runJob(e.currentTarget, '重新授权', '/api/v1/remint?limit=12&concurrency=3');
 
 $('search').oninput = (e) => {
   clearTimeout(searchTimer);

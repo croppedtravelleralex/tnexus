@@ -29,7 +29,7 @@ services:
       # minted them; this points them at where it actually listens today.
       GROKPROXY_STICKY_RELAY: ${GROKPROXY_STICKY_RELAY:-}
       GROKPROXY_TIMEOUT_SECS: ${GROKPROXY_TIMEOUT_SECS:-120}
-      GROKPROXY_MAX_ATTEMPTS: ${GROKPROXY_MAX_ATTEMPTS:-3}
+      GROKPROXY_MAX_ATTEMPTS: ${GROKPROXY_MAX_ATTEMPTS:-10}
       RUST_LOG: ${GROKPROXY_LOG:-info}
     volumes:
       - ${GROKPROXY_DATA_DIR:-/opt/grokproxy/data}:/data

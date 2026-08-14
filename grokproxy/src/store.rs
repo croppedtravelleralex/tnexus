@@ -68,6 +68,17 @@ impl Usage {
     }
 }
 
+/// A Build account that can be revived from its sibling Web SSO.
+///
+/// The SSO value is the secret; never log this struct.
+#[derive(Clone)]
+pub struct RemintCandidate {
+    pub web_id: i64,
+    pub email: String,
+    pub sso_token: String,
+    pub proxy_url: String,
+}
+
 /// Filters for one page of the admin account list.
 #[derive(Debug, Clone)]
 pub struct AccountQuery {
@@ -257,6 +268,56 @@ impl Store {
             Self::row_to_account,
         )?;
         Ok((rows.collect::<rusqlite::Result<Vec<_>>>()?, total))
+    }
+
+    /// Build accounts whose refresh token is gone, but a sibling Web SSO still
+    /// looks usable. Reminting those is how `needs_reauth` recovers without a
+    /// full re-registration. Accounts whose Web SSO has already been rejected
+    /// are excluded so a dead cookie is not retried every sweep.
+    pub fn remint_candidates(&self, limit: usize) -> Result<Vec<RemintCandidate>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT w.id,
+                    b.email,
+                    w.sso_token,
+                    CASE WHEN b.proxy_url <> '' THEN b.proxy_url ELSE w.proxy_url END
+               FROM accounts b
+               JOIN accounts w ON w.provider = 'web' AND w.email = b.email
+              WHERE b.provider = 'build'
+                AND b.health = 'needs_reauth'
+                AND length(w.sso_token) > 10
+                AND w.health NOT IN ('needs_reauth', 'forbidden', 'disabled')
+              ORDER BY b.updated_at ASC
+              LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            Ok(RemintCandidate {
+                web_id: row.get(0)?,
+                email: row.get(1)?,
+                sso_token: row.get(2)?,
+                proxy_url: row.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    pub fn remint_candidate_count(&self) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let n: i64 = conn.query_row(
+            "SELECT COUNT(*)
+               FROM accounts b
+               JOIN accounts w ON w.provider = 'web' AND w.email = b.email
+              WHERE b.provider = 'build'
+                AND b.health = 'needs_reauth'
+                AND length(w.sso_token) > 10
+                AND w.health NOT IN ('needs_reauth', 'forbidden', 'disabled')",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(n as usize)
     }
 
     pub fn list(&self, provider: Option<Provider>) -> Result<Vec<Account>> {
@@ -519,16 +580,17 @@ impl Store {
         Ok(budget)
     }
 
-    /// A cheap probe came back clean: clear the error and put the account back
-    /// in rotation, without claiming it served a request. Only a real chat can
-    /// do that, so `verified_at` and the success counter are left alone.
+    /// A cheap probe came back clean: clear a cooldown, without claiming the
+    /// account served a request. Terminal states stay terminal — a still-valid
+    /// access JWT on a revoked refresh must not put the account back in
+    /// rotation, and a chat-denied account is not healed by `/models`.
     pub fn clear_failure(&self, id: i64, model: &str, now: i64) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "UPDATE accounts SET
-                health        = 'active',
-                cooling_until = 0,
-                last_error    = '',
+                health        = CASE WHEN health = 'cooling' THEN 'active' ELSE health END,
+                cooling_until = CASE WHEN health = 'cooling' THEN 0 ELSE cooling_until END,
+                last_error    = CASE WHEN health IN ('active', 'cooling') THEN '' ELSE last_error END,
                 last_model    = CASE WHEN ?1 <> '' THEN ?1 ELSE last_model END,
                 updated_at    = ?2
              WHERE id = ?3 AND health <> 'disabled'",
@@ -1091,13 +1153,11 @@ mod tests {
         assert_eq!(build["schedulable_remaining"], 750);
         assert_eq!(build["schedulable_unmeasured"], 1);
         assert_eq!(
-            build["typical_entitlement"],
-            1_000,
+            build["typical_entitlement"], 1_000,
             "typical follows the measured accounts in this pool"
         );
         assert_eq!(
-            build["estimated_available"],
-            1750,
+            build["estimated_available"], 1750,
             "unmeasured schedulable accounts count at this pool's typical entitlement"
         );
     }
@@ -1127,5 +1187,115 @@ mod tests {
 
         let stats = store.stats().unwrap();
         assert_eq!(stats["build"]["quota"]["remaining_tokens"], 0);
+    }
+
+    #[test]
+    fn a_token_probe_must_not_revive_a_revoked_account() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .import(Some(Provider::Build), &[build_item("a@b.c", "r1")], 1)
+            .unwrap();
+        let id = store.list(None).unwrap()[0].id;
+        store
+            .mark_health(id, Health::NeedsReauth, 0, "invalid_grant", 2)
+            .unwrap();
+        store.clear_failure(id, "grok-4.6", 3).unwrap();
+        let after = store.get(id).unwrap().unwrap();
+        assert_eq!(after.health, Health::NeedsReauth);
+        assert_eq!(after.last_error, "invalid_grant");
+    }
+
+    #[test]
+    fn remint_candidates_need_a_live_web_sso() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .import(Some(Provider::Build), &[build_item("keep@b.c", "r1")], 1)
+            .unwrap();
+        store
+            .import(
+                Some(Provider::Build),
+                &[build_item("dead-sso@b.c", "r2")],
+                1,
+            )
+            .unwrap();
+        store
+            .import(Some(Provider::Build), &[build_item("no-web@b.c", "r3")], 1)
+            .unwrap();
+        store
+            .import(
+                Some(Provider::Build),
+                &[build_item("still-ok@b.c", "r4")],
+                1,
+            )
+            .unwrap();
+        let web = |email: &str, sso: &str| {
+            serde_json::from_value::<AccountImport>(serde_json::json!({
+                "email": email,
+                "sso_token": sso,
+            }))
+            .unwrap()
+        };
+        store
+            .import(
+                Some(Provider::Web),
+                &[
+                    web("keep@b.c", "sso-keep-token"),
+                    web("dead-sso@b.c", "sso-dead-token"),
+                    web("still-ok@b.c", "sso-ok-token"),
+                ],
+                1,
+            )
+            .unwrap();
+        let by_email = |email: &str, provider: Provider| {
+            store
+                .list(Some(provider))
+                .unwrap()
+                .into_iter()
+                .find(|a| a.email == email)
+                .unwrap()
+        };
+        store
+            .mark_health(
+                by_email("keep@b.c", Provider::Build).id,
+                Health::NeedsReauth,
+                0,
+                "revoked",
+                2,
+            )
+            .unwrap();
+        store
+            .mark_health(
+                by_email("dead-sso@b.c", Provider::Build).id,
+                Health::NeedsReauth,
+                0,
+                "revoked",
+                2,
+            )
+            .unwrap();
+        store
+            .mark_health(
+                by_email("no-web@b.c", Provider::Build).id,
+                Health::NeedsReauth,
+                0,
+                "revoked",
+                2,
+            )
+            .unwrap();
+        store
+            .mark_health(
+                by_email("dead-sso@b.c", Provider::Web).id,
+                Health::NeedsReauth,
+                0,
+                "sso rejected",
+                2,
+            )
+            .unwrap();
+
+        let found = store.remint_candidates(10).unwrap();
+        assert_eq!(store.remint_candidate_count().unwrap(), 1);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].email, "keep@b.c");
+        assert_eq!(found[0].sso_token, "sso-keep-token");
+        assert_eq!(found[0].proxy_url, "http://u:p@host:1");
     }
 }

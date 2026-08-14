@@ -38,6 +38,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/v1/sweep", post(sweep))
         .route("/api/v1/quota", post(quota))
         .route("/api/v1/mint", post(mint))
+        .route("/api/v1/remint", post(remint))
         .with_state(state)
 }
 
@@ -422,6 +423,29 @@ async fn run_probe(
             query.concurrency.unwrap_or(8),
         )
         .await
+    {
+        Ok(report) => Json(json!({"ok": true, "report": report})).into_response(),
+        Err(err) => upstream_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
+}
+
+/// Re-mint Build credentials for `needs_reauth` accounts that still have a
+/// sibling Web SSO. Bounded so a click cannot stampede the device-code endpoint.
+async fn remint(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+    Query(query): Query<SweepQuery>,
+) -> Response {
+    if !Config::authorizes(&state.config.admin_key, bearer(&headers)) {
+        return deny();
+    }
+    match crate::xai::mint::remint_batch(
+        state.pool.store(),
+        &state.config.sticky_relay,
+        query.limit.unwrap_or(12),
+        query.concurrency.unwrap_or(3),
+    )
+    .await
     {
         Ok(report) => Json(json!({"ok": true, "report": report})).into_response(),
         Err(err) => upstream_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),

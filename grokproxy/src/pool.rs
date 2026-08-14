@@ -22,15 +22,16 @@ use crate::upstream::{Failure, Upstream, UpstreamError};
 const QUOTA_COOLDOWN_SECS: i64 = 3_600;
 /// How many accounts to pull from the database per refill.
 const REFILL_BATCH: usize = 64;
-/// Unmeasured accounts mixed into each refill so live traffic discovers their
-/// entitlement instead of the janitor having to chat-probe the whole pool.
+/// Unmeasured accounts ride at the back of each refill so live traffic can
+/// still discover entitlements, without a burst of chat-denied unknowns
+/// failing a request before a proven account is tried.
 const EXPLORE_PER_REFILL: usize = 8;
 /// Skip a token-only keepalive if the account served traffic this recently:
 /// a live request already proved the credential.
 const KEEPALIVE_FRESH_SECS: i64 = 1_800;
 /// Adaptive sweeps chat-probe at most this many unmeasured accounts. The rest
 /// of the batch is a free token check, so upkeep cannot drain the pool.
-const MAX_CHAT_PROBES_PER_SWEEP: usize = 24;
+const MAX_CHAT_PROBES_PER_SWEEP: usize = 80;
 
 /// Accounts ready to serve, plus the ones currently serving.
 #[derive(Default)]
@@ -179,8 +180,9 @@ impl Pool {
     /// Pull a batch of schedulable accounts and rank them.
     ///
     /// Measured accounts with budget left carry the load. A small slice of
-    /// unmeasured accounts rides along so live traffic fills in entitlements
-    /// instead of parking them forever behind proven-first ranking.
+    /// unmeasured accounts rides at the back so live traffic still fills in
+    /// entitlements, without a NewAPI request burning three unknown 403s
+    /// before it ever reaches a proven account.
     fn refill(&self) -> Result<()> {
         let now = crate::now();
         let mut ready = self.ready.lock().unwrap();
@@ -207,9 +209,11 @@ impl Pool {
                 .then(a.last_used_at.cmp(&b.last_used_at))
         });
         let explore_n = unknown.len().min(EXPLORE_PER_REFILL).min(REFILL_BATCH / 4);
-        let mut queue: Vec<Account> = unknown.into_iter().take(explore_n).collect();
-        let known_slots = REFILL_BATCH.saturating_sub(queue.len());
-        queue.extend(known.into_iter().take(known_slots));
+        let mut queue: Vec<Account> = known
+            .into_iter()
+            .take(REFILL_BATCH.saturating_sub(explore_n))
+            .collect();
+        queue.extend(unknown.into_iter().take(explore_n));
         debug!(
             queued = queue.len(),
             exploring = explore_n,
@@ -312,7 +316,9 @@ impl Pool {
             .store
             .list(Some(Provider::Build))?
             .into_iter()
-            .filter(|account| !matches!(account.health, Health::Disabled | Health::Forbidden))
+            // Terminal and still-cooling accounts teach the sweep nothing and
+            // steal the chat-probe budget from accounts that can still serve.
+            .filter(|account| account.is_available(now))
             .collect();
         // Unmeasured first, then tokens about to expire, then least recently
         // used. Re-probing a measured live account teaches nothing.
@@ -398,7 +404,7 @@ impl Pool {
             .store
             .list(Some(Provider::Build))?
             .iter()
-            .filter(|account| account.is_available(now) && account.health != Health::Disabled)
+            .filter(|account| account.is_available(now))
             .count())
     }
 }
@@ -573,8 +579,8 @@ mod tests {
             .collect();
         assert_eq!(
             order,
-            vec!["unproven@b.c", "rich@b.c"],
-            "explore the unknown, serve the rich, skip the nearly empty"
+            vec!["rich@b.c", "unproven@b.c"],
+            "serve the rich first, explore the unknown after failover, skip the nearly empty"
         );
     }
 
@@ -803,5 +809,19 @@ mod tests {
             .mark_health(id, Health::NeedsReauth, 0, "revoked", 2)
             .unwrap();
         assert_eq!(pool.healthy_count().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_revoked_pool_is_not_probed() {
+        // Sweeping needs_reauth accounts spent the chat budget proving they
+        // were still dead, so unmeasured live accounts never got measured.
+        let store = store_with(&[("dead@b.c", "r1", 0)]);
+        let id = store.list(None).unwrap()[0].id;
+        store
+            .mark_health(id, Health::NeedsReauth, 0, "revoked", 1)
+            .unwrap();
+        let pool = pool(store);
+        let report = pool.probe_pool(None, 200, 1).await.unwrap();
+        assert_eq!(report.checked, 0);
     }
 }

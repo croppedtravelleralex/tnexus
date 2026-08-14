@@ -10,7 +10,10 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
-RUN cargo build --release --locked --bin grokproxy
+# Same gates the (currently billing-disabled) CI job ran: tests share the
+# release artifacts with the binary so BoringSSL is only built once.
+RUN cargo test --release --locked \
+ && cargo build --release --locked --bin grokproxy
 
 FROM debian:bookworm-slim
 RUN apt-get update \

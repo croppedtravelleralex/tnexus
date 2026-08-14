@@ -46,7 +46,7 @@ impl Config {
             upstream_timeout_secs: env_or("GROKPROXY_TIMEOUT_SECS", "120")
                 .parse()
                 .unwrap_or(120),
-            max_attempts: env_or("GROKPROXY_MAX_ATTEMPTS", "3").parse().unwrap_or(3),
+            max_attempts: env_or("GROKPROXY_MAX_ATTEMPTS", "10").parse().unwrap_or(10),
             default_proxy: env_or("GROKPROXY_PROXY", ""),
             sticky_relay: env_or("GROKPROXY_STICKY_RELAY", ""),
             sweep_interval_secs: env_or("GROKPROXY_SWEEP_INTERVAL_SECS", "1800")

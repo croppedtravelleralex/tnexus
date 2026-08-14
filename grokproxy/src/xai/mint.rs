@@ -10,8 +10,9 @@ use tracing::info;
 
 use super::consent::Consent;
 use super::device::DeviceFlow;
-use crate::model::{AccountImport, Provider};
-use crate::store::Store;
+use crate::model::{AccountImport, Health, Provider};
+use crate::store::{RemintCandidate, Store};
+use crate::upstream;
 
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct MintRequest {
@@ -112,6 +113,104 @@ pub async fn mint(store: &Store, request: &MintRequest, sticky_relay: &str) -> R
     })
 }
 
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct RemintReport {
+    pub attempted: usize,
+    pub revived: usize,
+    pub sso_rejected: usize,
+    pub failed: usize,
+    pub remaining: usize,
+}
+
+/// Re-mint Build credentials for `needs_reauth` accounts that still have a
+/// sibling Web SSO. Dead cookies are marked on the Web row so they are not
+/// retried; everything else is left for the next batch.
+pub async fn remint_batch(
+    store: &Store,
+    sticky_relay: &str,
+    limit: usize,
+    concurrency: usize,
+) -> Result<RemintReport> {
+    let candidates = store.remint_candidates(limit)?;
+    let mut report = RemintReport {
+        attempted: candidates.len(),
+        ..RemintReport::default()
+    };
+    let width = concurrency.clamp(1, 8);
+    for chunk in candidates.chunks(width) {
+        let outcomes = futures::future::join_all(chunk.iter().map(|candidate| {
+            let store = store.clone();
+            let sticky = sticky_relay.to_string();
+            let candidate = candidate.clone();
+            async move { remint_one(&store, &sticky, candidate).await }
+        }))
+        .await;
+        for outcome in outcomes {
+            match outcome {
+                RemintOutcome::Revived => report.revived += 1,
+                RemintOutcome::SsoRejected => report.sso_rejected += 1,
+                RemintOutcome::Failed => report.failed += 1,
+            }
+        }
+    }
+    report.remaining = store.remint_candidate_count()?;
+    Ok(report)
+}
+
+enum RemintOutcome {
+    Revived,
+    SsoRejected,
+    Failed,
+}
+
+async fn remint_one(
+    store: &Store,
+    sticky_relay: &str,
+    candidate: RemintCandidate,
+) -> RemintOutcome {
+    let request = MintRequest {
+        email: candidate.email.clone(),
+        sso_token: candidate.sso_token,
+        proxy_url: candidate.proxy_url,
+    };
+    match mint(store, &request, sticky_relay).await {
+        Ok(_) => {
+            info!(email = %candidate.email, "reminted build credential");
+            RemintOutcome::Revived
+        }
+        Err(err) => {
+            let msg = format!("{err:#}");
+            if sso_is_dead(&msg) {
+                if let Err(mark_err) = store.mark_health(
+                    candidate.web_id,
+                    Health::NeedsReauth,
+                    0,
+                    &upstream::truncate(&msg, 300),
+                    crate::now(),
+                ) {
+                    tracing::warn!(
+                        email = %candidate.email,
+                        error = %mark_err,
+                        "failed to blacklist a rejected sso"
+                    );
+                }
+                tracing::warn!(email = %candidate.email, "remint skipped: sso rejected");
+                RemintOutcome::SsoRejected
+            } else {
+                tracing::warn!(email = %candidate.email, error = %msg, "remint failed");
+                RemintOutcome::Failed
+            }
+        }
+    }
+}
+
+fn sso_is_dead(err: &str) -> bool {
+    let lower = err.to_ascii_lowercase();
+    lower.contains("sso rejected")
+        || lower.contains("sso not accepted")
+        || lower.contains("missing sso")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,5 +290,25 @@ mod tests {
             "http://u:p@host:1"
         );
         assert_eq!(effective_mint_proxy("a@b.c", "", ""), "");
+    }
+
+    #[test]
+    fn a_rejected_cookie_is_terminal_for_remint() {
+        assert!(sso_is_dead("sso rejected: https://accounts.x.ai/sign-in"));
+        assert!(sso_is_dead("sso not accepted at the device page"));
+        assert!(sso_is_dead("missing sso token"));
+        assert!(!sso_is_dead(
+            "egress blocked by the edge, not an account problem"
+        ));
+    }
+
+    #[tokio::test]
+    async fn remint_with_no_candidates_does_not_touch_the_network() {
+        let store = Store::open_in_memory().unwrap();
+        let report = remint_batch(&store, "127.0.0.1:18100", 10, 2)
+            .await
+            .unwrap();
+        assert_eq!(report.attempted, 0);
+        assert_eq!(report.remaining, 0);
     }
 }
