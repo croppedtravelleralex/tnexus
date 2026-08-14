@@ -414,6 +414,7 @@ case_chat
 case_stream
 case_ocr_direct
 case_ocr_newapi
+case_imagine_lite
 case_public_page
 
 TOTAL=$((PASS + FAIL))
