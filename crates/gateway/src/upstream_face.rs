@@ -12,7 +12,10 @@ fn to_upstream(account: &HelperPinAccount) -> UpstreamPinAccount {
         device_id: account.device_id.clone().unwrap_or_default(),
         proxy: account.proxy.clone().unwrap_or_default(),
         user_agent: account.user_agent.clone().unwrap_or_default(),
-        impersonate: String::new(),
+        impersonate: account
+            .impersonate
+            .clone()
+            .unwrap_or_default(),
     }
 }
 
@@ -95,12 +98,14 @@ mod tests {
             device_id: None,
             proxy: None,
             user_agent: None,
+            impersonate: Some("chrome124".into()),
         };
         let up = to_upstream(&helper);
         assert_eq!(up.email, "a@b.c");
         assert_eq!(up.access_token, "tok");
         assert!(up.device_id.is_empty());
         assert!(up.proxy.is_empty());
+        assert_eq!(up.impersonate, "chrome124");
     }
 
     #[test]

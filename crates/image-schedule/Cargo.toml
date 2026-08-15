@@ -1,0 +1,14 @@
+[package]
+name = "image-schedule"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+chrono = { workspace = true }
+parking_lot = "0.12"
+rand = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sysinfo = "0.33"
+tnexus-domain = { path = "../tnexus-domain" }

@@ -6,6 +6,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tnexus_accounts_db::AccountsBackend;
+use tnexus_domain::binding_key_for_account_fields;
 use tracing::warn;
 
 const STATE_VERIFIED: &str = "verified_ready";
@@ -206,6 +207,23 @@ impl SchedulingGate {
         Some((quota, unknown, inflight, soft))
     }
 
+    pub fn account_binding_key(&self, email: &str, pin_proxy: Option<&str>) -> String {
+        let key = email.trim().to_lowercase();
+        let accounts = self.load_accounts_by_email();
+        if let Some(row) = accounts.get(&key) {
+            let hash = row
+                .get("proxy_binding_hash")
+                .and_then(|v| v.as_str());
+            let proxy = row
+                .get("proxy")
+                .and_then(|v| v.as_str())
+                .or(pin_proxy);
+            let egress = row.get("egress_ip").and_then(|v| v.as_str());
+            return binding_key_for_account_fields(hash, proxy, egress);
+        }
+        binding_key_for_account_fields(None, pin_proxy, None)
+    }
+
     /// All pool rows as API-shaped JSON (postgres or sqlite backend).
     pub fn list_account_items_for_api(&self) -> Vec<Value> {
         let accounts = self.load_accounts_by_email();
@@ -318,12 +336,21 @@ fn value_to_pin(row: &Value) -> Option<PinAccount> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string);
+    let impersonate = row
+        .get("impersonate")
+        .or_else(|| row.get("tls_profile"))
+        .or_else(|| row.get("browser_profile"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
     Some(PinAccount {
         email,
         access_token,
         device_id,
         proxy,
         user_agent,
+        impersonate,
     })
 }
 

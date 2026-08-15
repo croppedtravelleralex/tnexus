@@ -10,6 +10,7 @@ members = [
     "crates/tnexus-worker",
     "crates/tnexus-account-ops",
     "crates/protocol",
+    "crates/image-schedule",
     "crates/helper_client",
     "crates/gateway-auth",
     "crates/upstream",

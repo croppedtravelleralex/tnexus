@@ -1,0 +1,20 @@
+{
+  "image_generation_paused": false,
+  "image_global_concurrency": 10,
+  "image_account_inflight_max": 1,
+  "image_binding_inflight_max": 1,
+  "image_dispatch_interval_ms": 800,
+  "image_estimated_slot_secs": 45,
+  "image_workload_image_reserve_pct": 0.7,
+  "image_ss_slot_cap": 2,
+  "image_account_slot_cap": 1,
+  "image_slot_ttl_secs": 600,
+  "image_ready_buffer_max_bytes": 536870912,
+  "image_ready_buffer_max_items": 32,
+  "image_return_window_max": 8,
+  "image_cooldown_rate_limit_secs": 900,
+  "image_cooldown_terminal_secs": 1800,
+  "humanlike_epsilon": 0.12,
+  "image_deadlock_cpu_trip_pct": 90,
+  "image_pipeline_stall_secs": 180
+}

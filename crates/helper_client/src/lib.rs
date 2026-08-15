@@ -38,6 +38,9 @@ pub struct PinAccount {
     pub proxy: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_agent: Option<String>,
+    /// TLS impersonate profile (`chrome120` / `chrome124` / `chrome131`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub impersonate: Option<String>,
 }
 
 /// A pool entry as reported by `/v1/internal/accounts/candidates`.
@@ -66,6 +69,7 @@ impl CandidateAccount {
             device_id: None,
             proxy: None,
             user_agent: None,
+            impersonate: None,
         }
     }
 }

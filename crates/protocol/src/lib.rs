@@ -259,7 +259,7 @@ pub fn extract_chat_image_prompt(text: &str) -> String {
     t.to_string()
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ImageGenerationRequest {
     #[serde(default = "default_image_model")]
     pub model: String,
@@ -276,6 +276,63 @@ pub struct ImageGenerationRequest {
     pub asset_ids: Vec<String>,
     #[serde(default = "default_response_format")]
     pub response_format: String,
+    /// gptimage async tunnel: enqueue and return task id immediately.
+    #[serde(default)]
+    pub panda_async: bool,
+    /// Poll an existing async image task (gptimage tunnel).
+    #[serde(default)]
+    pub panda_task_id: Option<String>,
+}
+
+/// Parsed gptimage prompt tunnel prefixes.
+#[derive(Debug, Clone)]
+pub enum ImagePromptTunnel {
+    Normal(String),
+    AsyncGenerate(String),
+    StatusPoll(String),
+}
+
+pub fn parse_image_prompt_tunnel(prompt: &str) -> ImagePromptTunnel {
+    let trimmed = prompt.trim();
+    if let Some(rest) = trimmed.strip_prefix("panda-status ") {
+        return ImagePromptTunnel::StatusPoll(rest.trim().to_string());
+    }
+    if let Some(rest) = trimmed.strip_prefix("panda-async:") {
+        return ImagePromptTunnel::AsyncGenerate(rest.trim().to_string());
+    }
+    ImagePromptTunnel::Normal(trimmed.to_string())
+}
+
+pub fn image_task_queued_response(task_id: &str) -> Value {
+    json!({
+        "id": task_id,
+        "object": "image.task",
+        "status": "queued",
+        "created": chrono_secs(),
+    })
+}
+
+pub fn image_task_status_response(
+    task_id: &str,
+    status: &str,
+    result: Option<Value>,
+    error: Option<&str>,
+) -> Value {
+    let mut body = json!({
+        "id": task_id,
+        "object": "image.task",
+        "status": status,
+        "created": chrono_secs(),
+    });
+    if let Some(obj) = body.as_object_mut() {
+        if let Some(r) = result {
+            obj.insert("result".into(), r);
+        }
+        if let Some(e) = error {
+            obj.insert("error".into(), json!(e));
+        }
+    }
+    body
 }
 
 impl ImageGenerationRequest {
@@ -483,7 +540,7 @@ pub fn image_generation_url_multi_response_with_pipeline(
     image_generation_response_with_pipeline(json!(data), pipeline, prompt)
 }
 
-fn chrono_secs() -> u64 {
+pub fn chrono_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())

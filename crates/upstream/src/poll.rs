@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
-use tracing::info;
+use tracing::{info, warn};
 use wreq::Client;
 
 use crate::requirements::{RequirementsClient, BASE_URL};
@@ -35,7 +35,10 @@ const TERMINAL_TASK_STATUSES: &[&str] = &[
 /// 会话文档的竞态。
 const TERMINAL_TASK_CONFIRMATIONS: u32 = 2;
 
-/// 连续多少轮观察到「会话里压根没有 image_gen 节点且无图」才判定生图工具从未被调用。
+/// 连续多少轮 `/backend-api/tasks` 查询失败后，若会话已有 image_gen 活动却始终无图，
+/// 提前放弃。旧逻辑用 `if let Ok(tasks)` 丢掉 Err，任务查询失败时既不推进终态判定、
+/// 也不计入任何 streak，轮询会空转到 wall budget（线上见过 420s）。
+const DEFAULT_TASK_QUERY_FAIL_MAX: u32 = 8;
 ///
 /// 线上实测：SSE 走完 22 个事件即结束且无 file_id，随后 94 轮全是 `no ids yet`，
 /// 直到 420s 用尽。那种会话根本没有创建异步任务，因此 `/backend-api/tasks` 返回空、
@@ -578,6 +581,19 @@ pub fn tasks_all_terminal(tasks: &[Value]) -> Option<bool> {
     Some(all_terminal)
 }
 
+/// 任务查询连续失败时是否该提前放弃。
+///
+/// 只在「已有 image_gen 活动、却始终拿不到图」时生效：此时终态判定依赖 tasks，
+/// 查询失败会被旧的 `if let Ok` 吞掉，轮询会空转到 timeout。
+pub fn should_stop_after_task_query_failures(
+    consecutive_failures: u32,
+    fail_max: u32,
+    no_ids: bool,
+    has_activity: bool,
+) -> bool {
+    no_ids && has_activity && consecutive_failures >= fail_max
+}
+
 /// Extract image `file_ids` from polled tasks when generation has completed.
 pub fn poll_image_ready_from_tasks(tasks: &[Value]) -> Option<Vec<String>> {
     let mut file_ids = Vec::new();
@@ -656,12 +672,18 @@ where
     let mut consecutive_errors: u32 = 0;
     let mut terminal_task_streak: u32 = 0;
     let mut no_activity_streak: u32 = 0;
+    let mut consecutive_task_query_errors: u32 = 0;
     let mut tasks_seen_max: usize = 0;
     let no_activity_max = env_u32(
         "UPSTREAM_IMAGE_POLL_NO_ACTIVITY_MAX",
         DEFAULT_NO_ACTIVITY_MAX_ATTEMPTS,
     )
     .max(5);
+    let task_query_fail_max = env_u32(
+        "UPSTREAM_IMAGE_POLL_TASK_QUERY_FAIL_MAX",
+        DEFAULT_TASK_QUERY_FAIL_MAX,
+    )
+    .max(3);
 
     if file_ids.is_empty() && sediment_ids.is_empty() && config.initial_wait > Duration::ZERO {
         info!(
@@ -678,18 +700,32 @@ where
 
         if tasks_gets < config.max_tasks_gets && attempt % config.tasks_every_n_attempts == 0 {
             tasks_gets += 1;
-            if let Ok(tasks) = query_tasks(client, &headers_fn, conversation_id).await {
-                if let Some(err) = last_task_error_from_tasks(&tasks) {
-                    last_task_error = err;
+            match query_tasks(client, &headers_fn, conversation_id).await {
+                Ok(tasks) => {
+                    consecutive_task_query_errors = 0;
+                    if let Some(err) = last_task_error_from_tasks(&tasks) {
+                        last_task_error = err;
+                    }
+                    tasks_seen_max = tasks_seen_max.max(tasks.len());
+                    match tasks_all_terminal(&tasks) {
+                        Some(true) => terminal_task_streak += 1,
+                        Some(false) => terminal_task_streak = 0,
+                        None => {}
+                    }
+                    if let Some(ids) = poll_image_ready_from_tasks(&tasks) {
+                        add_unique_file_ids(&mut file_ids, &ids);
+                    }
                 }
-                tasks_seen_max = tasks_seen_max.max(tasks.len());
-                match tasks_all_terminal(&tasks) {
-                    Some(true) => terminal_task_streak += 1,
-                    Some(false) => terminal_task_streak = 0,
-                    None => {}
-                }
-                if let Some(ids) = poll_image_ready_from_tasks(&tasks) {
-                    add_unique_file_ids(&mut file_ids, &ids);
+                Err(e) => {
+                    consecutive_task_query_errors += 1;
+                    last_task_error = e.to_string();
+                    warn!(
+                        conversation_id = %conversation_id,
+                        attempt,
+                        consecutive_task_query_errors,
+                        error = %e,
+                        "image poll query_tasks failed"
+                    );
                 }
             }
         }
@@ -749,6 +785,19 @@ where
                              tasks_seen={tasks_seen_max})"
                         );
                     }
+                }
+                if should_stop_after_task_query_failures(
+                    consecutive_task_query_errors,
+                    task_query_fail_max,
+                    no_ids,
+                    has_activity,
+                ) {
+                    bail!(
+                        "upstream image generation stalled: task query failed \
+                         {consecutive_task_query_errors} times \
+                         (conversation_id={conversation_id}, attempts={attempt}, \
+                         last_error={last_task_error})"
+                    );
                 }
             }
             Err(err) => {
@@ -814,6 +863,7 @@ where
             tasks_seen_max,
             terminal_task_streak,
             no_activity_streak,
+            consecutive_task_query_errors,
             "image poll check: no ids yet"
         );
         cancel_aware_sleep(deadline, config.interval).await;
@@ -1009,6 +1059,23 @@ mod tests {
         // 已知文案匹配不到，所以只能靠 no_activity_streak 收尾。
         assert!(find_terminal_upstream_block_in_conversation(&data).is_none());
         assert_eq!(tasks_all_terminal(&[]), None, "空任务列表不可判定");
+    }
+
+    #[test]
+    fn task_query_failures_stop_when_activity_has_no_ids() {
+        assert!(should_stop_after_task_query_failures(8, 8, true, true));
+        assert!(
+            !should_stop_after_task_query_failures(7, 8, true, true),
+            "未达阈值不得提前放弃"
+        );
+        assert!(
+            !should_stop_after_task_query_failures(8, 8, false, true),
+            "已经拿到图就继续走完，不要误杀"
+        );
+        assert!(
+            !should_stop_after_task_query_failures(8, 8, true, false),
+            "没有 image_gen 活动时走 no_activity_streak，不走这条"
+        );
     }
 
     #[test]

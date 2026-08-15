@@ -124,31 +124,11 @@ pub fn binding_key_for_account_fields(
     proxy: Option<&str>,
     egress_ip: Option<&str>,
 ) -> String {
-    if let Some(hash) = proxy_binding_hash.map(str::trim).filter(|s| !s.is_empty()) {
-        return hash.to_string();
-    }
-    if let Some(ip) = egress_ip.map(str::trim).filter(|s| !s.is_empty()) {
-        return format!("egress:{ip}");
-    }
-    let raw = proxy.map(str::trim).filter(|s| !s.is_empty()).unwrap_or("");
-    if raw.is_empty() {
-        return "default".to_string();
-    }
-    let stripped = raw
-        .trim_start_matches("http://")
-        .trim_start_matches("https://")
-        .trim_start_matches("socks5://");
-    let host_part = stripped.split('/').next().unwrap_or(stripped);
-    let host_part = host_part.split('@').last().unwrap_or(host_part);
-    if host_part.is_empty() {
-        "default".to_string()
-    } else {
-        format!("proxy:{host_part}")
-    }
+    tnexus_domain::binding_key_for_account_fields(proxy_binding_hash, proxy, egress_ip)
 }
 
 pub fn binding_key_for_proxy(proxy: Option<&str>, egress_ip: Option<&str>) -> String {
-    binding_key_for_account_fields(None, proxy, egress_ip)
+    tnexus_domain::binding_key_for_proxy(proxy, egress_ip)
 }
 
 pub fn get_binding_usage_slots(

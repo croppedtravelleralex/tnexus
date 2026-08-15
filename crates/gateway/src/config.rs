@@ -48,6 +48,8 @@ struct AccountFile {
     proxy: Option<String>,
     #[serde(default)]
     user_agent: Option<String>,
+    #[serde(default)]
+    impersonate: Option<String>,
 }
 
 pub struct Config {
@@ -143,7 +145,19 @@ fn to_pin(af: AccountFile) -> PinAccount {
         device_id: af.device_id,
         proxy: af.proxy,
         user_agent: af.user_agent,
+        impersonate: af.impersonate,
     }
+}
+
+fn impersonate_from_row(value: &Value) -> Option<String> {
+    value
+        .get("impersonate")
+        .or_else(|| value.get("tls_profile"))
+        .or_else(|| value.get("browser_profile"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 fn value_to_pin(value: &Value) -> Option<PinAccount> {
@@ -174,5 +188,6 @@ fn value_to_pin(value: &Value) -> Option<PinAccount> {
             .get("user_agent")
             .and_then(|v| v.as_str())
             .map(str::to_string),
+        impersonate: impersonate_from_row(value),
     })
 }

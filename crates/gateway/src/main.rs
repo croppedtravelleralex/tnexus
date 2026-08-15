@@ -4,17 +4,15 @@ mod accounts_routes;
 mod auth_routes;
 mod backend_routes;
 mod config;
-mod dispatch_gate;
 mod duplicate_prompt;
-mod humanlike;
 mod image_archive;
 mod image_assets;
+mod image_tasks;
 mod pipeline_telemetry;
 mod scheduling_gate;
 mod state;
 mod upstream_face;
 
-use crate::humanlike::{pick_account_index, AccountScoreInput};
 use crate::image_assets::ImageAssetStore;
 use crate::scheduling_gate::SchedulingGate;
 use accounts_routes::{activity_daily, list_accounts, reload_from_storage, scheduling_bulk};
@@ -40,12 +38,20 @@ use gateway_auth::{AuthConfig, AuthService};
 use helper_client::{
     HelperClient, ImageRunRequest, PinAccount, QuotaRefreshRequest, TextRunRequest,
 };
+use image_schedule::{
+    apply_runtime_snapshot, default_epsilon, pick_account_index, poisson_delay_ms, AccountScoreInput,
+    BindingInflightLedger, CooldownRegistry, DeadlockGuard, DispatchIntervalGate,
+    DispatchMarkGuard, ImageRuntimeConfig, PipelineWatchdog, PreTicketPool, ProxyCfRegistry,
+    ReadyBuffer, ReadyBufferGuard, ReturnWindow, ReturnWindowPermit, SlotLedger, WorkloadPolicy,
+};
 use protocol::{
     chat_completion_response, chat_completion_response_with_image_b64, chat_should_use_image_path,
     classify_fault, extract_chat_image_prompt, fold_chat_messages_for_upstream,
     image_generation_b64_multi_response, image_generation_b64_multi_response_with_pipeline,
     image_generation_response, image_generation_url_multi_response,
-    image_generation_url_multi_response_with_pipeline, image_generation_url_response, openai_error,
+    image_generation_url_multi_response_with_pipeline, image_generation_url_response,
+    image_task_queued_response, image_task_status_response, openai_error,
+    parse_image_prompt_tunnel, ImagePromptTunnel,
     ChatCompletionRequest, ImageEditRequest, ImageGenerationRequest, MAX_IMAGE_BATCH_N,
 };
 use serde_json::{json, Value};
@@ -53,7 +59,7 @@ use state::AppState;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 use tnexus_accounts_db::AccountsBackend;
 use tokio::sync::Mutex;
@@ -193,7 +199,46 @@ async fn main() -> anyhow::Result<()> {
         "accounts hydrated from pool backend"
     );
 
-    let reconcile_gate = scheduling_gate.clone();
+    let binding_ledger = BindingInflightLedger::from_env();
+    let dispatch_interval = DispatchIntervalGate::from_env();
+    let slot_ledger = SlotLedger::from_env();
+    let ready_buffer = ReadyBuffer::from_env();
+    let return_window = ReturnWindow::from_env();
+    let cooldown_registry = CooldownRegistry::from_env();
+    let pre_ticket = PreTicketPool::from_env();
+    let proxy_cf = ProxyCfRegistry::from_env();
+    let workload = WorkloadPolicy::from_env();
+    let image_runtime = ImageRuntimeConfig::from_env(cfg.image_enabled);
+    let deadlock_guard = DeadlockGuard::from_env();
+    let pipeline_watchdog = PipelineWatchdog::from_env();
+    let runtime_binding = binding_ledger.clone();
+    let runtime_dispatch = dispatch_interval.clone();
+    let runtime_reload = image_runtime.clone();
+    let deadlock_sample = deadlock_guard.clone();
+
+    let state_holder: Arc<OnceLock<Arc<AppState>>> = Arc::new(OnceLock::new());
+    let holder_for_worker = state_holder.clone();
+    let submit_workers = std::env::var("IMAGE_SUBMIT_WORKERS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(10);
+    let (image_tasks, _) = {
+        let svc = image_tasks::ImageTaskService::spawn(
+            move |task_id| {
+                let holder = holder_for_worker.clone();
+                async move {
+                    if let Some(st) = holder.get() {
+                        process_image_task(st.clone(), task_id).await;
+                    } else {
+                        warn!(task_id = %task_id, "image task worker: app state not ready");
+                    }
+                }
+            },
+            submit_workers,
+        );
+        (svc, ())
+    };
+
     let state = Arc::new(AppState {
         helper,
         data_plane: cfg.data_plane,
@@ -204,6 +249,9 @@ async fn main() -> anyhow::Result<()> {
         image_global_concurrency: cfg.image_global_concurrency,
         image_sem: cfg.image_sem,
         image_enabled: cfg.image_enabled,
+        image_runtime,
+        deadlock_guard,
+        pipeline_watchdog,
         auth: auth_svc,
         static_dir: static_dir.clone(),
         image_assets,
@@ -212,14 +260,47 @@ async fn main() -> anyhow::Result<()> {
         image_account_rr: AtomicUsize::new(0),
         image_queue_depth: AtomicUsize::new(0),
         duplicate_prompt: duplicate_prompt::DuplicatePromptGate::new(),
+        binding_inflight: binding_ledger,
+        dispatch_interval,
+        slot_ledger,
+        ready_buffer,
+        return_window,
+        cooldown: cooldown_registry,
+        pre_ticket,
+        proxy_cf,
+        workload,
+        image_tasks,
         pg_pool,
         image_archive_store: image_archive_store.map(Arc::new),
     });
+    let _ = state_holder.set(state.clone());
 
     tokio::spawn(async move {
         loop {
+            tokio::time::sleep(runtime_reload.poll_interval()).await;
+            runtime_reload.reload();
+            let snap = runtime_reload.snapshot();
+            apply_runtime_snapshot(&snap, &runtime_binding, &runtime_dispatch);
+        }
+    });
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            deadlock_sample.sample_process_cpu();
+        }
+    });
+    let reconcile_st = state.clone();
+    tokio::spawn(async move {
+        loop {
             tokio::time::sleep(std::time::Duration::from_secs(300)).await;
-            reconcile_gate.reconcile_stale_inflight();
+            reconcile_st.scheduling_gate.reconcile_stale_inflight();
+            reconcile_st.binding_inflight.reconcile_above(8);
+            reconcile_st.dispatch_interval.reconcile_stale(std::time::Duration::from_secs(3600));
+            reconcile_st.cooldown.reconcile();
+            reconcile_st.slot_ledger.watchdog_tick(false);
+            reconcile_st.proxy_cf.reconcile();
+            let (queued, running) = reconcile_st.image_tasks.store.count_states();
+            reconcile_st.pipeline_watchdog.evaluate(queued, running);
         }
     });
 
@@ -236,6 +317,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/users", get(list_users))
         .route("/users/{user_id}/disabled", post(set_user_disabled))
         .route("/status", get(admin_status))
+        .route("/image-runtime/reload", post(reload_image_runtime))
         .layer(middleware::from_fn(require_admin))
         .layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
@@ -244,6 +326,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/chat/completions", post(chat_completions))
         .route("/images/generations", post(image_generations))
         .route("/images/edits", post(image_edits))
+        .route("/images/tasks/{task_id}", get(get_image_task))
+        .route("/image-tasks/generations", post(post_image_tasks_generations))
         .layer(middleware::from_fn(require_member))
         .layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
@@ -411,6 +495,53 @@ async fn resolve_account(
 }
 
 /// Admin image requests may try multiple pool accounts when upstream SSE fails.
+fn pin_with_pre_ticket(st: &AppState, account: &PinAccount) -> PinAccount {
+    if !account.access_token.is_empty() {
+        st.pre_ticket.put(&account.email, account.access_token.clone());
+        return account.clone();
+    }
+    if let Some(tok) = st.pre_ticket.get(&account.email) {
+        return PinAccount {
+            access_token: tok,
+            ..account.clone()
+        };
+    }
+    account.clone()
+}
+
+fn record_image_upstream_failure(st: &AppState, account: &PinAccount, err: &anyhow::Error) {
+    let msg = err.to_string();
+    let binding = st
+        .scheduling_gate
+        .account_binding_key(&account.email, account.proxy.as_deref());
+    st.proxy_cf.record_from_error(&binding, &msg);
+    let lower = msg.to_lowercase();
+    if lower.contains("429")
+        || lower.contains("rate limit")
+        || lower.contains("too many requests")
+    {
+        st.cooldown.record_rate_limit(&account.email);
+    }
+    if lower.contains("token_invalidated")
+        || lower.contains("authentication token has been invalidated")
+        || lower.contains("content policy")
+        || lower.contains("moderation")
+    {
+        st.cooldown.record_terminal(&account.email);
+        st.pre_ticket.invalidate(&account.email);
+    }
+}
+
+async fn reload_image_runtime(State(st): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    st.image_runtime.reload();
+    let snap = st.image_runtime.snapshot();
+    apply_runtime_snapshot(&snap, &st.binding_inflight, &st.dispatch_interval);
+    Json(serde_json::json!({
+        "ok": true,
+        "snapshot": snap,
+    }))
+}
+
 async fn collect_image_accounts(
     st: &AppState,
     preferred: Option<String>,
@@ -483,10 +614,43 @@ async fn collect_image_accounts(
         ));
     }
 
+    accounts.retain(|a| {
+        if st.cooldown.is_blocked(&a.email) {
+            return false;
+        }
+        let (_, _, inflight, soft) = st
+            .scheduling_gate
+            .account_metrics(&a.email)
+            .unwrap_or((0, false, 0, 0));
+        if !st.workload.account_eligible_for_image(inflight, soft > 0) {
+            return false;
+        }
+        let binding = st
+            .scheduling_gate
+            .account_binding_key(&a.email, a.proxy.as_deref());
+        if st.proxy_cf.is_blocked(&binding) {
+            return false;
+        }
+        st.binding_inflight.is_available(&binding)
+    });
+
+    if accounts.is_empty() {
+        return Err(err_wait(
+            StatusCode::TOO_MANY_REQUESTS,
+            "no schedulable accounts (binding/cooldown saturated)",
+            "account_not_available",
+            Some("gate"),
+            st.estimated_image_wait_secs(),
+        ));
+    }
+
     if accounts.len() > 1 {
         let inputs: Vec<AccountScoreInput> = accounts
             .iter()
             .map(|a| {
+                let binding = st
+                    .scheduling_gate
+                    .account_binding_key(&a.email, a.proxy.as_deref());
                 let (quota, unknown, inflight, soft) = st
                     .scheduling_gate
                     .account_metrics(&a.email)
@@ -497,11 +661,20 @@ async fn collect_image_accounts(
                     image_quota_unknown: unknown,
                     image_inflight: inflight,
                     soft_band_percent: soft,
+                    binding_inflight: st.binding_inflight.inflight(&binding),
                 }
             })
             .collect();
-        let start =
-            pick_account_index(&inputs, st.image_account_rr.fetch_add(1, Ordering::Relaxed));
+        let epsilon = st
+            .image_runtime
+            .humanlike_epsilon(default_epsilon());
+        let workload_mult = st.workload.image_score_multiplier();
+        let start = pick_account_index(
+            &inputs,
+            st.image_account_rr.fetch_add(1, Ordering::Relaxed),
+            epsilon,
+            workload_mult,
+        );
         if start > 0 {
             let mut rotated = Vec::with_capacity(accounts.len());
             for i in 0..accounts.len() {
@@ -707,10 +880,7 @@ async fn quota_refresh(
 }
 
 fn check_dispatch_backpressure(st: &AppState, email: &str) -> Option<Response> {
-    let interval_ms = std::env::var("IMAGE_DISPATCH_INTERVAL_MS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(800);
+    let interval_ms = st.dispatch_interval.interval_ms();
     let cap = st.scheduling_gate.account_inflight_cap();
     let inflight = st
         .scheduling_gate
@@ -718,7 +888,8 @@ fn check_dispatch_backpressure(st: &AppState, email: &str) -> Option<Response> {
         .map(|(_, _, inflight, _)| inflight)
         .unwrap_or(0);
     let queued = st.image_queue_depth() as u64;
-    if crate::dispatch_gate::should_wait(interval_ms, inflight as u64, cap, queued) {
+    let since = st.dispatch_interval.since_last_dispatch_ms(email);
+    if image_schedule::should_wait(interval_ms, inflight as u64, cap, queued, since) {
         return Some(err_wait(
             StatusCode::TOO_MANY_REQUESTS,
             "dispatch_gate: defer image until inflight drains",
@@ -730,22 +901,21 @@ fn check_dispatch_backpressure(st: &AppState, email: &str) -> Option<Response> {
     None
 }
 
-async fn acquire_image_permit(
-    st: &AppState,
-) -> Result<tokio::sync::OwnedSemaphorePermit, Response> {
+fn try_acquire_image_permit(st: &AppState) -> Result<tokio::sync::OwnedSemaphorePermit, Response> {
     st.image_queue_depth.fetch_add(1, Ordering::Relaxed);
-    match st.image_sem.clone().acquire_owned().await {
+    match st.image_sem.clone().try_acquire_owned() {
         Ok(permit) => {
             st.image_queue_depth.fetch_sub(1, Ordering::Relaxed);
             Ok(permit)
         }
         Err(_) => {
             st.image_queue_depth.fetch_sub(1, Ordering::Relaxed);
-            Err(err(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "image semaphore closed",
-                "semaphore_closed",
-                Some("self"),
+            Err(err_wait(
+                StatusCode::TOO_MANY_REQUESTS,
+                "image_service_busy: global concurrency saturated",
+                "image_service_busy",
+                Some("gate"),
+                st.estimated_image_wait_secs(),
             ))
         }
     }
@@ -774,7 +944,7 @@ async fn chat_image_completions(
         );
     }
 
-    let permit = match acquire_image_permit(st).await {
+    let permit = match try_acquire_image_permit(st) {
         Ok(p) => p,
         Err(r) => return r,
     };
@@ -1062,10 +1232,64 @@ async fn generate_one_image(
         if cand.email != inflight_guard.email() {
             inflight_guard = st.scheduling_gate.begin_inflight(&used_account.email);
         }
+        let binding_key = st
+            .scheduling_gate
+            .account_binding_key(&cand.email, cand.proxy.as_deref());
+        let _binding_guard = match st.binding_inflight.try_begin(&binding_key) {
+            Some(g) => g,
+            None if is_admin && try_no + 1 < max_attempts => {
+                warn!(
+                    email=%cand.email,
+                    binding=%binding_key,
+                    attempt=try_no + 1,
+                    "binding inflight saturated; retrying next account"
+                );
+                continue;
+            }
+            None => {
+                return Err(Err(anyhow::anyhow!(
+                    "binding_inflight saturated for {binding_key}"
+                )));
+            }
+        };
+        let _dispatch_mark = DispatchMarkGuard::new(&st.dispatch_interval, &cand.email);
+        if try_no > 0 {
+            let delay = poisson_delay_ms(st.workload.poisson_lambda);
+            if delay > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+            }
+        }
+        let _account_slot = match st.slot_ledger.try_acquire_account(&cand.email) {
+            Some(g) => g,
+            None if is_admin && try_no + 1 < max_attempts => {
+                warn!(email=%cand.email, attempt=try_no + 1, "account slot saturated; retrying");
+                continue;
+            }
+            None => {
+                return Err(Err(anyhow::anyhow!(
+                    "account slot saturated for {}",
+                    cand.email
+                )));
+            }
+        };
+        let _ss_slot = match st.slot_ledger.try_acquire_ss(&cand.email) {
+            Some(g) => g,
+            None if is_admin && try_no + 1 < max_attempts => {
+                warn!(email=%cand.email, attempt=try_no + 1, "ss slot saturated; retrying");
+                continue;
+            }
+            None => {
+                return Err(Err(anyhow::anyhow!(
+                    "ss slot saturated for {}",
+                    cand.email
+                )));
+            }
+        };
         if st.data_plane == DataPlane::Upstream {
             info!(email=%cand.email, attempt=try_no + 1, max_attempts, "upstream image attempt");
+            let upstream_account = pin_with_pre_ticket(st, cand);
             let attempt_result = run_upstream_image(
-                cand,
+                &upstream_account,
                 req.prompt.clone(),
                 req.model.clone(),
                 req.size.clone(),
@@ -1078,9 +1302,11 @@ async fn generate_one_image(
                 Ok((bridge, metrics)) if bridge.ok => {
                     upstream_metrics = Some(metrics);
                     result = Ok(bridge);
+                    st.pipeline_watchdog.mark_progress();
                     break;
                 }
                 Err(e) if is_admin && upstream_image_retryable(&e) && try_no + 1 < max_attempts => {
+                    record_image_upstream_failure(st, cand, &e);
                     warn!(
                         email=%cand.email,
                         attempt=try_no + 1,
@@ -1095,6 +1321,7 @@ async fn generate_one_image(
                     break;
                 }
                 Err(e) => {
+                    record_image_upstream_failure(st, cand, &e);
                     result = Err(e);
                     break;
                 }
@@ -1164,9 +1391,51 @@ async fn generate_one_image_edit(
         if cand.email != inflight_guard.email() {
             inflight_guard = st.scheduling_gate.begin_inflight(&used_account.email);
         }
+        let binding_key = st
+            .scheduling_gate
+            .account_binding_key(&cand.email, cand.proxy.as_deref());
+        let _binding_guard = match st.binding_inflight.try_begin(&binding_key) {
+            Some(g) => g,
+            None if is_admin && try_no + 1 < max_attempts => {
+                warn!(
+                    email=%cand.email,
+                    binding=%binding_key,
+                    attempt=try_no + 1,
+                    "binding inflight saturated; retrying next account"
+                );
+                continue;
+            }
+            None => {
+                return Err(Err(anyhow::anyhow!(
+                    "binding_inflight saturated for {binding_key}"
+                )));
+            }
+        };
+        let _dispatch_mark = DispatchMarkGuard::new(&st.dispatch_interval, &cand.email);
+        let _account_slot = match st.slot_ledger.try_acquire_account(&cand.email) {
+            Some(g) => g,
+            None if is_admin && try_no + 1 < max_attempts => continue,
+            None => {
+                return Err(Err(anyhow::anyhow!(
+                    "account slot saturated for {}",
+                    cand.email
+                )));
+            }
+        };
+        let _ss_slot = match st.slot_ledger.try_acquire_ss(&cand.email) {
+            Some(g) => g,
+            None if is_admin && try_no + 1 < max_attempts => continue,
+            None => {
+                return Err(Err(anyhow::anyhow!(
+                    "ss slot saturated for {}",
+                    cand.email
+                )));
+            }
+        };
         info!(email=%cand.email, attempt=try_no + 1, max_attempts, "upstream image edit attempt");
+        let upstream_account = pin_with_pre_ticket(st, cand);
         let attempt_result = run_upstream_image_edit(
-            cand,
+            &upstream_account,
             req.prompt.clone(),
             req.model.clone(),
             req.size.clone(),
@@ -1179,9 +1448,11 @@ async fn generate_one_image_edit(
             Ok((bridge, metrics)) if bridge.ok => {
                 upstream_metrics = Some(metrics);
                 result = Ok(bridge);
+                st.pipeline_watchdog.mark_progress();
                 break;
             }
             Err(e) if is_admin && upstream_image_retryable(&e) && try_no + 1 < max_attempts => {
+                record_image_upstream_failure(st, cand, &e);
                 warn!(
                     email=%cand.email,
                     attempt=try_no + 1,
@@ -1196,6 +1467,7 @@ async fn generate_one_image_edit(
                 break;
             }
             Err(e) => {
+                record_image_upstream_failure(st, cand, &e);
                 result = Err(e);
                 break;
             }
@@ -1262,11 +1534,302 @@ fn image_batch_upstream_failure(
     }
 }
 
+fn check_image_admission(st: &AppState) -> Option<Response> {
+    if !st.image_generation_allowed() {
+        if st.image_enabled {
+            return Some(err_wait(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "image generation paused (image_generation_paused)",
+                "image_generation_paused",
+                Some("gate"),
+                300,
+            ));
+        }
+        return None;
+    }
+    if st.deadlock_guard.is_tripped() {
+        return Some(err_wait(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "deadlock_guard: process cpu trip — deferring image admissions",
+            "deadlock_guard",
+            Some("gate"),
+            120,
+        ));
+    }
+    if st.pipeline_watchdog.is_tripped() {
+        return Some(err_wait(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "pipeline_watchdog: queue stall detected — deferring image admissions",
+            "pipeline_watchdog",
+            Some("gate"),
+            60,
+        ));
+    }
+    let cap = st.effective_global_concurrency();
+    if st.image_global_busy() >= cap {
+        return Some(err_wait(
+            StatusCode::TOO_MANY_REQUESTS,
+            "image admission cap reached (workload/global)",
+            "image_service_busy",
+            Some("gate"),
+            st.estimated_image_wait_secs(),
+        ));
+    }
+    None
+}
+
+fn acquire_image_delivery_gates(
+    st: &AppState,
+    payload_bytes: u64,
+) -> Result<(ReadyBufferGuard<'_>, ReturnWindowPermit<'_>), Response> {
+    let ready = ReadyBufferGuard::try_acquire(&st.ready_buffer, payload_bytes).ok_or_else(|| {
+        err_wait(
+            StatusCode::TOO_MANY_REQUESTS,
+            "ready_buffer saturated",
+            "ready_buffer",
+            Some("gate"),
+            st.estimated_image_wait_secs(),
+        )
+    })?;
+    let return_permit = st.return_window.try_acquire().ok_or_else(|| {
+        err_wait(
+            StatusCode::TOO_MANY_REQUESTS,
+            "return_window saturated",
+            "return_window",
+            Some("gate"),
+            st.estimated_image_wait_secs(),
+        )
+    })?;
+    Ok((ready, return_permit))
+}
+
+fn sync_adapter_enabled() -> bool {
+    std::env::var("IMAGE_SYNC_ADAPTER")
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(true)
+}
+
+fn sync_adapter_timeout_secs() -> u64 {
+    std::env::var("IMAGE_SYNC_ADAPTER_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(900)
+}
+
+async fn image_task_poll_response(st: &AppState, task_id: &str) -> Response {
+    let Some(rec) = st.image_tasks.store.get(task_id) else {
+        return err(
+            StatusCode::NOT_FOUND,
+            format!("image task not found: {task_id}"),
+            "image_task_not_found",
+            Some("client"),
+        );
+    };
+    let status = image_tasks::task_state_str(&rec.state);
+    if rec.state == image_tasks::ImageTaskState::Done {
+        return (
+            StatusCode::OK,
+            Json(
+                rec.result
+                    .unwrap_or_else(|| image_task_status_response(task_id, status, None, None)),
+            ),
+        )
+            .into_response();
+    }
+    if rec.state == image_tasks::ImageTaskState::Failed {
+        return err(
+            StatusCode::BAD_GATEWAY,
+            rec.error.unwrap_or_else(|| "image task failed".into()),
+            "image_task_failed",
+            Some("upstream"),
+        );
+    }
+    (
+        StatusCode::OK,
+        Json(image_task_status_response(
+            task_id,
+            status,
+            None,
+            rec.error.as_deref(),
+        )),
+    )
+        .into_response()
+}
+
+async fn enqueue_image_task(st: &AppState, req: ImageGenerationRequest) -> Response {
+    match st.image_tasks.try_enqueue(req) {
+        Ok(id) => (StatusCode::OK, Json(image_task_queued_response(&id))).into_response(),
+        Err(e) => err_wait(
+            StatusCode::TOO_MANY_REQUESTS,
+            e,
+            "image_service_busy",
+            Some("gate"),
+            st.estimated_image_wait_secs(),
+        ),
+    }
+}
+
+async fn wait_for_image_task(st: &AppState, task_id: &str) -> Response {
+    let timeout = sync_adapter_timeout_secs();
+    let deadline = Instant::now() + std::time::Duration::from_secs(timeout);
+    let poll_ms = std::env::var("IMAGE_SYNC_ADAPTER_POLL_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(500);
+    loop {
+        if let Some(rec) = st.image_tasks.store.get(task_id) {
+            match rec.state {
+                image_tasks::ImageTaskState::Done => {
+                    return (
+                        StatusCode::OK,
+                        Json(
+                            rec.result
+                                .unwrap_or_else(|| json!({ "id": task_id, "status": "done" })),
+                        ),
+                    )
+                        .into_response();
+                }
+                image_tasks::ImageTaskState::Failed => {
+                    return err(
+                        StatusCode::BAD_GATEWAY,
+                        rec.error.unwrap_or_else(|| "image task failed".into()),
+                        "image_task_failed",
+                        Some("upstream"),
+                    );
+                }
+                image_tasks::ImageTaskState::TimeoutPending
+                | image_tasks::ImageTaskState::Running
+                | image_tasks::ImageTaskState::Queued => {}
+            }
+        } else {
+            return err(
+                StatusCode::NOT_FOUND,
+                format!("image task not found: {task_id}"),
+                "image_task_not_found",
+                Some("client"),
+            );
+        }
+        if Instant::now() >= deadline {
+            st.image_tasks.store.update_state(
+                task_id,
+                image_tasks::ImageTaskState::TimeoutPending,
+                None,
+                Some("sync adapter timeout".into()),
+                None,
+                None,
+            );
+            return err_wait(
+                StatusCode::GATEWAY_TIMEOUT,
+                format!("image task timeout after {timeout}s (task_id={task_id})"),
+                "image_task_timeout",
+                Some("gate"),
+                st.estimated_image_wait_secs(),
+            );
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(poll_ms)).await;
+    }
+}
+
+async fn process_image_task(st: Arc<AppState>, task_id: String) {
+    let record = st.image_tasks.store.get(&task_id);
+    if record.is_none() {
+        return;
+    }
+    let req = record.expect("task record").request;
+    st.image_tasks.store.update_state(
+        &task_id,
+        image_tasks::ImageTaskState::Running,
+        None,
+        None,
+        None,
+        None,
+    );
+    let is_admin = true;
+    let candidates = match collect_image_accounts(&st, None, is_admin).await {
+        Ok(c) => c,
+        Err(_) => {
+            image_tasks::log_task_fail(
+                &st.image_tasks.store,
+                &task_id,
+                "no accounts available for image task",
+            );
+            return;
+        }
+    };
+    let permit = match try_acquire_image_permit(&st) {
+        Ok(p) => p,
+        Err(_) => {
+            st.image_tasks.store.update_state(
+                &task_id,
+                image_tasks::ImageTaskState::TimeoutPending,
+                None,
+                Some("image_service_busy".into()),
+                None,
+                None,
+            );
+            return;
+        }
+    };
+    let start_idx = st.image_account_rr.fetch_add(1, Ordering::Relaxed) % candidates.len();
+    let outcome = generate_one_image(&st, &candidates, start_idx, is_admin, &req).await;
+    drop(permit);
+    match outcome {
+        Ok(item) => {
+            let body = image_generation_response(&item.b64, &req.prompt);
+            let trace = item.pipeline.clone();
+            image_tasks::log_task_done(
+                &st.image_tasks.store,
+                &task_id,
+                body,
+                &item.account.email,
+                trace.clone(),
+            );
+            if let Some(trace) = trace {
+                image_tasks::append_task_trace_ndjson(&task_id, &trace);
+            }
+            st.pipeline_watchdog.mark_progress();
+        }
+        Err(Err(e)) => {
+            record_image_upstream_failure(&st, &candidates[start_idx], &e);
+            image_tasks::log_task_fail(&st.image_tasks.store, &task_id, &e.to_string());
+        }
+        Err(Ok(r)) => {
+            let msg = r
+                .error
+                .unwrap_or_else(|| "image bridge failed in task worker".into());
+            image_tasks::log_task_fail(&st.image_tasks.store, &task_id, &msg);
+        }
+    }
+}
+
+async fn get_image_task(
+    State(st): State<Arc<AppState>>,
+    Path(task_id): Path<String>,
+) -> Response {
+    image_task_poll_response(&st, task_id.trim()).await
+}
+
+async fn post_image_tasks_generations(
+    State(st): State<Arc<AppState>>,
+    Json(req): Json<ImageGenerationRequest>,
+) -> Response {
+    if !st.image_enabled {
+        return err(
+            StatusCode::NOT_IMPLEMENTED,
+            "image generation deferred; set IMAGE_ENABLED=1",
+            "image_deferred",
+            Some("gate"),
+        );
+    }
+    enqueue_image_task(&st, req).await
+}
+
 async fn image_generations(
     State(st): State<Arc<AppState>>,
     user: auth_routes::AuthUser,
     headers: HeaderMap,
-    Json(req): Json<ImageGenerationRequest>,
+    Json(mut req): Json<ImageGenerationRequest>,
 ) -> impl IntoResponse {
     if !st.image_enabled {
         return err(
@@ -1275,6 +1838,31 @@ async fn image_generations(
             "image_deferred",
             Some("gate"),
         );
+    }
+    if let Some(r) = check_image_admission(&st) {
+        return r;
+    }
+
+    if let Some(task_id) = req
+        .panda_task_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return image_task_poll_response(&st, task_id).await;
+    }
+
+    match parse_image_prompt_tunnel(&req.prompt) {
+        ImagePromptTunnel::StatusPoll(id) => return image_task_poll_response(&st, &id).await,
+        ImagePromptTunnel::AsyncGenerate(prompt) => {
+            req.prompt = prompt;
+            req.panda_async = true;
+        }
+        ImagePromptTunnel::Normal(prompt) => req.prompt = prompt,
+    }
+
+    if req.panda_async {
+        return enqueue_image_task(&st, req).await;
     }
 
     if req.n == 0 || req.n > MAX_IMAGE_BATCH_N {
@@ -1314,8 +1902,23 @@ async fn image_generations(
         }
     }
 
-    let permit = match acquire_image_permit(&st).await {
+    let permit = match try_acquire_image_permit(&st) {
         Ok(p) => p,
+        Err(r) if sync_adapter_enabled() => {
+            let task_id = match st.image_tasks.try_enqueue(req.clone()) {
+                Ok(id) => id,
+                Err(e) => {
+                    return err_wait(
+                        StatusCode::TOO_MANY_REQUESTS,
+                        e,
+                        "image_service_busy",
+                        Some("gate"),
+                        st.estimated_image_wait_secs(),
+                    );
+                }
+            };
+            return wait_for_image_task(&st, &task_id).await;
+        }
         Err(r) => return r,
     };
 
@@ -1460,6 +2063,11 @@ async fn image_generations(
             quota_after=?pipeline.as_ref().and_then(|p| p.get("quota_after")),
             "image ok (url)"
         );
+        let payload_bytes = batch_items.iter().map(|i| i.b64.len() as u64).sum();
+        let (_ready, _return) = match acquire_image_delivery_gates(&st, payload_bytes) {
+            Ok(g) => g,
+            Err(r) => return r,
+        };
         let body = if let Some(p) = pipeline {
             image_generation_url_multi_response_with_pipeline(&urls, p, &req.prompt)
         } else if urls.len() == 1 {
@@ -1480,7 +2088,7 @@ async fn image_generations(
             })
             .collect();
         image_archive::schedule_gateway_image_archive(
-            st,
+            st.clone(),
             headers,
             req.model.clone(),
             req.prompt.clone(),
@@ -1509,6 +2117,11 @@ async fn image_generations(
         quota_after=?pipeline.as_ref().and_then(|p| p.get("quota_after")),
         "image ok"
     );
+    let payload_bytes = b64s.iter().map(|b| b.len() as u64).sum();
+    let (_ready, _return) = match acquire_image_delivery_gates(&st, payload_bytes) {
+        Ok(g) => g,
+        Err(r) => return r,
+    };
     let body = if let Some(p) = pipeline {
         image_generation_b64_multi_response_with_pipeline(&b64s, p, &req.prompt)
     } else if b64s.len() == 1 {
@@ -1528,7 +2141,7 @@ async fn image_generations(
         })
         .collect();
     image_archive::schedule_gateway_image_archive(
-        st,
+        st.clone(),
         headers,
         req.model.clone(),
         req.prompt.clone(),
@@ -1815,7 +2428,7 @@ async fn image_edits_json(
         }
     }
 
-    let permit = match acquire_image_permit(&st).await {
+    let permit = match try_acquire_image_permit(&st) {
         Ok(p) => p,
         Err(r) => return r,
     };
@@ -2024,6 +2637,7 @@ mod auth_integration {
             device_id: None,
             proxy: None,
             user_agent: None,
+            impersonate: None,
         };
         Arc::new(AppState {
             helper: HelperClient::new("http://127.0.0.1:1").unwrap(),
@@ -2035,14 +2649,27 @@ mod auth_integration {
             image_global_concurrency: 1,
             image_sem: Arc::new(Semaphore::new(1)),
             image_enabled: false,
+            image_runtime: ImageRuntimeConfig::from_env(false),
+            deadlock_guard: DeadlockGuard::from_env(),
+            pipeline_watchdog: PipelineWatchdog::from_env(),
             auth,
             static_dir: None,
             image_assets: test_image_assets(),
             public_base_url: "http://127.0.0.1:8014".into(),
-            scheduling_gate: SchedulingGate::from_env().expect("ACCOUNTS_DB for gateway tests"),
+            scheduling_gate: SchedulingGate::from_env(),
             image_account_rr: AtomicUsize::new(0),
             image_queue_depth: AtomicUsize::new(0),
             duplicate_prompt: duplicate_prompt::DuplicatePromptGate::new(),
+            binding_inflight: BindingInflightLedger::from_env(),
+            dispatch_interval: DispatchIntervalGate::from_env(),
+            slot_ledger: SlotLedger::from_env(),
+            ready_buffer: ReadyBuffer::from_env(),
+            return_window: ReturnWindow::from_env(),
+            cooldown: CooldownRegistry::from_env(),
+            pre_ticket: PreTicketPool::from_env(),
+            proxy_cf: ProxyCfRegistry::from_env(),
+            workload: WorkloadPolicy::from_env(),
+            image_tasks: image_tasks::ImageTaskService::spawn(|_| async {}, 1),
             pg_pool: None,
             image_archive_store: None,
         })
@@ -2070,6 +2697,7 @@ mod auth_integration {
             device_id: None,
             proxy: None,
             user_agent: None,
+            impersonate: None,
         };
         let st = Arc::new(AppState {
             helper: HelperClient::new("http://127.0.0.1:1").unwrap(),
@@ -2081,14 +2709,27 @@ mod auth_integration {
             image_global_concurrency: 1,
             image_sem: Arc::new(Semaphore::new(1)),
             image_enabled: false,
+            image_runtime: ImageRuntimeConfig::from_env(false),
+            deadlock_guard: DeadlockGuard::from_env(),
+            pipeline_watchdog: PipelineWatchdog::from_env(),
             auth,
             static_dir: None,
             image_assets: test_image_assets(),
             public_base_url: "http://127.0.0.1:8014".into(),
-            scheduling_gate: SchedulingGate::from_env().expect("ACCOUNTS_DB for gateway tests"),
+            scheduling_gate: SchedulingGate::from_env(),
             image_account_rr: AtomicUsize::new(0),
             image_queue_depth: AtomicUsize::new(0),
             duplicate_prompt: duplicate_prompt::DuplicatePromptGate::new(),
+            binding_inflight: BindingInflightLedger::from_env(),
+            dispatch_interval: DispatchIntervalGate::from_env(),
+            slot_ledger: SlotLedger::from_env(),
+            ready_buffer: ReadyBuffer::from_env(),
+            return_window: ReturnWindow::from_env(),
+            cooldown: CooldownRegistry::from_env(),
+            pre_ticket: PreTicketPool::from_env(),
+            proxy_cf: ProxyCfRegistry::from_env(),
+            workload: WorkloadPolicy::from_env(),
+            image_tasks: image_tasks::ImageTaskService::spawn(|_| async {}, 1),
             pg_pool: None,
             image_archive_store: None,
         });
@@ -2189,6 +2830,7 @@ mod auth_integration {
             device_id: None,
             proxy: None,
             user_agent: None,
+            impersonate: None,
         };
         let st = Arc::new(AppState {
             helper: HelperClient::new("http://127.0.0.1:1").unwrap(),
@@ -2200,14 +2842,27 @@ mod auth_integration {
             image_global_concurrency: 1,
             image_sem: Arc::new(Semaphore::new(1)),
             image_enabled: true,
+            image_runtime: ImageRuntimeConfig::from_env(true),
+            deadlock_guard: DeadlockGuard::from_env(),
+            pipeline_watchdog: PipelineWatchdog::from_env(),
             auth,
             static_dir: None,
             image_assets: test_image_assets(),
             public_base_url: "http://127.0.0.1:8014".into(),
-            scheduling_gate: SchedulingGate::from_env().expect("ACCOUNTS_DB for gateway tests"),
+            scheduling_gate: SchedulingGate::from_env(),
             image_account_rr: AtomicUsize::new(0),
             image_queue_depth: AtomicUsize::new(0),
             duplicate_prompt: duplicate_prompt::DuplicatePromptGate::new(),
+            binding_inflight: BindingInflightLedger::from_env(),
+            dispatch_interval: DispatchIntervalGate::from_env(),
+            slot_ledger: SlotLedger::from_env(),
+            ready_buffer: ReadyBuffer::from_env(),
+            return_window: ReturnWindow::from_env(),
+            cooldown: CooldownRegistry::from_env(),
+            pre_ticket: PreTicketPool::from_env(),
+            proxy_cf: ProxyCfRegistry::from_env(),
+            workload: WorkloadPolicy::from_env(),
+            image_tasks: image_tasks::ImageTaskService::spawn(|_| async {}, 1),
             pg_pool: None,
             image_archive_store: None,
         });
@@ -2498,6 +3153,7 @@ mod auth_integration {
                     device_id: None,
                     proxy: None,
                     user_agent: None,
+                    impersonate: None,
                 },
             );
         }
