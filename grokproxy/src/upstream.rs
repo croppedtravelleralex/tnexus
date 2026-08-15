@@ -82,21 +82,24 @@ pub fn classify(status: u16, body: &str) -> Failure {
 pub fn pick_chat_model(ids: &[String]) -> Option<String> {
     let mut best: Option<((u32, u32), String)> = None;
     for id in ids {
-        let Some(rest) = id.strip_prefix("grok-") else {
+        let Some(version) = model_version_key(id) else {
             continue;
         };
-        let Some((major, minor)) = rest.split_once('.') else {
-            continue;
-        };
-        let (Ok(major), Ok(minor)) = (major.parse::<u32>(), minor.parse::<u32>()) else {
-            continue;
-        };
-        let version = (major, minor);
         if best.as_ref().map(|(v, _)| version > *v).unwrap_or(true) {
             best = Some((version, id.clone()));
         }
     }
     best.map(|(_, id)| id)
+}
+
+/// Semantic version for `grok-M.m` ids; other shapes sort last.
+pub fn model_version_key(id: &str) -> Option<(u32, u32)> {
+    let rest = id.strip_prefix("grok-")?;
+    let (major, minor) = rest.split_once('.')?;
+    let (Ok(major), Ok(minor)) = (major.parse::<u32>(), minor.parse::<u32>()) else {
+        return None;
+    };
+    Some((major, minor))
 }
 
 /// Quota the upstream reports on every chat response.
@@ -289,18 +292,43 @@ impl Upstream {
         Ok(builder.build()?)
     }
 
-    fn cli_headers(&self, extra: &serde_json::Value) -> reqwest::header::HeaderMap {
+    fn cli_headers(&self, extra: &serde_json::Value, access_token: &str) -> reqwest::header::HeaderMap {
         use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
         let mut headers = HeaderMap::new();
         for (key, value) in [
             ("X-XAI-Token-Auth", "xai-grok-cli"),
             ("x-grok-client-version", CLIENT_VERSION),
             ("x-grok-client-identifier", "grok-shell"),
+            ("x-grok-client-surface", "tui"),
+            ("x-grok-client-name", "grok-shell"),
         ] {
             headers.insert(
                 HeaderName::from_static_str_checked(key),
                 HeaderValue::from_static(value),
             );
+        }
+        let (agent_id, session_id) = stable_client_identity(access_token);
+        let req_id = random_hex(8);
+        let conv_id = random_hex(16);
+        let trace_id = random_hex(16);
+        let span_id = random_hex(8);
+        for (key, value) in [
+            ("x-grok-agent-id", agent_id),
+            ("x-grok-session-id", session_id.clone()),
+            ("x-grok-conv-id", conv_id.clone()),
+            ("x-grok-req-id", req_id.clone()),
+            ("x-grok-conversation-id", conv_id),
+            ("x-grok-session-id-legacy", session_id),
+            ("x-grok-request-id", req_id),
+            (
+                "traceparent",
+                format!("00-{trace_id}-{span_id}-01"),
+            ),
+            ("tracestate", String::new()),
+        ] {
+            if let Ok(parsed) = HeaderValue::from_str(&value) {
+                headers.insert(HeaderName::from_static_str_checked(key), parsed);
+            }
         }
         if let Some(map) = extra.as_object() {
             for (key, value) in map {
@@ -361,7 +389,7 @@ impl Upstream {
         let response = client
             .get(format!("{}/models", self.base_url))
             .bearer_auth(access_token)
-            .headers(self.cli_headers(extra_headers))
+            .headers(self.cli_headers(extra_headers, access_token))
             .send()
             .await
             .map_err(|err| UpstreamError {
@@ -424,7 +452,7 @@ impl Upstream {
         let response = client
             .post(format!("{}/{}", self.base_url, path))
             .bearer_auth(access_token)
-            .headers(self.cli_headers(extra_headers))
+            .headers(self.cli_headers(extra_headers, access_token))
             .json(payload)
             .send()
             .await
@@ -477,6 +505,7 @@ fn looks_like_sse(text: &str) -> bool {
 
 fn assemble_sse(text: &str) -> Result<serde_json::Value> {
     let mut content = String::new();
+    let mut tool_calls: Vec<MergedToolCall> = Vec::new();
     let mut id = None;
     let mut model = None;
     let mut finish = String::from("stop");
@@ -526,6 +555,9 @@ fn assemble_sse(text: &str) -> Result<serde_json::Value> {
         {
             content.push_str(piece);
         }
+        if let Some(delta) = chunk.pointer("/choices/0/delta/tool_calls") {
+            merge_tool_call_delta(&mut tool_calls, delta);
+        }
         if let Some(reason) = chunk
             .pointer("/choices/0/finish_reason")
             .and_then(serde_json::Value::as_str)
@@ -543,13 +575,19 @@ fn assemble_sse(text: &str) -> Result<serde_json::Value> {
         ));
     }
 
+    let mut message = serde_json::json!({"role": "assistant", "content": content});
+    let built_tool_calls = build_tool_calls_json(&tool_calls);
+    if !built_tool_calls.is_empty() {
+        message["tool_calls"] = serde_json::Value::Array(built_tool_calls);
+    }
+
     Ok(serde_json::json!({
         "id": id.unwrap_or_else(|| "chatcmpl-grokproxy".into()),
         "object": "chat.completion",
         "model": model.unwrap_or_else(|| FALLBACK_MODEL.to_string()),
         "choices": [{
             "index": 0,
-            "message": {"role": "assistant", "content": content},
+            "message": message,
             "finish_reason": finish,
         }],
         "usage": usage.unwrap_or_else(|| serde_json::json!({
@@ -639,18 +677,13 @@ pub fn completion_to_sse(body: &serde_json::Value) -> String {
     }
 
     if let Some(tool_calls) = tool_calls {
-        let tools_chunk = serde_json::json!({
-            "id": id,
-            "object": "chat.completion.chunk",
-            "created": created,
-            "model": model,
-            "choices": [{
-                "index": 0,
-                "delta": {"tool_calls": tool_calls},
-                "finish_reason": serde_json::Value::Null,
-            }],
-        });
-        events.push(format!("data: {tools_chunk}\n\n"));
+        append_tool_call_sse_chunks(
+            &mut events,
+            id,
+            model,
+            &created,
+            tool_calls,
+        );
     }
 
     let mut last = serde_json::json!({
@@ -672,6 +705,148 @@ pub fn completion_to_sse(body: &serde_json::Value) -> String {
     events.push(format!("data: {last}\n\n"));
     events.push("data: [DONE]\n\n".into());
     events.concat()
+}
+
+#[derive(Default)]
+struct MergedToolCall {
+    id: Option<String>,
+    name: Option<String>,
+    arguments: String,
+}
+
+fn merge_tool_call_delta(calls: &mut Vec<MergedToolCall>, delta: &serde_json::Value) {
+    let Some(items) = delta.as_array() else {
+        return;
+    };
+    for item in items {
+        let index = item.get("index").and_then(serde_json::Value::as_u64).unwrap_or(0) as usize;
+        while calls.len() <= index {
+            calls.push(MergedToolCall::default());
+        }
+        let slot = &mut calls[index];
+        if let Some(id) = item.get("id").and_then(serde_json::Value::as_str) {
+            slot.id = Some(id.to_string());
+        }
+        if let Some(name) = item.pointer("/function/name").and_then(serde_json::Value::as_str) {
+            slot.name = Some(name.to_string());
+        }
+        if let Some(args) = item.pointer("/function/arguments").and_then(serde_json::Value::as_str)
+        {
+            slot.arguments.push_str(args);
+        }
+    }
+}
+
+fn build_tool_calls_json(calls: &[MergedToolCall]) -> Vec<serde_json::Value> {
+    calls
+        .iter()
+        .enumerate()
+        .filter_map(|(index, call)| {
+            let name = call.name.as_deref()?;
+            Some(serde_json::json!({
+                "id": call.id.clone().unwrap_or_else(|| format!("call_grokproxy_{index}")),
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": if call.arguments.is_empty() { "{}" } else { &call.arguments },
+                },
+            }))
+        })
+        .collect()
+}
+
+fn append_tool_call_sse_chunks(
+    events: &mut Vec<String>,
+    id: &str,
+    model: &str,
+    created: &serde_json::Value,
+    tool_calls: serde_json::Value,
+) {
+    let Some(items) = tool_calls.as_array() else {
+        return;
+    };
+    for (index, call) in items.iter().enumerate() {
+        let id_val = call
+            .get("id")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!(format!("call_grokproxy_{index}")));
+        let name = call
+            .pointer("/function/name")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        let args = call
+            .pointer("/function/arguments")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("{}");
+        let start = serde_json::json!({
+            "id": id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": [{
+                "index": 0,
+                "delta": {
+                    "tool_calls": [{
+                        "index": index,
+                        "id": id_val,
+                        "type": "function",
+                        "function": {"name": name, "arguments": ""},
+                    }],
+                },
+                "finish_reason": serde_json::Value::Null,
+            }],
+        });
+        events.push(format!("data: {start}\n\n"));
+        if !args.is_empty() && args != "{}" {
+            let args_chunk = serde_json::json!({
+                "id": id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model,
+                "choices": [{
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [{
+                            "index": index,
+                            "function": {"arguments": args},
+                        }],
+                    },
+                    "finish_reason": serde_json::Value::Null,
+                }],
+            });
+            events.push(format!("data: {args_chunk}\n\n"));
+        }
+    }
+}
+
+fn random_hex(bytes_length: usize) -> String {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    let bytes: Vec<u8> = (0..bytes_length).map(|_| rng.gen()).collect();
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn stable_client_identity(access_token: &str) -> (String, String) {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut agent_hasher = DefaultHasher::new();
+    access_token.hash(&mut agent_hasher);
+    "agent".hash(&mut agent_hasher);
+    let agent_id = format!("{:032x}", agent_hasher.finish());
+
+    let mut session_hasher = DefaultHasher::new();
+    access_token.hash(&mut session_hasher);
+    "session".hash(&mut session_hasher);
+    let session_bits = session_hasher.finish();
+    let session_id = format!(
+        "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
+        (session_bits >> 32) as u32,
+        ((session_bits >> 16) & 0xffff) as u16,
+        (session_bits & 0xffff) as u16,
+        ((session_bits >> 48) & 0xffff) as u16,
+        session_bits & 0xffffffffffff
+    );
+    (agent_id, session_id)
 }
 
 /// `HeaderName::from_static` panics on a bad name; this keeps startup safe.
@@ -973,6 +1148,22 @@ mod tests {
             }],
         }));
         assert!(sse.contains("tool_calls"));
+        assert!(sse.contains("\"index\":0"));
         assert!(sse.contains("\"finish_reason\":\"tool_calls\""));
+    }
+
+    #[test]
+    fn model_version_key_orders_semantically() {
+        assert!(model_version_key("grok-4.10").unwrap() > model_version_key("grok-4.6").unwrap());
+    }
+
+    #[test]
+    fn assemble_sse_merges_tool_call_deltas() {
+        let sse = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"bash\",\"arguments\":\"\"}}]}}]}\n\n\
+                   data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"x\\\":1}\"}}]}}]}\n\n\
+                   data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n\
+                   data: [DONE]\n\n";
+        let body = assemble_sse(sse).expect("assemble");
+        assert_eq!(body["choices"][0]["message"]["tool_calls"][0]["function"]["name"], "bash");
     }
 }

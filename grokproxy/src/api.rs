@@ -271,30 +271,34 @@ async fn messages(
     }
 }
 
-/// Decide which model id to send upstream.
-///
-/// Callers routinely ask for a stale id (`grok-4.5`) after upstream renamed it,
-/// so an explicit request is honoured only when the account has never reported
-/// something newer.
 async fn resolve_model(state: &Shared, account: &crate::model::Account, requested: &str) -> String {
-    if !account.last_model.is_empty() {
-        return account.last_model.clone();
-    }
+    let fallback = || {
+        if !requested.is_empty() {
+            return requested.to_string();
+        }
+        if !account.last_model.is_empty() {
+            return account.last_model.clone();
+        }
+        crate::upstream::FALLBACK_MODEL.to_string()
+    };
+
     match state
         .pool
         .upstream()
-        .list_models(&account.access_token, &account.proxy_url, &account.headers)
+        .list_models(
+            &account.access_token,
+            &account.proxy_url,
+            &account.headers,
+        )
         .await
     {
-        Ok(ids) => crate::upstream::pick_chat_model(&ids).unwrap_or_else(|| {
-            if requested.is_empty() {
-                crate::upstream::FALLBACK_MODEL.to_string()
-            } else {
-                requested.to_string()
+        Ok(ids) if !ids.is_empty() => {
+            if !requested.is_empty() && ids.iter().any(|id| id == requested) {
+                return requested.to_string();
             }
-        }),
-        Err(_) if !requested.is_empty() => requested.to_string(),
-        Err(_) => crate::upstream::FALLBACK_MODEL.to_string(),
+            crate::upstream::pick_chat_model(&ids).unwrap_or_else(fallback)
+        }
+        _ => fallback(),
     }
 }
 

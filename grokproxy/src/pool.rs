@@ -402,7 +402,9 @@ impl Pool {
         if seen.is_empty() {
             seen.push(crate::upstream::FALLBACK_MODEL.to_string());
         }
-        seen.sort_by(|a, b| b.cmp(a));
+        seen.sort_by(|a, b| {
+            crate::upstream::model_version_key(b).cmp(&crate::upstream::model_version_key(a))
+        });
         Ok(seen)
     }
 

@@ -157,9 +157,67 @@ pub fn request_to_openai(anthropic: &Value) -> Value {
         }
     }
     if let Some(tools) = anthropic.get("tools") {
-        out.insert("tools".into(), tools.clone());
+        out.insert("tools".into(), tools_to_openai(tools));
+    }
+    if let Some(tool_choice) = anthropic.get("tool_choice") {
+        if let Some(converted) = tool_choice_to_openai(tool_choice) {
+            out.insert("tool_choice".into(), converted);
+        }
     }
     Value::Object(out)
+}
+
+/// Anthropic `{name, description, input_schema}` → OpenAI `tools[]`.
+fn tools_to_openai(tools: &Value) -> Value {
+    let Some(items) = tools.as_array() else {
+        return tools.clone();
+    };
+    Value::Array(
+        items
+            .iter()
+            .filter_map(|tool| {
+                let map = tool.as_object()?;
+                let name = map.get("name")?.as_str()?;
+                let mut function = Map::new();
+                function.insert("name".into(), Value::String(name.to_string()));
+                if let Some(desc) = map.get("description").and_then(Value::as_str) {
+                    function.insert("description".into(), Value::String(desc.to_string()));
+                }
+                if let Some(schema) = map.get("input_schema") {
+                    function.insert("parameters".into(), schema.clone());
+                } else if let Some(params) = map.get("parameters") {
+                    function.insert("parameters".into(), params.clone());
+                }
+                Some(json!({"type": "function", "function": Value::Object(function)}))
+            })
+            .collect(),
+    )
+}
+
+/// Anthropic `tool_choice` → OpenAI `tool_choice`.
+fn tool_choice_to_openai(choice: &Value) -> Option<Value> {
+    match choice {
+        Value::String(text) => match text.as_str() {
+            "auto" => Some(Value::String("auto".into())),
+            "any" => Some(Value::String("required".into())),
+            "none" => Some(Value::String("none".into())),
+            _ => None,
+        },
+        Value::Object(map) => match map.get("type").and_then(Value::as_str) {
+            Some("auto") => Some(Value::String("auto".into())),
+            Some("any") => Some(Value::String("required".into())),
+            Some("none") => Some(Value::String("none".into())),
+            Some("tool") => {
+                let name = map.get("name").and_then(Value::as_str)?;
+                Some(json!({
+                    "type": "function",
+                    "function": {"name": name},
+                }))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// OpenAI chat response → Anthropic message response.
@@ -492,6 +550,22 @@ mod tests {
         let body = error_body("pool empty");
         assert_eq!(body["type"], "error");
         assert_eq!(body["error"]["message"], "pool empty");
+    }
+
+    #[test]
+    fn anthropic_tools_convert_to_openai_functions() {
+        let request = json!({
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{
+                "name": "bash",
+                "description": "run shell",
+                "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}},
+            }],
+            "tool_choice": {"type": "tool", "name": "bash"},
+        });
+        let openai = request_to_openai(&request);
+        assert_eq!(openai["tools"][0]["function"]["name"], "bash");
+        assert_eq!(openai["tool_choice"]["function"]["name"], "bash");
     }
 
     #[test]
